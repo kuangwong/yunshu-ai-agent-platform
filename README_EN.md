@@ -12,10 +12,11 @@
 **Yunshu AI Agent Platform** is an AI intelligence center purpose-built for complex enterprise scenarios.
 
 The platform revolves around the following core capability matrix:
-*   💬 **Deep Interactive Dialogue**: Provides high-performance streaming chat, supporting complex intent resolution and multi-agent synthesis.
+*   💬 **Deep Interactive Dialogue (Dialogue & Co-Agent)**: Provides high-performance streaming chat, supporting complex intent resolution, multi-agent synthesis, and high-fidelity @Mention taggings. Native support for slash commands, multimodal attachment uploads with Vision capability, seamlessly bridging direct knowledge retrievals and dynamic Skills execution.
 *   🔌 **Flexible Embedded Integration**: Supports fast embedment into existing enterprise portals via our custom Chat SDK, seamlessly binding with local user authentication systems to ensure strict security and tenant isolation.
 *   📊 **Native Enterprise ChatBI**: Built-in visual data source management, metadata synchronization, and a core "Case Dataset" module. Powered by dynamic Few-Shot injection and SQL self-healing to yield highly accurate Text-to-SQL results.
 *   🤝 **Out-of-the-Box Ecosystem Integration**: Native connection to **RAGFlow managed agents and knowledge bases** for unstructured semantic search and citations; deep integration with the **OpenClaw🦞 LLM Security Gateway** to secure model traffic and enforce tenant boundary validation.
+*   📚 **One-Stop Knowledge Base Center**: Supports unified directory-file tree management for enterprise unstructured documents, offering parsing/splitting, recall test, semantic merging, and version controlling.
 *   🛠️ **Full-Link Online Debug & Trace**: Provides visual tracking of the AI's step-by-step reasoning, tool call histories, and SQL execution plans, allowing developers to debug and optimize model logic in real-time.
 *   ⚙️ **Robust APIs & Distributed Scheduling**: Exposes standard, production-ready backend APIs, alongside an APScheduler + Redis task center for scheduling periodic/one-time automated workflows under designated agent credentials.
 *   🎯 **Prompt Factory**: Built-in system prompt version control and management (located under `architech/prompts/`) to guarantee deterministic and compliant LLM behaviors.
@@ -94,13 +95,16 @@ The platform revolves around the following core capability matrix:
 *   **Native MCP Support**: Fully compliant with Anthropic's Model Context Protocol.
 *   **Infinite Extensibility**: Seamlessly connect to external productivity tools like Jira, Email, GitLab, etc. via MCP servers without modifying core code.
 
-### 4. 📚 Deep Knowledge Enhancement (RAG)
-*   **Multi-Dimensional Retrieval**: Integrated with RAGFlow to support precise semantic matching and document-level source attribution.
-*   **Professional Source Citation**: Visually highlights knowledge citations in the chat interface to ensure AI responses are transparent and trustworthy.
+### 4. 📚 Deep Knowledge Enhancement & Integration (RAG & Knowledge Hub)
+*   **One-Stop Knowledge Base Center**: Built-in visual knowledge workbench supporting tree-like folder/document management, file slice previewing, recall test, semantic merging, and lifecycle auditing.
+*   **Native Chat Integration**: Knowledge bases are natively embedded into active chat flows, auto-retrieving and injecting relevant slices into the Prompt context. Visually highlights transparent source citations within the UI chat bubbles.
 
-### 5. 🛠️ Enterprise-grade Utility & Tool Center
+### 5. 🛠️ Enterprise Security, Audit & Utilities (Enterprise Toolkit & RBAC)
 *   **Distributed Task Center**: **New Feature**. Integrates an APScheduler + Redis task scheduling system to run periodic or one-off automated tasks (such as scheduled audit reports, data sync) under specific agent identities.
-*   **Trace Link Visualization & Export**: **New Feature**. Supports printing visual trace flows of the decision-making process, and offers one-click exports of query results (supporting CSV/Excel with complete compatibility for Chinese/Excel encoding).
+*   **Granular RBAC & Data Isolation**: Built-in fine-grained user, role, and element-level permission controls, securing read-only menus and isolating write actions for enterprise compliance.
+*   **SSO Integration & Data Masking**: Native integrations with SSO single sign-on (toggle-controlled via operational UI), supporting high-efficiency user syncing; automatically sanitizes sensitive fields (passwords, API keys) in audit trails.
+*   **Anti-Leakage Audit Watermark**: **New Feature**. Protects embedded chat containers with overlay watermarks, customizable by [username + timestamp] or [custom text] to prevent screenshot leakages.
+*   **Trace Flow & Data Exports**: Supports visual trace debugging for AI decision flows and prints execution steps; offers one-click data exports (CSV/Excel) without Chinese charset issues.
 
 ---
 

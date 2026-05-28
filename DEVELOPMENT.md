@@ -30,13 +30,14 @@
 
 > [!IMPORTANT]
 > **运行前置说明**：
+>
 > 1. **服务依赖**：需提前准备好 MySQL 服务（并手动创建数据库，如 `yunshu_ai_agent_platform`）与 Redis 服务（因包含向量检索等高级功能，必须使用支持 RediSearch 的 `redis/redis-stack:latest` 版本服务）。
 > 2. **镜像构建**：一键启动脚本底层依赖本地的 `yunshu-ai-agent` 镜像，运行前需先执行构建。
 
 ```bash
 # 1. 克隆仓库并进入目录
 git clone <repository-url>
-cd yovole-yunshu-ai-agent-platform
+cd yunshu-ai-agent-platform
 
 # 2. 本地构建 Docker 镜像（以本机 CPU 架构调试为例）
 cd docker
@@ -92,16 +93,19 @@ npm install
 ```bash
 ./dev.sh
 ```
+
 该脚本会自动依次执行：
+
 1. **清理旧进程**：检查并停止占用 `8001` 端口的旧后端服务。
 2. **编译前端**：进入 `frontend` 目录并运行 `npx vite build` 编译前端静态资源。
 3. **启动后端**：以热重载模式（`--reload`）前台启动后端 `uvicorn` 服务，并在终端前台显示日志，极大地方便了编译与启动日志排查。
 
 **运行输出示例**：
+
 ```text
 $ ./dev.sh
 ==================================================
-       云枢智能体平台 · 本地开发启动工具         
+       云枢智能体平台 · 本地开发启动工具       
 ==================================================
 
 🛑 [1/3] 正在检查并停止旧服务 (Port 8001)...
@@ -129,16 +133,19 @@ INFO:     Application startup complete.
 如果您在开发中需要分别调试前后端，也可以手动启动它们：
 
 **手动启动后端**：
+
 ```bash
 source venv/bin/activate
 uvicorn app.main:app --reload --port 8001
 ```
 
 **手动启动前端**：
+
 ```bash
 cd frontend
 npm run dev
 ```
+
 前端开发服务器启动后，默认可通过 http://localhost:5173 进行访问（Vite 默认使用代理转发 `/api` 请求，无需额外配置）。
 
 ### IDE 配置
@@ -245,6 +252,7 @@ main              # 主分支（生产环境）
 ```
 
 **分支命名规范**:
+
 - 功能分支: `feature/<功能描述>`
 - 修复分支: `fix/<问题描述>`
 - 优化分支: `refactor/<优化内容>`
@@ -265,6 +273,7 @@ chore: 更新依赖版本
 ```
 
 **提交示例**:
+
 ```bash
 git add .
 git commit -m "feat: 添加 MCP 工具实时测试功能
@@ -285,12 +294,14 @@ git commit -m "feat: 添加 MCP 工具实时测试功能
 ### 数据库变更规范
 
 凡涉及数据库 Schema 或数据的变更，必须严格遵守以下规范：
+
 1. **执行边界**：开发人员与 AI 助手**仅负责**在 [db-prod/](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-yunshu-ai-agent-platform/db-prod/) 目录下创建 SQL 脚本。**严禁**自动执行 SQL 语句或通过 Python 脚本直接修改本地/线上数据库。
 2. **命名规范**：使用 `V` 开头 + 自增序号 + 描述。例如 `V60-create_scheduler_job_store.sql`。在创建前必须检查目录下的当前最大序号并自增 +1。
 
 ### 系统提示词变更规范
 
 凡涉及系统提示词 (Prompts) 的新增或更新，必须在 [architech/prompts/](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-yunshu-ai-agent-platform/architech/prompts/) 目录下进行并纳入 Git 版本控制。
+
 > [!NOTE]
 > 开发人员或 AI 助手仅负责创建/更新对应的 Prompt 文件，不负责自动同步到系统内部运行环境中。
 
@@ -301,6 +312,7 @@ git commit -m "feat: 添加 MCP 工具实时测试功能
 ### 代码已合本地同步与重启流程
 
 当代码合并至主分支后，在本地开发环境依次执行以下流程，以保证本地和远程的分支基准对齐并稳定运行：
+
 1. **同步主分支**：切换到主分支并同步拉取最新更改：
    ```bash
    git checkout main && git pull origin main
@@ -327,11 +339,13 @@ git commit -m "feat: 添加 MCP 工具实时测试功能
 #### 遵循 PEP 8 标准
 
 **安装 Black 和 isort**:
+
 ```bash
 pip install black isort flake8 mypy
 ```
 
 **自动格式化**:
+
 ```bash
 # 格式化代码
 black app/ tests/
@@ -341,11 +355,13 @@ isort app/ tests/
 ```
 
 **类型检查**:
+
 ```bash
 mypy app/
 ```
 
 **代码检查**:
+
 ```bash
 flake8 app/ --max-line-length=120
 ```
@@ -554,13 +570,16 @@ async def get_user(
 **方式一：使用自动化测试脚本（推荐）**
 
 在项目根目录下，运行封装好的自动化测试脚本：
+
 ```bash
 ./tests/run_tests.sh
 ```
+
 该脚本会自动配置 `PYTHONPATH` 环境变量并检索依赖，自动执行所有集成测试。脚本源码细节详见 [tests/run_tests.sh](file:///Users/chenxiaolong/资料/有孚网络/1云枢中台/yovole-yunshu-ai-agent-platform/tests/run_tests.sh)。
 
 **方式二：手动执行 pytest**
 在项目根目录下执行：
+
 ```bash
 # 运行所有测试
 export PYTHONPATH=$PYTHONPATH:. 
@@ -687,6 +706,7 @@ def process_data(data):
 **Q: 数据库连接失败**
 
 A: 检查 `app.core.config.py` 配置和 `.env` 文件：
+
 ```bash
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
@@ -702,6 +722,7 @@ A: 确保 Redis 服务运行，配置正确的 `REDIS_HOST` 和 `REDIS_PORT`
 **Q: API 返回 401 未授权**
 
 A: 检查请求头是否包含 `X-API-Key`:
+
 ```bash
 curl -H "X-API-Key: your_api_key" http://localhost:8001/health
 ```
@@ -711,6 +732,7 @@ curl -H "X-API-Key: your_api_key" http://localhost:8001/health
 **Q: npm install 失败**
 
 A: 清除缓存重试：
+
 ```bash
 rm -rf node_modules package-lock.json
 npm install
@@ -719,6 +741,7 @@ npm install
 **Q: 请求跨域问题**
 
 A: 检查 `vite.config.ts` 代理配置：
+
 ```typescript
 export default defineConfig({
   server: {
@@ -735,6 +758,7 @@ export default defineConfig({
 **Q: TypeScript 类型错误**
 
 A: 确保 `tsconfig.json` 配置正确，运行：
+
 ```bash
 npm run type-check
 ```
@@ -820,6 +844,7 @@ preload_app = True
 ```
 
 启动命令：
+
 ```bash
 gunicorn app.main:app -c gunicorn_config.py
 ```
@@ -856,6 +881,7 @@ LOGGING = {
 #### 性能监控
 
 建议集成以下工具：
+
 - Prometheus: 指标采集
 - Grafana: 可视化面板
 - Sentry: 错误追踪

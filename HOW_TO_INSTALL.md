@@ -40,28 +40,43 @@
     ```sql
     CREATE DATABASE IF NOT EXISTS `yunshu_ai_agent_platform` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
     ```
-2.  **准备 Python 虚拟环境并安装依赖**（导入工具依赖 `aiomysql`）：
-    ```bash
-    # 确保在项目根目录
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
-3.  **运行结构自动初始化脚本**：
-    平台提供了引导式的 Shell 脚本，能够自动扫描并按序号从小到大应用所有 `V*.sql` 脚本：
-    ```bash
-    # 授权并执行
-    chmod +x db-prod/apply-sql.sh
-    ./db-prod/apply-sql.sh
-    ```
-    *注：根据控制台交互提示，依次输入数据库的 Host（如 `127.0.0.1`）、Port（回车默认 `3306`）、User、Password 以及刚才创建的数据库名，最后输入 `YES` 即可开始执行导入。*
 
-4.  **导入默认管理员账号与预置 API Key（可选）**：
-    若是首次部署，建议导入预置管理员数据：
-    ```bash
-    ./db-prod/apply-sql.sh db-prod/INIT-USER-ADMIN.sql
-    ```
-    （同样根据提示输入连接参数并输入 `YES` 确认执行）
+2.  **执行结构自动初始化（提供以下两种途径）**：
+
+    *   **途径一：使用 Python 工具导入（推荐）**
+        需要在本地准备 Python 虚拟环境并安装 `aiomysql` 依赖：
+        ```bash
+        # 激活 Python 虚拟环境并安装依赖
+        python3 -m venv venv
+        source venv/bin/activate
+        pip install -r requirements.txt
+        
+        # 授权并执行
+        chmod +x db-prod/apply-sql.sh
+        ./db-prod/apply-sql.sh
+        ```
+        *注：根据交互提示输入 Host、Port、User、Password 及数据库名，输入 `YES` 即可执行。*
+
+    *   **途径二：免 Python 依赖的纯 Shell 脚本导入**
+        仅依赖系统已安装的 `mysql` 命令行客户端。具备与 Python 脚本等价的幂等性过滤机制（自动跳过重复建表、重复列等容错）：
+        ```bash
+        # 授权并执行原生 Shell 导入脚本
+        chmod +x db-prod/apply-sql-native.sh
+        ./db-prod/apply-sql-native.sh
+        ```
+        *注：根据提示输入 Host、Port、User、Password 及数据库名，输入 `YES` 即可。*
+
+3.  **导入默认管理员账号与预置 API Key（可选）**：
+    若是首次部署，建议导入管理员数据以建立系统初始连接。
+    *提示：在第 2 步执行结构初始化时，导入脚本在执行完毕后会**自动弹出询问一键级联导入该数据**，若您当时已选择导入，此步骤可跳过。若当时选择了跳过，也可通过以下命令随时**手动单独导入**：*
+    *   **使用 Python 工具**：
+        ```bash
+        ./db-prod/apply-sql.sh db-prod/INIT-USER-ADMIN.sql
+        ```
+    *   **使用纯 Shell 脚本**：
+        ```bash
+        ./db-prod/apply-sql-native.sh db-prod/INIT-USER-ADMIN.sql
+        ```
 
 详细的库表结构说明，请参考：[db-prod/README.md](file:///Users/chenxiaolong/资料/有孚网络/1云枢中台/yovole-yunshu-ai-agent-platform/db-prod/README.md)。
 

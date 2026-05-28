@@ -55,7 +55,7 @@ def parse_args(argv=None):
 
 
 def prompt_if_missing(label, current, secret=False):
-    if current:
+    if current is not None:
         return current
     if secret:
         return getpass.getpass(f"{label}: ")
@@ -74,15 +74,69 @@ def build_config(args):
 
 def split_sql_statements(sql_content):
     statements = []
-    for raw in sql_content.split(";"):
-        lines = [line for line in raw.splitlines() if not line.strip().startswith("--")]
+    current_statement = []
+    in_string = False
+    escape = False
+    quote_char = None
+    
+    # 逐字扫描，维护字符串状态，避开字符串内的分号
+    for char in sql_content:
+        current_statement.append(char)
+        
+        if escape:
+            escape = False
+            continue
+            
+        if char == '\\':
+            escape = True
+            continue
+            
+        if char in ("'", '"', '`'):
+            if not in_string:
+                in_string = True
+                quote_char = char
+            elif char == quote_char:
+                # 闭合字符串
+                in_string = False
+                quote_char = None
+                
+        elif char == ';' and not in_string:
+            # 遇到不在字符串内的分号，拆分出一条 SQL
+            stmt = "".join(current_statement).strip()
+            # 过滤注释行
+            lines = []
+            for line in stmt.splitlines():
+                clean_line = line.strip()
+                if not clean_line.startswith("--") and not clean_line.startswith("#"):
+                    lines.append(line)
+            clean_stmt = "\n".join(lines).strip()
+            
+            # 去除末尾分号
+            if clean_stmt.endswith(';'):
+                clean_stmt = clean_stmt[:-1].strip()
+                
+            if clean_stmt:
+                if DATABASE_SWITCH_RE.match(clean_stmt):
+                    print(f"⚠️  Skipping database-switching statement: {clean_stmt.splitlines()[0]}")
+                else:
+                    statements.append(clean_stmt)
+            current_statement = []
+            
+    # 处理最后一个没有分号结尾的语句
+    if current_statement:
+        stmt = "".join(current_statement).strip()
+        lines = []
+        for line in stmt.splitlines():
+            clean_line = line.strip()
+            if not clean_line.startswith("--") and not clean_line.startswith("#"):
+                lines.append(line)
         clean_stmt = "\n".join(lines).strip()
-        if not clean_stmt:
-            continue
-        if DATABASE_SWITCH_RE.match(clean_stmt):
-            print(f"⚠️  Skipping database-switching statement: {clean_stmt.splitlines()[0]}")
-            continue
-        statements.append(clean_stmt)
+        if clean_stmt.endswith(';'):
+            clean_stmt = clean_stmt[:-1].strip()
+        if clean_stmt:
+            if not DATABASE_SWITCH_RE.match(clean_stmt):
+                statements.append(clean_stmt)
+                
     return statements
 
 
@@ -101,8 +155,27 @@ def confirm_execution(config, file_path):
 
 
 async def apply_sql(file_path, config):
-    print(f"🔌 Connecting to {config.user}@{config.host}:{config.port}/{config.database}...")
+    print(f"🔌 Connecting to MySQL server to ensure database '{config.database}' exists...")
 
+    # 1. 尝试无库连线并自动建库（如果不存在）
+    try:
+        temp_conn = await aiomysql.connect(
+            host=config.host,
+            port=config.port,
+            user=config.user,
+            password=config.password,
+            autocommit=True,
+        )
+        async with temp_conn.cursor() as cur:
+            create_db_sql = f"CREATE DATABASE IF NOT EXISTS `{config.database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+            await cur.execute(create_db_sql)
+        temp_conn.close()
+        await temp_conn.ensure_closed()
+    except Exception as e:
+        print(f"❌ Connection or database creation failed: {e}")
+        sys.exit(1)
+
+    print(f"🔌 Connecting to database '{config.database}'...")
     try:
         pool = await aiomysql.create_pool(
             host=config.host,
@@ -113,7 +186,7 @@ async def apply_sql(file_path, config):
             autocommit=True,
         )
     except Exception as e:
-        print(f"❌ Connection failed: {e}")
+        print(f"❌ Connection to '{config.database}' failed: {e}")
         sys.exit(1)
 
     try:

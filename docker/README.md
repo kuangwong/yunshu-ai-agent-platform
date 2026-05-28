@@ -9,9 +9,9 @@
 | `Dockerfile` | API 服务的镜像构建定义 (基于 Python 3.10-slim)。包含前后端构建流程。 |
 | `docker-compose.yml` | **全栈启动配置**。包含 API 服务及其依赖组件 (Redis) 的编排。 |
 | `docker-compose.ai-agent.yml` | **独立启动配置**。仅包含 API 服务,需通过环境变量连接外部的数据库和缓存。 |
-| `build_linux_x86.sh` | 构建 **x86_64** 服务器镜像 (`linux/amd64`)，Mac / Linux 均可执行。 |
-| `build_linux_arm.sh` | 构建 **ARM64** 服务器镜像 (`linux/arm64`)。 |
-| `build_native.sh` | 按本机 CPU 架构构建，适合本地 `docker run` 调试。 |
+| `build_linux_x86.sh` | 构建 **x86_64** 服务器镜像 (`linux/amd64`)，需传入版本号参数，Mac / Linux 均可执行。 |
+| `build_linux_arm.sh` | 构建 **ARM64** 服务器镜像 (`linux/arm64`)，需传入版本号参数。 |
+| `build_native.sh` | 按本机 CPU 架构构建，需传入版本号参数，适合本地 `docker run` 调试。 |
 | `install-buildx.sh` | 修复 Homebrew docker + Colima 下 buildx 不可用的问题。 |
 | `_build_common.sh` | 内部公共逻辑，请勿直接调用。 |
 | `README_EN.md` | 英文部署说明。 |
@@ -73,19 +73,19 @@ ENCRYPTION_KEY=your-fernet-key-here  # 使用 Fernet.generate_key() 生成
 cd docker
 
 # 部署到常见 x86 Linux 服务器（推荐）
-./build_linux_x86.sh
+./build_linux_x86.sh 1.2.0
 
 # 部署到 ARM64 Linux（鲲鹏 / Ampere 等）
-./build_linux_arm.sh
+./build_linux_arm.sh 1.2.0
 
 # 仅在本机试跑（架构随 Mac/PC 而定）
-./build_native.sh
+./build_native.sh 1.0.0
 ```
 
-产物固定输出到 **`docker/release/`** 目录，文件名带架构后缀，例如：
+产物固定输出到 **`docker/release/`** 目录，文件名带版本号与架构后缀，例如：
 
-- `docker/release/yunshu-ai-agent_linux-amd64_20250527.tar`
-- `docker/release/yunshu-ai-agent_linux-arm64_20250527.tar`
+- `docker/release/yunshu-ai-agent_1.2.0_linux-amd64_20260529.tar`
+- `docker/release/yunshu-ai-agent_1.2.0_linux-arm64_20260529.tar`
 
 > **Mac 打 x86 包**：请用 `build_linux_x86.sh`（内部 `docker buildx --platform linux/amd64`），不要用 `build_native.sh`，否则 M 芯片会打出 arm64 镜像，无法在 x86 服务器运行。
 
@@ -179,21 +179,13 @@ INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
 **认证方式：仅使用 API Key**
 
 1. 首次使用需要创建管理员 API Key：
+   平台推荐通过运行 `db-prod/INIT-USER-ADMIN.sql` 来初始化默认管理员账号。您可以参考 [db-prod/README.md](file:///Users/chenxiaolong/资料/有孚网络/1云枢中台/yovole-yunshu-ai-agent-platform/db-prod/README.md) 的说明，在项目根目录下通过运行以下部署脚本来完成导入：
+   ```bash
+   ./db-prod/apply-sql.sh db-prod/INIT-USER-ADMIN.sql
+   ```
+   *注：默认管理员用户名为 `admin`，默认 API Key 为 `5BYfsKWhU_Cfx83cuo8E0kd4AtEhlUHDVlKwwR2kN-c`。首次使用此 API Key 登录后，请立即进入【用户管理】为其设置密码以保证安全。*
 
-```bash
-# 返回项目根目录
-cd ..
-
-# 创建管理员 Key
-python scripts/create_admin_key.py
-
-# 输出示例：
-# ✓ Admin API Key created successfully!
-# API Key: ys_admin_abc123xyz...
-# Please save this key, it will not be shown again.
-```
-
-2. 在管理后台登录页面输入 API Key
+2. 在管理后台登录页面输入上述 API Key 即可登录。
 3. 登录后可以：
    - 查看系统概览和统计数据
    - 管理用户和 API Key

@@ -9,9 +9,9 @@ Container deployment files for **Yunshu AI Agent Platform**.
 | `Dockerfile` | API image (Python 3.10-slim), includes frontend + backend build |
 | `docker-compose.yml` | Full stack (API + Redis) |
 | `docker-compose.ai-agent.yml` | API only; connect to external DB/cache via env |
-| `build_linux_x86.sh` | Build for **x86_64** Linux (`linux/amd64`) |
-| `build_linux_arm.sh` | Build for **ARM64** Linux (`linux/arm64`) |
-| `build_native.sh` | Build for host CPU arch (local testing only) |
+| `build_linux_x86.sh` | Build for **x86_64** Linux (`linux/amd64`), requires version parameter |
+| `build_linux_arm.sh` | Build for **ARM64** Linux (`linux/arm64`), requires version parameter |
+| `build_native.sh` | Build for host CPU arch, requires version parameter (local testing only) |
 | `install-buildx.sh` | Fix missing/broken `docker buildx` on Homebrew docker + Colima |
 | `_build_common.sh` | Internal shared build logic (do not run directly) |
 | `start-yunshu-ai-agent.sh` | Check config and start the API container |
@@ -35,19 +35,19 @@ Use host IP instead of `localhost` for MySQL/Redis from inside the container. On
 cd docker
 
 # x86 Linux servers (most common; use on Mac when deploying to x86)
-./build_linux_x86.sh
+./build_linux_x86.sh 1.2.0
 
 # ARM64 Linux (Kunpeng / Ampere, etc.)
-./build_linux_arm.sh
+./build_linux_arm.sh 1.2.0
 
 # Local native arch only
-./build_native.sh
+./build_native.sh 1.0.0
 ```
 
 Artifacts are written to **`docker/release/`**, e.g.:
 
-- `docker/release/yunshu-ai-agent_linux-amd64_20250527.tar`
-- `docker/release/yunshu-ai-agent_linux-arm64_20250527.tar`
+- `docker/release/yunshu-ai-agent_1.2.0_linux-amd64_20260529.tar`
+- `docker/release/yunshu-ai-agent_1.2.0_linux-arm64_20260529.tar`
 
 > On **Apple Silicon Macs** targeting **x86 servers**, use `build_linux_x86.sh`, not `build_native.sh`. The first cross-platform build may run for a long time with little console output while pulling amd64 base images.
 
@@ -63,7 +63,7 @@ Artifacts are written to **`docker/release/`**, e.g.:
 Offline deploy on the target host:
 
 ```bash
-docker load -i docker/release/yunshu-ai-agent_linux-amd64_YYYYMMDD.tar
+docker load -i docker/release/yunshu-ai-agent_1.2.0_linux-amd64_YYYYMMDD.tar
 ```
 
 ### 3. Start services

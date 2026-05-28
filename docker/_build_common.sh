@@ -136,9 +136,6 @@ run_build() {
   fi
 
   if needs_cross_build; then
-    build_frontend_on_host
-    PREBUILD_FRONTEND=1
-    docker_build_args
     ensure_buildx
     "${BUILDX[@]}" build \
       --platform "$PLATFORM" \
@@ -179,6 +176,30 @@ fi
 
 mkdir -p "$RELEASE_DIR"
 cd "$PROJECT_ROOT"
+
+# 决定是否要在宿主机预构建前端
+# 条件：
+#   - 显式设置 PREBUILD_FRONTEND=1
+#   - 或者是跨平台构建 needs_cross_build (强制要求宿主机预构建)
+#   - 或者是 macOS (Darwin) 系统，且宿主机安装了 node 和 npm (自动启用以提升性能并防止 OOM)
+SHOULD_PREBUILD=0
+if [[ "${PREBUILD_FRONTEND:-}" == "1" ]]; then
+  SHOULD_PREBUILD=1
+elif needs_cross_build; then
+  SHOULD_PREBUILD=1
+elif [[ "$(uname)" == "Darwin" ]]; then
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    echo "检测到宿主机为 macOS 且存在 node/npm 环境，自动启用宿主机预构建前端以避免容器 OOM。"
+    SHOULD_PREBUILD=1
+  else
+    echo "提示: 宿主机为 macOS 但未检测到 node/npm 环境，将尝试在 Docker 容器内构建前端（注意：内存不足时可能会因 OOM 导致 Killed）。"
+  fi
+fi
+
+if [[ "$SHOULD_PREBUILD" == "1" ]]; then
+  build_frontend_on_host
+  PREBUILD_FRONTEND=1
+fi
 
 run_build
 

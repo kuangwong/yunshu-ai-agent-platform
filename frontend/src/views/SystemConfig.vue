@@ -407,15 +407,29 @@ const getVisibleItems = (items: ConfigItem[], category: string) => {
   if (!items) return []
   let list = [...items]
   if (category === 'data_api') {
-    const modeItemIndex = list.findIndex(x => x.key === 'sql_execution_mode')
+    const chatbiKeys = [
+      'chatbi_sample_knowledge_base',
+      'chatbi_sample_similarity_threshold',
+      'chatbi_sample_vector_similarity_weight'
+    ]
+    const chatbiItems = list.filter(x => chatbiKeys.includes(x.key))
+    const restItems = list.filter(x => !chatbiKeys.includes(x.key))
+
+    const modeItemIndex = restItems.findIndex(x => x.key === 'sql_execution_mode')
     if (modeItemIndex !== -1) {
-      const modeItem = list[modeItemIndex]
-      if (!modeItem) return list
-      list.splice(modeItemIndex, 1)
-      list.unshift(modeItem)
-      if (modeItem.value === 'local') {
-        list = [modeItem]
+      const modeItem = restItems[modeItemIndex]
+      if (modeItem) {
+        let visibleRest = [...restItems]
+        if (modeItem.value === 'local') {
+          visibleRest = [modeItem]
+        } else {
+          visibleRest.splice(modeItemIndex, 1)
+          visibleRest.unshift(modeItem)
+        }
+        list = [...chatbiItems, ...visibleRest]
       }
+    } else {
+      list = [...chatbiItems, ...restItems]
     }
   }
   if (category === 'other') {

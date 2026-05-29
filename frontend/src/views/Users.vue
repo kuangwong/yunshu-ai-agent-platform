@@ -428,7 +428,7 @@
           </button>
         </div>
 
-        <div class="flex-1 overflow-y-auto custom-scrollbar pr-1">
+        <div class="flex-1 overflow-y-auto custom-scrollbar pr-1 pt-3">
           <!-- INFO TAB -->
           <div v-show="activeTab === 'info'" class="space-y-4 py-2">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">

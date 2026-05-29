@@ -30,7 +30,6 @@ public_router = APIRouter()
 class ChatBiSqlExecuteRequest(BaseModel):
     sql: str = Field(..., description="只读 SELECT 语句")
     data_source: str = Field(..., description="数据源标识，如 default_clickhouse、mysql_oa")
-    dataset_name: str = Field(..., description="平台数据集 name，用于元数据与行级权限")
     sessionid: str = Field(..., description="OpenClaw 会话 ID，用于后续通过 session_status 工具获取会话状态")
 
 
@@ -50,7 +49,6 @@ class ChatBiSqlCheckAuthRequest(BaseModel):
     username: str = Field(..., description="平台用户登录名，对应 ai_agent_users.user_name")
     sql: str = Field(..., description="只读 SELECT 语句")
     data_source: str = Field(..., description="数据源标识，如 default_clickhouse、mysql_oa")
-    dataset_name: str = Field(..., description="平台数据集 name，用于元数据与行级权限")
 
 
 def _map_sql_tool_error_to_http(result: str) -> None:
@@ -103,7 +101,7 @@ async def _enforce_openclaw_session_sql_auth(
         db,
         sql=body.sql,
         data_source=body.data_source,
-        dataset_name=body.dataset_name,
+        dataset_name=None,
         user_id=session_user_id,
         user_dimensions=_chatbi_user_dimensions(session_user_info, session_user_id),
         trace_logs=None,
@@ -157,7 +155,7 @@ async def chatbi_sql_execute(
         db,
         sql=body.sql,
         data_source=body.data_source,
-        dataset_name=body.dataset_name,
+        dataset_name=None,
         user_id=user_id,
         user_dimensions=user_dimensions,
         trace_logs=None,
@@ -234,7 +232,7 @@ async def chatbi_sql_checkauth(
         db,
         sql=body.sql,
         data_source=body.data_source,
-        dataset_name=body.dataset_name,
+        dataset_name=None,
         user_id=user_id,
         user_dimensions=user_dimensions,
         trace_logs=None,

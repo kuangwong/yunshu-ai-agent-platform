@@ -186,7 +186,7 @@ async def execute_sql_query_core(
     *,
     sql: str,
     data_source: str,
-    dataset_name: str,
+    dataset_name: Optional[str] = None,
     user_id: Optional[int],
     user_dimensions: Optional[Dict[str, Any]] = None,
     trace_logs: Optional[List[str]] = None,
@@ -233,9 +233,11 @@ async def execute_sql_query_core(
     if str(ud.get("role") or "").strip().lower() == "admin":
         is_admin_eff = True
 
-    ds = await MetadataService.get_dataset_by_name(session, dataset_name)
-    if not ds:
-        return f"Error: Dataset '{dataset_name}' not found. Please verify the dataset name."
+    ds = None
+    if dataset_name:
+        ds = await MetadataService.get_dataset_by_name(session, dataset_name)
+        if not ds:
+            return f"Error: Dataset '{dataset_name}' not found. Please verify the dataset name."
 
     dialect = dialect_from_data_source(data_source)
 

@@ -26,7 +26,6 @@ async def test_chatbi_sql_checkauth_route_post_ok(client: AsyncClient):
                 "username": "test_user",
                 "sql": "SELECT 1",
                 "data_source": "default_clickhouse",
-                "dataset_name": "any_dataset",
             },
         )
 
@@ -46,7 +45,6 @@ async def test_chatbi_sql_checkauth_unknown_user_404(client: AsyncClient):
             "username": "__no_such_user_chatbi_checkauth__",
             "sql": "SELECT 1",
             "data_source": "default_clickhouse",
-            "dataset_name": "any_dataset",
         },
     )
     assert response.status_code == 404
@@ -62,7 +60,6 @@ async def test_chatbi_sql_execute_still_requires_api_key(client: AsyncClient):
         json={
             "sql": "SELECT 1",
             "data_source": "default_clickhouse",
-            "dataset_name": "any_dataset",
         },
     )
     assert response.status_code == 401

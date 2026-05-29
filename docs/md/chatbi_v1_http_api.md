@@ -80,7 +80,6 @@ curl -sS -G 'http://<host>:<port>/api/v1/chatbi/schema' \
 
 - `sql` *(string, required)*：仅允许**单条 SELECT**（服务端用 sqlglot 校验）
 - `data_source` *(string, required)*：外部 SQL 执行服务的数据源标识（如 `default_clickhouse`、`mysql_oa`）
-- `dataset_name` *(string, required)*：平台数据集 `name`（用于元数据、物理表权限与行级重写）
 - `sessionid` *(string, required)*：OpenClaw 会话 ID；当格式为 `agent:<agent_name>:openai-user:<username>-<uuid>` 时，会先按 `<username>` 复用 `sql/checkauth` 等价链路做权限校验，通过后才执行 SQL；其它格式仅作为必填会话参数保留。
 
 ### 出参 `data`
@@ -96,7 +95,6 @@ curl -sS -X POST 'http://<host>:<port>/api/v1/chatbi/sql/execute' \
   -d '{
     "sql": "SELECT 1",
     "data_source": "default_clickhouse",
-    "dataset_name": "your_dataset",
     "sessionid": "openclaw-session-id"
   }'
 ```
@@ -138,7 +136,6 @@ curl -sS -X POST 'http://<host>:<port>/api/v1/chatbi/sql/execute' \
 - `username` *(string, required)*：平台用户登录名（`ai_agent_users.user_name`）
 - `sql` *(string, required)*：仅允许**单条 SELECT**
 - `data_source` *(string, required)*：数据源标识
-- `dataset_name` *(string, required)*：数据集 `name`
 
 ### 出参 `data`
 
@@ -152,8 +149,7 @@ curl -sS -X POST 'http://<host>:<port>/api/v1/chatbi/sql/checkauth' \
   -d '{
     "username": "zhangsan",
     "sql": "SELECT 1",
-    "data_source": "default_clickhouse",
-    "dataset_name": "your_dataset"
+    "data_source": "default_clickhouse"
   }'
 ```
 
@@ -302,7 +298,6 @@ metrics:
 |------|------|------|------|
 | `sql` | `string` | 是 | 仅允许 **单条 `SELECT`**（经 sqlglot 校验） |
 | `data_source` | `string` | 是 | 外部 SQL 执行服务使用的数据源标识，如 `default_clickhouse`、`mysql_oa` |
-| `dataset_name` | `string` | 是 | 平台 **数据集 `name`**，用于元数据、物理表权限与（若开启）行级重写 |
 | `sessionid` | `string` | 是 | OpenClaw 会话 ID；当格式为 `agent:<agent_name>:openai-user:<username>-<uuid>` 时，会先按 `<username>` 复用 `sql/checkauth` 等价链路做权限校验，通过后才执行 SQL；其它格式仅作为必填会话参数保留 |
 
 ### 成功响应 `data`
@@ -325,7 +320,6 @@ curl -sS -X POST 'http://<host>:<port>/api/v1/chatbi/sql/execute' \
   -d '{
     "sql": "SELECT region_name AS region, count(*) AS order_cnt FROM fact_orders GROUP BY region_name LIMIT 10",
     "data_source": "default_clickhouse",
-    "dataset_name": "sales_detail",
     "sessionid": "openclaw-session-id"
   }'
 ```
@@ -381,7 +375,6 @@ curl -sS -X POST 'http://<host>:<port>/api/v1/chatbi/sql/execute' \
 | `username` | `string` | 是 | 平台登录名，用于加载用户维度与权限 |
 | `sql` | `string` | 是 | 仅允许 **单条 `SELECT`** |
 | `data_source` | `string` | 是 | 数据源标识 |
-| `dataset_name` | `string` | 是 | 数据集 `name` |
 
 ### 成功响应 `data`
 
@@ -397,8 +390,7 @@ curl -sS -X POST 'http://<host>:<port>/api/v1/chatbi/sql/checkauth' \
   -d '{
     "username": "zhangsan",
     "sql": "SELECT region_name AS region, count(*) AS order_cnt FROM fact_orders GROUP BY region_name LIMIT 10",
-    "data_source": "default_clickhouse",
-    "dataset_name": "sales_detail"
+    "data_source": "default_clickhouse"
   }'
 ```
 

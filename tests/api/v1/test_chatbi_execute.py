@@ -32,7 +32,6 @@ async def test_chatbi_execute_request_requires_sessionid():
         ChatBiSqlExecuteRequest.model_validate({
             "sql": "SELECT 1",
             "data_source": "default_clickhouse",
-            "dataset_name": "test_dataset",
         })
 
     assert "sessionid" in str(exc_info.value)
@@ -58,7 +57,6 @@ async def test_openclaw_session_auth_uses_session_username(monkeypatch):
     body = ChatBiSqlExecuteRequest.model_validate({
         "sql": "SELECT 1",
         "data_source": "default_clickhouse",
-        "dataset_name": "test_dataset",
         "sessionid": "agent:chatbi_bot:openai-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2",
     })
     captured = {}
@@ -111,7 +109,6 @@ async def test_chatbi_execute_local_success(client: AsyncClient, valid_api_key: 
             json={
                 "sql": "SELECT id, name FROM users",
                 "data_source": "mysql_test",
-                "dataset_name": "test_dataset",
                 "sessionid": "openclaw-session-1"
             }
         )
@@ -138,7 +135,6 @@ async def test_chatbi_execute_local_safety_block(client: AsyncClient, valid_api_
             json={
                 "sql": "DROP TABLE users",
                 "data_source": "mysql_test",
-                "dataset_name": "test_dataset",
                 "sessionid": "openclaw-session-1"
             }
         )
@@ -168,7 +164,6 @@ async def test_chatbi_execute_local_timeout(client: AsyncClient, valid_api_key: 
             json={
                 "sql": "SELECT * FROM giant_table",
                 "data_source": "mysql_test",
-                "dataset_name": "test_dataset",
                 "sessionid": "openclaw-session-1"
             }
         )
@@ -193,7 +188,6 @@ async def test_chatbi_execute_local_source_not_found(client: AsyncClient, valid_
             json={
                 "sql": "SELECT 1",
                 "data_source": "non_existent_db",
-                "dataset_name": "test_dataset",
                 "sessionid": "openclaw-session-1"
             }
         )
@@ -225,7 +219,6 @@ async def test_chatbi_execute_response_contains_execution_mode(client: AsyncClie
             json={
                 "sql": "SELECT id FROM users",
                 "data_source": "mysql_test",
-                "dataset_name": "test_dataset",
                 "sessionid": "openclaw-session-1"
             }
         )
@@ -241,7 +234,6 @@ async def test_chatbi_execute_response_contains_execution_mode(client: AsyncClie
             json={
                 "sql": "DROP TABLE users",
                 "data_source": "mysql_test",
-                "dataset_name": "test_dataset",
                 "sessionid": "openclaw-session-1"
             }
         )

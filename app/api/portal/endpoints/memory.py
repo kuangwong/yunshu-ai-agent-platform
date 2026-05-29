@@ -9,7 +9,7 @@ from app.core.dependencies import require_api_key, require_permission
 from app.services.ai.embedding_client import EmbeddingClient
 from app.services.ai.daily_summary_service import DailySummaryService
 from app.services.ai.memory_index_service import MemoryIndexService
-from app.services.ai.memory_service import memory_service
+from app.services.ai.memory_service import memory_service, ltm_service
 from app.services.ai.redis_vector_health import RedisVectorHealthService
 from app.services.ai.session_summary_service import SessionSummaryService
 from app.services.memory_config_service import MemoryConfigService
@@ -501,3 +501,198 @@ async def search_test(
         "display_name": info.get("display_name") or info.get("user_name"),
     }
     return {"status": "success", "data": data}
+
+
+# =====================================================================
+# 用户本人可见的隔离记忆接口（无需 menu:memory_management 权限，仅限本人操作）
+# =====================================================================
+
+class LtmUpdateRequest(BaseModel):
+    key: str = Field(..., description="长期事实/偏好键名")
+    value: str = Field(..., description="长期事实/偏好值")
+
+
+@router.get("/my/summaries")
+async def list_my_summaries(
+    keyword: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """拉取当前用户本人的会话记忆列表"""
+    uid = str(_current_uid(current_user))
+    items = await MemoryIndexService.list_summaries(
+        uid, keyword=keyword, limit=limit
+    )
+    names = await _user_display_names([int(uid)])
+    _attach_user_labels(items, names, uid)
+    for item in items:
+        item["has_history"] = await memory_service.history_exists(
+            uid, item["conversation_id"]
+        )
+        item.pop("_embedding_vec", None)
+    return {"status": "success", "data": items}
+
+
+@router.get("/my/summaries/{conversation_id}")
+async def get_my_summary_detail(
+    conversation_id: str,
+    history_limit: int = Query(30, ge=1, le=100),
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """获取当前用户本人特定会话的记忆明细与历史聊天记录"""
+    uid = str(_current_uid(current_user))
+    items = await MemoryIndexService.list_summaries(uid, conversation_id=conversation_id, limit=1)
+    summary = items[0] if items else None
+    if summary:
+        names = await _user_display_names([int(uid)])
+        _attach_user_labels([summary], names, uid)
+        summary.pop("_embedding_vec", None)
+        summary.setdefault("has_embedding", False)
+    history = await memory_service.get_history(uid, conversation_id, limit=history_limit)
+    return {
+        "status": "success",
+        "data": {
+            "summary": summary,
+            "history": history,
+            "has_history": bool(history),
+        },
+    }
+
+
+@router.delete("/my/summaries/{conversation_id}")
+async def delete_my_summary(
+    conversation_id: str,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """物理清除当前用户本人特定会话的记忆摘要与 Redis 历史"""
+    uid = str(_current_uid(current_user))
+    await memory_service.delete_session_memory(uid, conversation_id, include_summary=True)
+    return {"status": "success", "message": "已清除该会话的记忆与聊天历史"}
+
+
+@router.get("/my/ltm")
+async def get_my_ltm(
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """拉取当前用户本人的长期记忆事实与偏好数据"""
+    uid = str(_current_uid(current_user))
+    data = await ltm_service.fetch_memory(uid)
+    return {"status": "success", "data": data}
+
+
+@router.put("/my/ltm")
+async def update_my_ltm(
+    body: LtmUpdateRequest,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """新增或修改当前用户本人的长期偏好键值对"""
+    uid = str(_current_uid(current_user))
+    key = body.key.strip()
+    value = body.value.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="键名不能为空")
+    success = await ltm_service.update_preference(uid, key, value)
+    if not success:
+        raise HTTPException(status_code=500, detail="保存长期偏好失败，请检查 Redis 状态")
+    return {"status": "success", "message": "偏好记忆已更新"}
+
+
+@router.delete("/my/ltm/{key}")
+async def delete_my_ltm(
+    key: str,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """删除当前用户本人的某项长期记忆偏好键"""
+    uid = str(_current_uid(current_user))
+    success = await ltm_service.delete_preference(uid, key)
+    if not success:
+        raise HTTPException(status_code=500, detail="删除偏好失败，请检查 Redis 状态")
+    return {"status": "success", "message": "偏好记忆已删除"}
+
+
+@router.get("/my/daily-summaries")
+async def list_my_daily_summaries(
+    keyword: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """拉取当前用户本人的每日摘要列表"""
+    uid = str(_current_uid(current_user))
+    items = await DailySummaryService.list_daily_summaries(
+        uid,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+    names = await _user_display_names([int(uid)])
+    _attach_user_labels(items, names, uid)
+    for item in items:
+        item.pop("_embedding_vec", None)
+        item["session_count"] = await MemoryIndexService.count_session_summaries_for_day(
+            uid, item.get("date") or ""
+        )
+    return {"status": "success", "data": items}
+
+
+@router.get("/my/daily-summaries/{day}")
+async def get_my_daily_summary_detail(
+    day: str,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """获取当前用户本人特定日期的每日摘要详情与关联会话"""
+    uid = str(_current_uid(current_user))
+    summary = await DailySummaryService.get_daily_summary(uid, day)
+    if summary:
+        names = await _user_display_names([int(uid)])
+        _attach_user_labels([summary], names, uid)
+        summary.pop("_embedding_vec", None)
+    sessions = await MemoryIndexService.list_session_summaries_for_day(uid, day)
+    for item in sessions:
+        item.pop("_embedding_vec", None)
+        item["has_history"] = await memory_service.history_exists(
+            uid, item.get("conversation_id") or ""
+        )
+    return {
+        "status": "success",
+        "data": {
+            "summary": summary,
+            "sessions": sessions,
+        },
+    }
+
+
+@router.delete("/my/daily-summaries/{day}")
+async def delete_my_daily_summary(
+    day: str,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """删除当前用户本人特定日期的每日摘要"""
+    uid = str(_current_uid(current_user))
+    await DailySummaryService.delete_daily_summary(uid, day)
+    return {"status": "success", "message": "已删除每日摘要"}
+
+
+@router.post("/my/daily-summaries/{day}/rebuild")
+async def rebuild_my_daily_summary(
+    day: str,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """重建当前用户本人特定日期的每日摘要"""
+    uid = str(_current_uid(current_user))
+    result = await DailySummaryService.refresh_for_date(uid, day)
+    return {"status": "success", "data": result}
+
+

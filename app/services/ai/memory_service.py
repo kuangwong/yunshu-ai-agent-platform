@@ -238,5 +238,24 @@ class LongTermMemoryService:
             logger.error(f"[LTM] Failed to fetch memory for user {user_id}: {e}")
             return {}
 
+    async def delete_preference(self, user_id: str, key: str) -> bool:
+        """
+        Delete a specific long-term preference/fact for a user.
+        """
+        redis = await get_redis()
+        if not redis:
+            logger.warning("[LTM] Redis client not available for delete_preference")
+            return False
+
+        redis_key = self._get_key(user_id)
+        try:
+            await redis.hdel(redis_key, key)
+            logger.info(f"[LTM] Deleted key '{key}' for user '{user_id}' in Redis.")
+            return True
+        except Exception as e:
+            logger.error(f"[LTM] Failed to delete preference for key {key}: {e}")
+            return False
+
+
 ltm_service = LongTermMemoryService()
 

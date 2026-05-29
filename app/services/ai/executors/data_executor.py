@@ -52,6 +52,7 @@ class DataQueryExecutor(BaseExecutor):
         self._ratio_anomaly_feedback_sent = False
         self._schema_fetched_ok = False
         self._schema_no_authorized = False
+        self._metadata_unavailable = False
         self._sql_attempted = False
         self._sql_succeeded = False
         self._sql_after_schema_nudge_sent = False
@@ -464,6 +465,7 @@ class DataQueryExecutor(BaseExecutor):
         self._ratio_anomaly_feedback_sent = False
         self._schema_fetched_ok = False
         self._schema_no_authorized = False
+        self._metadata_unavailable = False
         self._sql_attempted = False
         self._sql_succeeded = False
         self._sql_after_schema_nudge_sent = False
@@ -892,7 +894,12 @@ class DataQueryExecutor(BaseExecutor):
 
                 # --- [新增] 针对元数据检索日志的精简与增强逻辑 ---
                 if tool_call['name'] == "get_dataset_schema":
-                    if tool_status == "success":
+                    # 元数据服务不可用（如 RAGFlow 502）：禁止继续臆造 SQL，必须硬终止本次查询。
+                    schema_out_str = tool_output if isinstance(tool_output, str) else json.dumps(tool_output, ensure_ascii=False)
+                    if "[元数据服务不可用]" in schema_out_str:
+                        self._metadata_unavailable = True
+                        tool_status = "error"
+                    if tool_status == "success" and not self._metadata_unavailable:
                         self._schema_fetched_ok = True
                         if self._is_no_authorized_schema(tool_output):
                             self._schema_no_authorized = True
@@ -984,7 +991,20 @@ class DataQueryExecutor(BaseExecutor):
                 if tool_call["name"] == "update_dashboard_context" and tool_status == "success":
                     yield {"type": "context_update", "data": tool_call["args"]}
                 langchain_messages.append(ToolMessage(content=str(feedback), tool_call_id=tool_call["id"]))
-                
+
+                # 元数据服务不可用：硬终止，直接给出明确失败结论，绝不进入 execute_sql_query 臆造查询。
+                if self._metadata_unavailable:
+                    yield {
+                        "type": "log",
+                        "id": f"abort_{uuid.uuid4().hex[:8]}",
+                        "title": "⛔ 终止：元数据服务不可用",
+                        "details": "元数据检索服务（RAGFlow）不可用，已终止本次数据查询，避免编造表结构或 SQL。",
+                        "status": "error",
+                        "execution_time_ms": 0,
+                    }
+                    yield {"content": "⚠️ 元数据检索服务（RAGFlow）当前不可用，暂时无法获取数据集结构信息，因此无法完成本次数据查询。请稍后重试或联系管理员。"}
+                    return
+
                 # [优化2] get_dataset_schema 成功返回后，立即注入经验库案例二次提醒
                 # 让模型在看完实时 Schema 数据后马上重新聚焦到参考案例的 SQL 逻辑
                 if (tool_call["name"] == "get_dataset_schema" and tool_status == "success"

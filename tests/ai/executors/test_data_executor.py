@@ -131,6 +131,61 @@ async def test_data_executor_full_flow(data_config, mock_tool_schema, mock_tool_
         assert "Final Response" in content or "The count is 10." in content
 
 @pytest.mark.asyncio
+async def test_data_executor_aborts_when_metadata_unavailable(data_config, mock_tool_schema, mock_tool_sql):
+    """元数据服务不可用（502）时应硬终止：绝不调用 execute_sql_query，并返回明确失败提示。"""
+    executor = DataQueryExecutor(config=data_config, trace_id="test-md-unavailable", trace_buffer=[])
+
+    # get_dataset_schema 返回「不可用」哨兵文案
+    mock_tool_schema.ainvoke.return_value = (
+        "[元数据服务不可用] 元数据检索服务（RAGFlow）当前无法访问，暂时无法获取数据集结构信息。"
+        "\n（错误详情：RAGFlow HTTP Error 502: ）"
+    )
+
+    msg_1_schema = AIMessage(
+        content="Checking schema.",
+        tool_calls=[{"name": "get_dataset_schema", "args": {"keywords": "用户表"}, "id": "call_schema"}]
+    )
+    # 即便模型“想”执行 SQL，执行器也应在拿到不可用结果后提前终止，永不触达此步
+    msg_2_sql = AIMessage(
+        content="I'll just query anyway.",
+        tool_calls=[{"name": "execute_sql_query", "args": {"sql": "SELECT * FROM 测试表", "data_source": "x", "dataset_name": "y"}, "id": "call_sql"}]
+    )
+    mock_llm = MockLLM([msg_1_schema, msg_2_sql])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", new_callable=AsyncMock) as mock_get_menu, \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", new_callable=AsyncMock) as mock_get_tools, \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tool", new_callable=AsyncMock) as mock_get_tool, \
+         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config_get, \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", new_callable=AsyncMock) as mock_search:
+
+        mock_search.return_value = []
+        mock_get_llm.return_value = mock_llm
+        mock_get_menu.return_value = ""
+        mock_get_tools.return_value = [mock_tool_schema, mock_tool_sql]
+
+        def side_effect_get_tool(name):
+            if name == "get_dataset_schema": return mock_tool_schema
+            if name == "execute_sql_query": return mock_tool_sql
+            return None
+        mock_get_tool.side_effect = side_effect_get_tool
+        mock_config_get.return_value = "5"
+
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "用户表有多少数据"}]):
+            events.append(chunk)
+
+    # 关键断言：SQL 工具从未被调用（没有臆造查询）
+    mock_tool_sql.ainvoke.assert_not_called()
+    # 终止提示已展示
+    titles = [e.get("title", "") for e in events if e.get("type") == "log"]
+    assert any("终止" in t for t in titles)
+    # 最终内容是「服务不可用」而非编造结论
+    content = "".join(e["content"] for e in events if "content" in e)
+    assert "不可用" in content
+
+
+@pytest.mark.asyncio
 async def test_data_executor_get_dataset_schema_truncation(data_config, mock_tool_schema):
     """测试 get_dataset_schema 工具输出的精简（隐藏 columns）和安全截断逻辑"""
     executor = DataQueryExecutor(config=data_config, trace_id="test-truncation", trace_buffer=[])

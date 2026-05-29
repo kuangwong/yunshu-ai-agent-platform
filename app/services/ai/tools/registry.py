@@ -16,7 +16,7 @@ from app.services.ai.tools.notification_tools import send_dingtalk_message, send
 from app.services.ai.tools.jira_tools import JiraSearchTool, JiraCreateIssueTool, JiraGetProjectsTool
 from app.services.ai.tools.system_executive_tools import (
     read_local_file, write_local_file, execute_system_command, manage_system_process,
-    create_skills
+    create_skills, list_available_skills, read_skill_instruction
 )
 from app.services.ai.tools.advanced_auxiliary_tools import (
     sqlite_scratchpad, directory_tree_navigator, web_renderer_and_snapshot, code_syntax_linter,
@@ -74,6 +74,8 @@ class ToolRegistry:
         "execute_system_command": execute_system_command,
         "manage_system_process": manage_system_process,
         "create_skills": create_skills,
+        "list_available_skills": list_available_skills,
+        "read_skill_instruction": read_skill_instruction,
         # Register Advanced Auxiliary Tools
         "sqlite_scratchpad": sqlite_scratchpad,
         "directory_tree_navigator": directory_tree_navigator,
@@ -237,6 +239,8 @@ class ToolRegistry:
             fetch_user_long_term_memory,
             memory_search,
             create_skills,
+            list_available_skills,
+            read_skill_instruction,
             system_http_request,
             fetch_static_web_url,
             web_renderer_and_snapshot,

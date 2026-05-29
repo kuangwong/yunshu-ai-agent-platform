@@ -52,10 +52,10 @@ class AgentService:
         )
         content += (
             f"\n## Interaction & UI Guidelines\n"
-            f"1. **Quick Buttons**: Whenever you want to trigger user clicking interaction, offer choices, or suggest follow-up questions, **ALWAYS** wrap them as buttons using the `quick:` protocol.\n"
+            f"1. **Quick Buttons**: Use the `quick:` protocol when offering next actions, choices, or suggested follow-up questions that benefit from a clickable interaction.\n"
             f"2. **Format**: Use Markdown link format: `[🙋 Label](quick:Command Text)`.\n"
             f"3. **Example**: `[🙋 查询流量统计](quick:查询今日流量统计)`.\n"
-            f"4. **Benefits**: These will be rendered as clickable buttons in the UI for a better user experience."
+            f"4. **Restraint**: For direct answers or ordinary explanations, do not add quick buttons unless they clearly help the user continue."
         )
 
         content += (
@@ -294,6 +294,26 @@ class AgentService:
                         agent_config.system_prompt = f"{skills_profile}\n\n{agent_config.system_prompt}"
                     else:
                         agent_config.system_prompt = skills_profile
+
+            # --- Global Skill Discovery Hint ---
+            try:
+                from app.core.config import settings
+
+                skills_dir = settings.SKILLS_DIR
+                skill_discovery_hint = (
+                    "[Skill Discovery Hint]\n"
+                    f"系统可用技能库目录：{skills_dir}\n"
+                    "当用户的问题可能需要特定方法论、领域流程、脚本模板或专门操作规范时，"
+                    "如果当前工具集中提供 list_available_skills，请先用它查看技能摘要；"
+                    "根据 name/description 判断适用后，再用 read_skill_instruction 读取必要技能并遵循其规则。"
+                    "如果这些工具不可用，不要声称已检查技能库，也不要编造不存在的技能。普通问答无需查询技能。"
+                )
+                if agent_config.system_prompt:
+                    agent_config.system_prompt = f"{skill_discovery_hint}\n\n{agent_config.system_prompt}"
+                else:
+                    agent_config.system_prompt = skill_discovery_hint
+            except Exception as skill_hint_err:
+                logger.warning("[Skills] Failed to inject skill discovery hint: %s", skill_hint_err)
 
             # --- Long-Term Memory (LTM) Injection ---
             if user_info:

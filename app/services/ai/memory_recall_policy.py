@@ -4,9 +4,10 @@ from typing import Any, List, Optional
 
 CROSS_SESSION_MEMORY_SYSTEM_HINT = """[跨会话记忆检索]
 当用户询问「今天/最近/上次/之前/我们聊了什么」「有没有讨论过」「回顾历史对话」等跨会话或过往对话内容时：
-1. 必须先调用工具 memory_search（scope=summary，query 填用户问题的关键词；需要原文明细再用 scope=history 并带上 conversation_id）。
+1. 如果当前工具集中提供 memory_search，必须先调用该工具（scope=summary，query 填用户问题的关键词；需要原文明细再用 scope=history 并带上 conversation_id）。
 2. 仅依据 memory_search 的返回组织回答；若工具返回为空，如实说明「暂无跨会话摘要记录」，不要声称从未聊过。
-3. 不要把「当前会话 messages 为空」等同于「用户从未与你对话」——跨会话摘要可能在其他 conversation_id 中。"""
+3. 如果当前工具集中没有 memory_search，不要声称已经调用或检查了 memory_search，也不要编造历史内容；应如实说明当前无法检索跨会话记忆。
+4. 不要把「当前会话 messages 为空」等同于「用户从未与你对话」——跨会话摘要可能在其他 conversation_id 中。"""
 
 MEMORY_SEARCH_CORRECTION_MSG = (
     "【必须执行】用户正在询问跨会话或历史对话内容。"

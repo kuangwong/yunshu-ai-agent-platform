@@ -4,6 +4,8 @@ import logging
 import asyncio
 import subprocess
 import psutil
+import json
+import re
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,102 @@ def validate_safe_path(path: str) -> str:
         raise ValueError(f"安全拦截：路径越界！仅允许访问 data 及其子目录下的文件。当前请求路径为 {path}")
         
     return abs_path
+
+
+def _validate_skill_id(skill_id: str) -> str:
+    if not skill_id or "/" in skill_id or "\\" in skill_id or ".." in skill_id:
+        raise ValueError("非法技能 ID 格式。禁止包含路径分隔符或穿越符。")
+    if not re.match(r"^[a-zA-Z0-9_-]+$", skill_id):
+        raise ValueError("非法技能 ID 格式。仅允许包含英文字母、数字、中划线和下划线。")
+    return skill_id
+
+
+def _parse_skill_frontmatter(skill_id: str, skill_md_path: str) -> dict:
+    meta = {
+        "id": skill_id,
+        "name": skill_id,
+        "description": "暂无技能描述",
+    }
+    if not os.path.exists(skill_md_path):
+        return meta
+
+    try:
+        with open(skill_md_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(8192)
+        match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+        if not match:
+            return meta
+        frontmatter = match.group(1)
+        name_match = re.search(r"^name:\s*(.+)$", frontmatter, re.MULTILINE)
+        desc_match = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
+        if name_match:
+            meta["name"] = name_match.group(1).strip().strip("\"'")
+        if desc_match:
+            meta["description"] = desc_match.group(1).strip().strip("\"'")
+    except Exception as e:
+        logger.warning("[Skills] Failed to parse frontmatter for %s: %s", skill_id, e)
+    return meta
+
+
+@tool
+def list_available_skills() -> str:
+    """
+    列出当前平台技能库中可用的技能摘要，供智能体按 name/description 判断是否需要读取具体技能。
+    只返回技能 ID、名称和描述，不读取完整 SKILL.md。
+    """
+    try:
+        from app.core.config import settings
+
+        skills_dir = settings.SKILLS_DIR
+        if not os.path.exists(skills_dir):
+            return "[]"
+
+        skills = []
+        for item in sorted(os.listdir(skills_dir)):
+            if item.startswith("."):
+                continue
+            item_path = os.path.join(skills_dir, item)
+            if not os.path.isdir(item_path):
+                continue
+            try:
+                _validate_skill_id(item)
+            except ValueError:
+                logger.warning("[Skills] Ignored invalid skill directory name: %s", item)
+                continue
+            skill_md_path = os.path.join(item_path, "SKILL.md")
+            skills.append(_parse_skill_frontmatter(item, skill_md_path))
+
+        return json.dumps(skills, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"错误：列出技能失败，原因: {str(e)}"
+
+
+@tool
+def read_skill_instruction(skill_id: str) -> str:
+    """
+    读取指定技能的 SKILL.md 指令内容。调用前应先使用 list_available_skills 确认技能存在且适用。
+
+    Args:
+        skill_id: 技能唯一 ID，仅允许英文、数字、中划线及下划线。
+    """
+    try:
+        from app.core.config import settings
+
+        safe_skill_id = _validate_skill_id(skill_id)
+        skills_dir = os.path.abspath(settings.SKILLS_DIR)
+        skill_md_path = os.path.abspath(os.path.join(skills_dir, safe_skill_id, "SKILL.md"))
+        if os.path.commonpath([skills_dir, skill_md_path]) != skills_dir:
+            return "错误：技能路径越界。"
+        if not os.path.exists(skill_md_path):
+            return f"错误：技能 {safe_skill_id} 不存在或缺少 SKILL.md。"
+
+        with open(skill_md_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(262144)
+        return f"[技能读取成功: {safe_skill_id}/SKILL.md]\n{content}"
+    except ValueError as e:
+        return f"错误：非法技能 ID，{str(e)}"
+    except Exception as e:
+        return f"错误：读取技能失败，原因: {str(e)}"
 
 @tool
 def read_local_file(path: str, offset: int = 0, limit: int = 262144, tail: bool = False) -> str:
@@ -271,4 +369,3 @@ def create_skills(skill_id: str, name: str, description: str, skill_md_content: 
         return f"成功：技能 {skill_id} 创建成功。SKILL.md 规范文件已物理写入路径 {skill_md_path}。"
     except Exception as e:
         return f"错误：创建技能失败，原因: {str(e)}"
-

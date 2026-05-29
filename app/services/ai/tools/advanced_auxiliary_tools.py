@@ -333,11 +333,79 @@ async def web_search_baidu(query: str, max_results: int = 6) -> str:
         # 5. 格式化输出为大模型极易理解的精美 Markdown
         if not parsed_results:
             return "检索完成，但没有找到可以解析的高质量网页结果。"
-            
+
+        # 内部并发提取函数，跟随重定向并拉取页面文本
+        async def _extract_content_from_baidu_link(baidu_link: str) -> Optional[dict]:
+            try:
+                import httpx
+                from bs4 import BeautifulSoup
+                from app.services.ai.tools.system_tools import validate_url
+                
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                async with httpx.AsyncClient(timeout=6.0, trust_env=False) as client:
+                    response = await client.get(baidu_link, headers=headers, follow_redirects=True)
+                    real_url = str(response.url)
+                    # 安全阻断校验
+                    validate_url(real_url)
+                    
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    for script_or_style in soup(["script", "style", "header", "footer", "nav", "iframe"]):
+                        script_or_style.extract()
+                        
+                    text_lines = [line.strip() for line in soup.get_text().splitlines() if line.strip()]
+                    cleaned_text = "\n".join(text_lines)
+                    
+                    if len(cleaned_text) > 600:
+                        cleaned_text = cleaned_text[:600] + "\n...(余下网页正文已省略)"
+                        
+                    return {
+                        "real_url": real_url,
+                        "content": cleaned_text
+                    }
+            except Exception as err:
+                logger.warning(f"[web_search_baidu] Failed to extract from {baidu_link}: {err}")
+                return None
+
+        # 对 Top-2 的加密跳转链接发起高并发内容提取
+        import asyncio
+        extraction_tasks = []
+        for item in parsed_results[:2]:
+            extraction_tasks.append(_extract_content_from_baidu_link(item["link"]))
+
+        extraction_results = []
+        if extraction_tasks:
+            extraction_results = await asyncio.gather(*extraction_tasks)
+
+        for idx, ext_res in enumerate(extraction_results):
+            if ext_res:
+                parsed_results[idx]["real_url"] = ext_res["real_url"]
+                parsed_results[idx]["extracted_content"] = ext_res["content"]
+
         md_lines = [f"### 🔍 百度搜索结果 (关于: '{query}')\n"]
         for idx, item in enumerate(parsed_results, 1):
-            md_lines.append(f"{idx}. **[{item['title']}]({item['link']})**")
+            display_link = item.get("real_url") or item["link"]
+            md_lines.append(f"{idx}. **[{item['title']}]({display_link})**")
             md_lines.append(f"   > 📝 摘要: {item['abstract']}\n")
+
+        # 追加输出深度提炼的正文
+        extracted_sections = []
+        for idx, item in enumerate(parsed_results[:2], 1):
+            if item.get("extracted_content"):
+                extracted_sections.append(
+                    f"#### 📄 网页 {idx}: {item['title']}\n"
+                    f"* **真实源链接**: {item['real_url']}\n"
+                    f"* **网页提炼正文 (前600字)**:\n"
+                    f"```text\n"
+                    f"{item['extracted_content']}\n"
+                    f"```"
+                )
+
+        if extracted_sections:
+            md_lines.append("\n---\n")
+            md_lines.append("### 📄 自动提取的网页全文提炼 (Top-2 网页深度正文)\n")
+            md_lines.extend(extracted_sections)
             
         return "\n".join(md_lines)
         

@@ -335,6 +335,78 @@ class AgentService:
             except Exception as mem_hint_err:
                 logger.warning("[Memory] Failed to inject cross-session recall hint: %s", mem_hint_err)
 
+            # --- Dynamic Auto-Memory Ingest (Active Memory) ---
+            if user_info and user_query:
+                u_id = user_info.get("user_id", user_info.get("id"))
+                if u_id:
+                    try:
+                        from app.services.memory_config_service import MemoryConfigService
+                        if await MemoryConfigService.get_bool("memory_service_enabled", True):
+                            from app.services.ai.tools.memory_search_tool import parse_date_from_query
+                            from app.services.ai.daily_summary_service import DailySummaryService
+                            from app.services.ai.memory_index_service import MemoryIndexService
+                            
+                            uid = str(u_id)
+                            target_day = parse_date_from_query(user_query)
+                            
+                            preloaded_memories = []
+                            
+                            # 1. 相对/绝对日期精确匹配
+                            if target_day:
+                                # a. 每日摘要
+                                d_summary = await DailySummaryService.get_daily_summary(uid, target_day)
+                                if d_summary:
+                                    preloaded_memories.append(
+                                        f"### 目标日期 ({target_day}) 的日终总结/每日摘要:\n"
+                                        f"- 摘要内容: {d_summary.get('summary', '')}\n"
+                                        f"- 讨论主题: {d_summary.get('topics', '[]')}\n"
+                                        f"- 达成决策: {d_summary.get('decisions', '[]')}"
+                                    )
+                                # b. 当天发生的具体会话摘要
+                                d_sessions = await MemoryIndexService.list_session_summaries_for_day(uid, target_day)
+                                if d_sessions:
+                                    sess_lines = []
+                                    for idx, s in enumerate(d_sessions, 1):
+                                        sess_lines.append(
+                                            f"  {idx}. 会话标题: **{s.get('title', '未命名')}** (ID: {s.get('conversation_id')})\n"
+                                            f"     摘要: {s.get('summary', '')}"
+                                        )
+                                    preloaded_memories.append(
+                                        f"### 目标日期 ({target_day}) 的具体会话记录:\n" + "\n".join(sess_lines)
+                                    )
+                            
+                            # 2. 模糊历史回忆意图匹配
+                            else:
+                                is_recall_intent = any(w in user_query for w in ["上次", "上一次", "之前", "以前", "历史", "回顾", "聊了什么", "聊了啥", "说过什么", "说过啥", "记忆", "往期", "会话"])
+                                if is_recall_intent:
+                                    recent_sessions = await MemoryIndexService.list_summaries(uid, limit=3)
+                                    if recent_sessions:
+                                        sess_lines = []
+                                        for idx, s in enumerate(recent_sessions, 1):
+                                            sess_lines.append(
+                                                f"  {idx}. 会话标题: **{s.get('title', '未命名')}** (ID: {s.get('conversation_id')})\n"
+                                                f"     摘要: {s.get('summary', '')}"
+                                            )
+                                        preloaded_memories.append(
+                                            "### 预加载的最近活跃会话记忆:\n" + "\n".join(sess_lines)
+                                        )
+                            
+                            # 3. 拼接注入 System Prompt 头部
+                            if preloaded_memories:
+                                memory_preloaded_str = (
+                                    f"[System Preloaded Memories]\n"
+                                    f"这是系统检测到用户的历史回忆意图，预先为您回忆并调阅出的关联历史记忆。你必须在当前会话的回答中予以首要融合参考，避免对用户表现出记忆丢失：\n\n"
+                                    + "\n\n".join(preloaded_memories)
+                                    + "\n============================================\n"
+                                )
+                                if agent_config.system_prompt:
+                                    agent_config.system_prompt = f"{memory_preloaded_str}\n\n{agent_config.system_prompt}"
+                                else:
+                                    agent_config.system_prompt = memory_preloaded_str
+                                logger.info(f"[ActiveMemory] Successfully preloaded memory context for user {u_id}")
+                    except Exception as recall_err:
+                        logger.warning(f"[ActiveMemory] Failed to preload memory context: {recall_err}", exc_info=True)
+
             # --- User Identity Injection (Universal) ---
             if user_info:
                 id_msg = await self._build_user_context_msg(user_info)

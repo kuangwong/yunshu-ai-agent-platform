@@ -56,13 +56,22 @@ class AgentContextManager:
                         last_user_msg = messages[i]["content"]
                         history = messages[:i]
                         break
-                
+
+                # Session affinity: find which agent handled the previous turn
+                # so follow-up / coreference queries can stick to it.
+                last_agent_name = None
+                for msg in reversed(history):
+                    if msg.get("role") == "assistant" and msg.get("agent_name"):
+                        last_agent_name = msg["agent_name"]
+                        break
+
                 route_result = await router_service.route_query(
                     last_user_msg, 
                     history=history,
                     enable_multi_agent=enable_multi_agent,
                     user_id=route_user_id,
                     is_admin=route_is_admin,
+                    last_agent_name=last_agent_name,
                 )
                 route_details = route_result
                 

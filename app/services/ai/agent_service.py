@@ -566,7 +566,9 @@ class AgentService:
             # 5. Save Assistant Response to Memory
             if conversation_id and full_response_content:
                 u_id = user_info.get("user_id") if user_info else None
-                asyncio.create_task(memory_service.add_message(u_id, conversation_id, "assistant", full_response_content, trace_id=trace_id))
+                # 记录处理本轮的智能体 name(slug)，供下一轮路由做会话粘性
+                handled_by = getattr(agent_config, "agent_name", None) if agent_config else None
+                asyncio.create_task(memory_service.add_message(u_id, conversation_id, "assistant", full_response_content, trace_id=trace_id, agent_name=handled_by))
 
         except Exception as e:
             logger.error(f"Execution Error: {str(e)}", exc_info=True)

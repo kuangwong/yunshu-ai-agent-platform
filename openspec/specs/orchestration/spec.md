@@ -37,7 +37,7 @@ async def route_query(self, user_input: str, history: Optional[List[dict]] = Non
 - **history**: 对话历史列表，格式为 `[{'role': 'user', 'content': '...'}, ...]`。用于增强语义理解。
 
 #### Configuration
-- **System Prompt**: 存储在 `system_configs` 表中 (`router_system_prompt`)，定义了路由器的角色和规则。
+- **System Prompt**: 内置于代码 `RouterService.DEFAULT_SYSTEM_PROMPT`，定义了路由器的角色和规则。不再从数据库 `system_configs` 读取，也不在"提示词管理"中暴露，避免运营误改导致路由失准。
 - **Agent Metadata**: 动态从 `agents` 表加载，作为 Prompt 的上下文。
 
 ## History

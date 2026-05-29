@@ -22,48 +22,51 @@ class LLMRouterResponse(BaseModel):
 
 class RouterService:
 
-    DEFAULT_SYSTEM_PROMPT = """你是一个智能体平台的智能路由助手。
-你的任务是根据用户的输入、智能体描述以及对话上下文，选择最合适的智能体。
+    DEFAULT_SYSTEM_PROMPT = """# Role: 云枢智能体平台 · 智能路由助手 (Smart Router V7 · 清单驱动)
 
-### 可用智能体 (Available Agents)
+你是智能体平台的"分诊台"。任务：依据【可用智能体清单】+【对话历史与上一轮路由】+【用户最新输入】，选出最合适的智能体。
+你只输出路由决策 JSON，绝不回答业务问题本身。
+
+## 1. 可用智能体清单 (唯一可选范围)
 {agents_context}
 
-### 对话历史 (Conversation History)
+## 2. 对话历史与上一轮路由
 {history_context}
 
-### 路由推理逻辑 (Reasoning Steps)
+## 3. 决策步骤 (Reasoning Steps)
 
-1. **指代消解 (Coreference Resolution)**: 
-   - 检查用户输入是否包含指代词（如“它”、“这个”、“那里的”、“列表里第一个”）。
-   - 结合历史记录，确定这些词具体指向的对象。
-   - **示例**: 上文在说“上海机房”，用户问“它有多少服务器？”，应识别出“它”即“上海机房”。
+### Step 1 指代消解 (Coreference Resolution)
+- 若输入含"它/这个/那个/刚才/上面/列表里第一个/继续/再/还有/也"等指代或省略主语，先结合历史还原其真实意图，再判断。
+- 示例：上文在说"上海机房"，用户问"它有多少服务器？"，应识别出"它"=上海机房。
 
-2. **意图领域识别 (Domain Identification)**:
-   - **ChatBI (数据专家域)**: 涉及数据库查询、统计、明细、报表、状态监控。
-   - **DevOps Expert (运维经验域)**: 涉及故障处理、SOP、工单状态、Jira 任务。
-   - **Knowledge Base (非结构化知识)**: 涉及文档、规章制度、SOP流程、定义解释。
-   - **General Chat (通用/闲聊)**: 招呼、介绍、感谢、或无法匹配专业领域的请求。
+### Step 2 会话连续性优先 (Session Continuity) — 重要
+- 若本轮是对上一轮的追问/补充/指代（如"可视化一下""再查下""那它呢""展开讲讲"），且【没有】出现明确属于其它智能体的新领域意图，则【优先沿用上一轮处理的智能体】。
+- 仅当用户明确转向另一个领域时，才切换到别的智能体。
 
-3. **复合意图判定 (Multi-Intent Detection)**:
-   - **单一意图**: 用户只询问一个领域的问题。
-   - **复合意图**: 用户的问题明确跨越了多个领域（如：既要查数据又要查文档），且这些任务可以并行处理。
-   - **处理**: 识别出一个 `agent_name`（主要意图）和若干个 `secondary_agents`。
+### Step 3 语义匹配 (Semantic Matching)
+- 逐一对照清单中每个智能体的 name / 中文名 / Description / Capabilities，选出职责与用户真实意图最吻合的那一个。
+- 你对"领域/职责"的判断必须来自上面清单里的描述，【禁止】脑补清单之外的智能体或领域。
 
-### 输出格式 (Output Format)
-必须返回纯 JSON，严禁包含 Markdown 标记。
-{{
-  "thought": "在此处写下你的思维过程：1. 消解指代 2. 识别意图领域(是否包含多个) 3. 解释为何选择这些智能体",
-  "agent_name": "主要智能体名称",
-  "secondary_agents": ["次要智能体名称1", "次要智能体名称2"],
+### Step 4 复合意图判定 (Multi-Intent) — 保守
+- 仅当用户问题明确跨越两个不同智能体的职责、且可并行处理时，才填写 secondary_agents；否则 secondary_agents 必须为空（如无必要，勿增实体）。
+
+## 4. 硬性约束 (Hard Constraints)
+- agent_name 与 secondary_agents 中的每个值，【必须】与清单中某个智能体的 name 字段完全一致（英文 slug，如 chat-bi）。严禁使用中文名、领域名或清单里不存在的名称。
+- 当没有任何业务智能体明显匹配（纯打招呼/闲聊/无法归类）时，选择兜底智能体 general-chat。
+- confidence 表示你对"主智能体选择"的把握：能明确匹配某业务智能体时应 >= 0.7；只有完全无法归类时才走 general-chat 并给较低分。
+
+## 5. 输出格式 (Output Format)
+必须返回纯 JSON，严禁包含 Markdown 标记或额外文字。
+{
+  "thought": "1.指代消解结果 2.是否沿用上一轮及理由 3.命中清单里哪个/哪些 name 及理由",
+  "agent_name": "清单中的某个 name",
+  "secondary_agents": [],
   "confidence": 0.95
-}}
+}
 
-### 典型示例 (Examples)
-User: "机房 PUE 是什么?"
-Output: {{"thought": "用户询问定义，属于知识库范畴。", "agent_name": "knowledge-base", "secondary_agents": [], "confidence": 0.99}}
-
-User: "帮我查下机房负载，顺便看看昨天的异常工单"
-Output: {{"thought": "包含数据查询(负载)和工单查询(异常工单)两个意图。", "agent_name": "chat-bi", "secondary_agents": ["devops-expert"], "confidence": 0.96}}"""
+## 6. 示例 (名称以"清单"为准，下例仅示意格式)
+- 用户："你好" -> {"thought": "纯打招呼，无业务意图。", "agent_name": "general-chat", "secondary_agents": [], "confidence": 0.9}
+- 上一轮由 data-agent 处理，用户："那再画个柱状图" -> {"thought": "追问且无新领域意图，沿用上一轮 data-agent。", "agent_name": "data-agent", "secondary_agents": [], "confidence": 0.92}"""
 
     def __init__(self):
         self._agents_cache: List[dict] = []
@@ -83,12 +86,15 @@ Output: {{"thought": "包含数据查询(负载)和工单查询(异常工单)两
         enable_multi_agent: bool = True,
         user_id: Optional[int] = None,
         is_admin: bool = False,
+        last_agent_name: Optional[str] = None,
     ) -> Optional[RouteResult]:
         """
         Use LLM to select the most appropriate agent(s) for the user query.
+
+        last_agent_name: 上一轮处理本会话的智能体 name(slug)，用于会话粘性，
+        让追问/指代类输入优先沿用上一轮智能体，降低多轮误路由。
         """
         import time
-        from app.services.config_service import ConfigService
 
         current_time = time.time()
         
@@ -115,87 +121,171 @@ Output: {{"thought": "包含数据查询(负载)和工单查询(异常工单)两
             return None
 
         # 2. Unified LLM Routing
-        system_prompt = await ConfigService.get("router_system_prompt", self.DEFAULT_SYSTEM_PROMPT)
+        # 路由提示词内置在代码中（DEFAULT_SYSTEM_PROMPT），不再从数据库配置读取，
+        # 避免运营在配置页误改导致路由失准。
+        system_prompt = self.DEFAULT_SYSTEM_PROMPT
         agents_str = self._build_agents_context(agents_metadata)
-        
-        history_str = ""
-        if history:
-            history_str = "Conversation History (recent rounds):\n"
-            recent_history = history[-6:] if len(history) > 6 else history
-            for msg in recent_history:
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")
-                if role != "system":
-                    history_str += f"- {role.capitalize()}: {content}\n"
-            history_str += "\nAnalyze the user's latest query in the context of this conversation."
+        history_str = self._build_history_context(history, last_agent_name)
         
         formatted_prompt = system_prompt.replace("{agents_context}", agents_str).replace("{history_context}", history_str)
-        
-        try:
-            llm = await get_llm_async(temperature=0.0) # Use deterministic output
-            messages = [
-                SystemMessage(content=formatted_prompt),
-                HumanMessage(content=f"Latest User Query: {user_input}")
-            ]
-            
-            response = await llm.ainvoke(messages)
-            content = response.content.strip()
-            
-            # Remove potential markdown code blocks
-            if content.startswith("```"):
-                lines = content.splitlines()
-                if lines[0].startswith("```"):
-                    content = "\n".join(lines[1:-1]) if lines[-1].startswith("```") else "\n".join(lines[1:])
-            content = content.strip()
-            
-            logger.info(f"LLM Routing Response: {content}")
-            
+        messages = [
+            SystemMessage(content=formatted_prompt),
+            HumanMessage(content=f"Latest User Query: {user_input}")
+        ]
+
+        # 3. Invoke LLM with one retry to avoid silently dropping a valid
+        # business query to general-chat on transient errors / malformed JSON.
+        last_error: Optional[Exception] = None
+        for attempt in range(2):
             try:
-                result_json = json.loads(content)
-            except json.JSONDecodeError:
-                # Fallback for very simple cleaning if LLM adds text before/after JSON
-                import re
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    result_json = json.loads(json_match.group())
-                else:
-                    raise
+                llm = await get_llm_async(temperature=0.0)  # Use deterministic output
+                response = await llm.ainvoke(messages)
+                content = (getattr(response, "content", "") or "").strip()
+                result_json = self._parse_router_json(content)
+                if result_json is None:
+                    raise ValueError(f"Unparseable router response: {content[:200]!r}")
 
-            confidence = result_json.get('confidence', 0.5)
-            target_name = result_json.get("agent_name")
-            secondary_names = result_json.get("secondary_agents", [])
-            reasoning = result_json.get("thought") or result_json.get("reasoning", "")
-            
-            # --- Confidence & Fallback Mechanism ---
-            if confidence < 0.6:
-                logger.info(f"Low confidence ({confidence}) for '{target_name}'. Falling back to General Chat.")
-                return self._fallback_to_general(agents_metadata, f"Low confidence ({confidence}) for agent selection. Reason: {reasoning}")
+                logger.info(f"LLM Routing Response (attempt {attempt + 1}): {content}")
+                return self._build_route_result(result_json, agents_metadata, enable_multi_agent)
+            except Exception as e:  # noqa: BLE001 - retry then fall back
+                last_error = e
+                logger.warning(f"Routing attempt {attempt + 1} failed: {e}")
 
-            # Resolve primary name back to ID
-            target_agent = next((a for a in agents_metadata if a['name'].lower() == str(target_name).lower()), None)
-            
-            if target_agent:
-                # Resolve secondary names back to IDs if multi-agent is enabled
-                resolved_secondaries = []
-                if enable_multi_agent and secondary_names:
-                    for s_name in secondary_names:
-                        s_agent = next((a for a in agents_metadata if a['name'].lower() == str(s_name).lower()), None)
-                        if s_agent and s_agent['id'] != target_agent['id']:
-                            resolved_secondaries.append(s_agent['id'])
+        logger.error(f"Routing failed after retries: {last_error}. Falling back to General Chat.")
+        return self._fallback_to_general(agents_metadata, f"Routing exception ({str(last_error)})")
 
-                return RouteResult(
-                    agent_id=target_agent['id'],
-                    secondary_agents=resolved_secondaries,
-                    confidence=confidence,
-                    reasoning=reasoning
-                )
-            else:
-                logger.warning(f"Router suggested unknown agent: {target_name}. Falling back to General Chat.")
-                return self._fallback_to_general(agents_metadata, f"Router returned unknown agent: {target_name}")
-                
-        except Exception as e:
-            logger.error(f"Routing failed: {e}. Falling back to General Chat.")
-            return self._fallback_to_general(agents_metadata, f"Routing exception ({str(e)})")
+    def _build_history_context(self, history: Optional[List[dict]], last_agent_name: Optional[str]) -> str:
+        """Build a denoised, truncated history context plus session-affinity hint.
+
+        - 注入"上一轮处理者"，让追问/指代类输入可沿用上一轮智能体。
+        - 历史逐条截断并剥离表格/图表/代码块，避免大段业务输出淹没路由信号。
+        """
+        parts: List[str] = []
+
+        if last_agent_name:
+            parts.append(
+                "### 上一轮路由 (Previous Turn)\n"
+                f"上一轮由智能体 `{last_agent_name}` 处理。\n"
+                f"若本轮为追问/指代/省略主语且无明确的新领域意图，应优先沿用 `{last_agent_name}`。"
+            )
+
+        condensed = self._condense_history(history)
+        if condensed:
+            parts.append(
+                "Conversation History (recent rounds):\n"
+                + "\n".join(condensed)
+                + "\n\nAnalyze the user's latest query in the context of this conversation."
+            )
+
+        return "\n\n".join(parts)
+
+    def _condense_history(self, history: Optional[List[dict]], max_rounds: int = 6, max_chars: int = 200) -> List[str]:
+        if not history:
+            return []
+        recent = history[-max_rounds:] if len(history) > max_rounds else history
+        lines: List[str] = []
+        for msg in recent:
+            role = msg.get("role", "unknown")
+            if role == "system":
+                continue
+            content = self._strip_noise(msg.get("content", "") or "")
+            if not content:
+                continue
+            if len(content) > max_chars:
+                content = content[:max_chars] + "…(已截断)"
+            label = role.capitalize()
+            if role == "assistant" and msg.get("agent_name"):
+                label = f"Assistant[{msg['agent_name']}]"
+            lines.append(f"- {label}: {content}")
+        return lines
+
+    @staticmethod
+    def _strip_noise(text: str) -> str:
+        """Remove fenced blocks (chart/json/code) and markdown tables that drown routing signal."""
+        import re
+        text = re.sub(r"```.*?```", "[代码/图表块已省略]", text, flags=re.DOTALL)
+        kept = []
+        for ln in text.splitlines():
+            stripped = ln.strip()
+            if not stripped:
+                continue
+            # Skip markdown table rows and separator lines.
+            if re.match(r"^\|.*\|$", stripped) or re.match(r"^\|?\s*:?-{3,}", stripped):
+                continue
+            kept.append(stripped)
+        return " ".join(kept).strip()
+
+    @staticmethod
+    def _parse_router_json(content: str) -> Optional[dict]:
+        if not content:
+            return None
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines and lines[0].startswith("```"):
+                content = "\n".join(lines[1:-1]) if lines[-1].startswith("```") else "\n".join(lines[1:])
+            content = content.strip()
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            import re
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    return None
+        return None
+
+    def _match_agent(self, name: Optional[str], agents_metadata: List[dict]) -> Optional[dict]:
+        """Resolve an agent name (slug) back to its metadata; fall back to display_name match."""
+        if not name:
+            return None
+        name_l = str(name).lower().strip()
+        for a in agents_metadata:
+            if str(a.get("name", "")).lower() == name_l:
+                return a
+        for a in agents_metadata:
+            if str(a.get("display_name", "")).lower() == name_l:
+                return a
+        return None
+
+    def _build_route_result(
+        self,
+        result_json: dict,
+        agents_metadata: List[dict],
+        enable_multi_agent: bool,
+    ) -> Optional[RouteResult]:
+        confidence = result_json.get("confidence", 0.5)
+        target_name = result_json.get("agent_name")
+        secondary_names = result_json.get("secondary_agents", []) or []
+        reasoning = result_json.get("thought") or result_json.get("reasoning", "")
+
+        # --- Confidence & Fallback Mechanism ---
+        if confidence < 0.6:
+            logger.info(f"Low confidence ({confidence}) for '{target_name}'. Falling back to General Chat.")
+            return self._fallback_to_general(
+                agents_metadata,
+                f"Low confidence ({confidence}) for agent selection. Reason: {reasoning}",
+            )
+
+        target_agent = self._match_agent(target_name, agents_metadata)
+        if not target_agent:
+            logger.warning(f"Router suggested unknown agent: {target_name}. Falling back to General Chat.")
+            return self._fallback_to_general(agents_metadata, f"Router returned unknown agent: {target_name}")
+
+        resolved_secondaries: List[str] = []
+        if enable_multi_agent and secondary_names:
+            for s_name in secondary_names:
+                s_agent = self._match_agent(s_name, agents_metadata)
+                if s_agent and s_agent["id"] != target_agent["id"]:
+                    resolved_secondaries.append(s_agent["id"])
+
+        return RouteResult(
+            agent_id=target_agent["id"],
+            secondary_agents=resolved_secondaries,
+            confidence=confidence,
+            reasoning=reasoning,
+        )
 
     async def _fetch_agents_from_db(self) -> List[dict]:
         from app.core.orm import AsyncSessionLocal

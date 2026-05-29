@@ -83,10 +83,13 @@ class MemoryService:
 
         return history
 
-    async def add_message(self, user_id: str, conversation_id: str, role: str, content: str, trace_id: Optional[str] = None, files: Optional[List[Dict[str, Any]]] = None):
+    async def add_message(self, user_id: str, conversation_id: str, role: str, content: str, trace_id: Optional[str] = None, files: Optional[List[Dict[str, Any]]] = None, agent_name: Optional[str] = None):
         """
         Append a single message to the conversation history.
         Now supports trace_id and attachment files.
+
+        agent_name: 处理该轮的智能体 name(slug)。仅对 assistant 消息记录，
+        用于后续路由的会话粘性（让追问沿用上一轮智能体）。
         """
         redis = await get_redis()
         if not redis:
@@ -104,6 +107,8 @@ class MemoryService:
         }
         if files:
             message["files"] = files
+        if agent_name:
+            message["agent_name"] = agent_name
 
         
         # Push to list

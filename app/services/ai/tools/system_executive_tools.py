@@ -110,7 +110,7 @@ def write_local_file(path: str, content: str) -> str:
 @tool
 async def execute_system_command(command: str) -> str:
     """
-    在容器内部执行指定的 shell 命令，强制施加默认 30 秒的超时限制与标准输出的长度截断。
+    在系统物理环境或本地沙盒中执行指定的 shell 命令，强制施加默认 30 秒的超时限制与标准输出的长度截断。
     
     Args:
         command: 要执行的 Shell 命令。
@@ -161,7 +161,7 @@ async def execute_system_command(command: str) -> str:
 @tool
 def manage_system_process(action: str, pid: int = None) -> str:
     """
-    管理和查看当前容器内的运行进程，防止误杀核心 Uvicorn/FastAPI 主进程以及开发守护进程。
+    管理和查看当前系统的运行进程，防止误杀核心 Uvicorn/FastAPI 主进程以及开发守护进程。
     
     Args:
         action: 只能是 "list" (列出进程) 或 "kill" (终止进程)。

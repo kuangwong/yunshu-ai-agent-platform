@@ -298,22 +298,22 @@ const availableTools = [
   },
   {
     name: "read_local_file",
-    description: "容器安全文件分页/Tail读取，有效防止大文件 Token 撑破",
+    description: "安全本地文件分页/Tail读取，有效防止大文件 Token 撑破",
     isSystem: true,
   },
   {
     name: "write_local_file",
-    description: "容器安全文件物理写入与覆盖，若父级目录缺失将自动补全",
+    description: "本地文件物理写入与覆盖，若父级目录缺失将自动补全",
     isSystem: true,
   },
   {
     name: "execute_system_command",
-    description: "容器内部 shell 命令执行，强制 30 秒超时拦截防挂死",
+    description: "系统 shell 命令执行，强制 30 秒超时拦截防挂死",
     isSystem: true,
   },
   {
     name: "manage_system_process",
-    description: "容器进程遍历监控与控制，内置 Web 核心主 PID 安全防护",
+    description: "系统进程遍历监控与控制，内置 Web 核心主 PID 安全防护",
     isSystem: true,
   },
   {
@@ -323,7 +323,7 @@ const availableTools = [
   },
   {
     name: "directory_tree_navigator",
-    description: "容器指定目录深度树级遍历检索，支持文件后缀与关键字过滤",
+    description: "本地指定目录深度树级遍历检索，支持文件后缀与关键字过滤",
     isSystem: true,
   },
   {
@@ -391,7 +391,7 @@ const groupedTools = computed(() => {
   const groups: Record<string, { label: string; icon: string; tools: any[] }> = {
     chatbi: { label: 'ChatBI 数据分析', icon: '📊', tools: [] },
     knowledge: { label: '知识库检索 (RAG)', icon: '📖', tools: [] },
-    system: { label: '容器系统自治工具', icon: '💻', tools: [] },
+    system: { label: '系统自治工具', icon: '💻', tools: [] },
     office: { label: '办公协作与消息通知', icon: '💬', tools: [] },
     memory: { label: '长期事实与记忆引擎', icon: '🧠', tools: [] },
     other: { label: '其他扩展工具', icon: '🔧', tools: [] }

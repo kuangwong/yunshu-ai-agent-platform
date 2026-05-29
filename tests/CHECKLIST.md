@@ -71,7 +71,7 @@
 - [x] ExampleService.build_few_shot_prompt: Verify few-shot prompt construction rules, boundary enforcement and threshold changes
 
 | EmbedChat 附件上传与多模态直连 (Vision Mode) | `tests/api/v1/test_upload_attachments.py` | **多模态本地文件上传、托管与 Vision 直连**：验证加号极客菜单、拖拽与粘贴上传；验证 Redis 会话持久化与高颜值气泡回显；验证多模态图片 Base64 直连及 Vision 模型看图识别问答能力；验证 Docker 持久化映射配置 | ✅ 通过 | 2026-05-27  |
-| 容器自治系统与高阶工具 (System Executive & Advanced Tools) | `tests/test_system_executive_tools.py` | **容器自治系统与高阶工具**：验证分页与 tail 读取、安全防穿越写入、命令超时/高危阻断、受保护主 PID 误杀拦截、会话级 SQLite 沙箱、Python AST 语法 Lint 检测、基于会话自动物理生成规范技能的 create_skills 核心工具。 | ✅ 通过 | 2026-05-27  |
+| 系统自治与高阶工具 (System Executive & Advanced Tools) | `tests/test_system_executive_tools.py` | **系统自治与高阶工具**：验证分页与 tail 读取、安全防穿越写入、命令超时/高危阻断、受保护主 PID 误杀拦截、会话级 SQLite 沙箱、Python AST 语法 Lint 检测、基于会话自动物理生成规范技能的 create_skills 核心工具。 | ✅ 通过 | 2026-05-27  |
 | 长期记忆引擎与注入管道 (Long-Term Memory Engine) | `tests/test_memory_ltm.py` | **长期记忆引擎与注入管道**：验证 Redis Hash 异步写入及拉取、LTM 记忆管理工具、LLM 前置 200ms 并发读取及超时降级自愈的 Prompt 无感注入管道。 | ✅ 通过 | 2026-05-27  |
 | 静态网页极速抓取通道 (Static Web URL Fetcher) | `tests/test_system_executive_tools.py` | **静态网页极速抓取通道**：验证 validate_url SSRF 地址过滤、httpx 异步连接、BeautifulSoup 精准脱水噪音并提取前 150 行纯文本。 | ✅ 通过 | 2026-05-27  |
 | 智能体技能管理 (Skills Management) | `tests/test_skills_management.py` | **智能体技能管理**：验证技能列表、创建、详情获取、文件读取编辑保存、上传、单个文件物理删除、彻底注销删除技能及路径穿越安全拦截。 | ✅ 通过 | 2026-05-27  |

@@ -560,10 +560,13 @@
                   <div class="flex-1 flex items-center justify-between min-w-0">
                     <div class="flex items-center space-x-2 overflow-hidden">
                       <span class="text-xs font-semibold text-gray-700 dark:text-gray-300 truncate">
-                        {{ msg.isThinking ? '思考中...' : '深度思考过程' }}
+                        {{ getThoughtPanelTitle(msg) }}
                       </span>
                       <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 font-mono" v-if="msg.logs && msg.logs.length > 0">
-                        {{ msg.logs.length }} 步骤
+                        {{ getDisplayLogs(msg).length }} 步骤
+                        <template v-if="getHiddenLogCount(msg) > 0">
+                          · 已折叠 {{ getHiddenLogCount(msg) }}
+                        </template>
                       </span>
                     </div>
                     <span class="text-[10px] text-gray-400 font-mono ml-2 flex-shrink-0">
@@ -594,7 +597,7 @@
                   >
                     <div class="relative ml-2 pl-4 py-2 space-y-3 border-l-2 border-gray-100 dark:border-gray-700/50">
                       <div
-                        v-for="(log, idx) in msg.logs"
+                        v-for="(log, idx) in getDisplayLogs(msg)"
                         :key="idx"
                         class="relative group/log"
                       >
@@ -1734,6 +1737,13 @@ import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
 import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import { modelApi, type AIModel } from "@/api/model";
+import {
+  filterLogsForTurn,
+  getTurnPanelTitle,
+  defaultThoughtExpanded,
+  countHiddenLogs,
+  type TurnType,
+} from "@/utils/turnLogDisplay";
 // --- Types ---
 interface LogEntry {
   id: number | string;
@@ -1770,6 +1780,7 @@ interface Message {
   thinkingText?: string;
   agentName?: string;
   agentDisplayName?: string;
+  turnType?: TurnType | string;
   feedback?: "up" | "down" | null;
   timestamp?: string;
   isTimeLabel?: boolean;
@@ -1799,6 +1810,18 @@ const formatTimeLabel = (isoStr: string): string => {
     return `${month}-${day} ${hours}:${minutes}`;
   } catch (e) { return ""; }
 };
+
+function getDisplayLogs(msg: Message) {
+  return filterLogsForTurn(msg.logs, msg.turnType);
+}
+
+function getThoughtPanelTitle(msg: Message) {
+  return getTurnPanelTitle(msg.turnType, msg.isThinking);
+}
+
+function getHiddenLogCount(msg: Message) {
+  return countHiddenLogs(msg.logs, getDisplayLogs(msg));
+}
 
 const formatDurationMs = (durationMs?: number | null): string => {
   if (durationMs === undefined || durationMs === null || Number.isNaN(durationMs)) return "";
@@ -3506,7 +3529,7 @@ const sendMessage = async () => {
     logs: [],
     thoughtStartTime: Date.now(),
     thoughtDuration: "0.0",
-    isThoughtExpanded: true,
+    isThoughtExpanded: false,
     isCitationsExpanded: false,
     timestamp: new Date().toISOString(),
   });
@@ -3634,8 +3657,14 @@ const sendMessage = async () => {
                 else if (title.includes("SQL") || title.includes("sql") || title.includes("数据")) category = "sql";
                 else if (title.includes("知识") || title.includes("检索") || title.includes("引用") || title.includes("来源") || title.includes("分析")) category = "knowledge";
                 else if (title.includes("工具") || title.includes("调用")) category = "tool";
-                else if (title.includes("意图")) category = "intent";
+                else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
                 else if (title.includes("权限") || title.includes("permission")) category = "permission";
+              }
+              if (data.turn_type && category === "intent") {
+                agentMsg.value.turnType = data.turn_type;
+                if (agentMsg.value.isThinking) {
+                  agentMsg.value.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+                }
               }
               if (existingIdx > -1) {
                 const currentLog = agentMsg.value.logs[existingIdx];
@@ -3702,6 +3731,14 @@ const sendMessage = async () => {
               agentMsg.value.agentName = data.agent_name;
               if (data.agent_display_name) {
                   agentMsg.value.agentDisplayName = data.agent_display_name;
+              }
+            }
+            if (data.turn_type) {
+              agentMsg.value.turnType = data.turn_type;
+              if (typeof data.thought_expanded_default === "boolean") {
+                agentMsg.value.isThoughtExpanded = data.thought_expanded_default;
+              } else {
+                agentMsg.value.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
               }
             }
           } else if (data.type === "retraction") {

@@ -1,9 +1,14 @@
 import logging
-import json
-import time
 from typing import List, Dict, Any, Optional
 from app.schemas.agent import AgentExecutionStep, ChatConfig
-from app.services.ai.intent_service import intent_service, IntentType, IntentResponse, looks_like_data_followup, looks_like_meta_action
+from app.services.ai.turn_classifier import (
+    SharedTurn,
+    adapt_classification_for_agent,
+    attach_turn_classification,
+    resolve_turn_classification,
+    resolve_turn_for_session,
+    turn_type_label,
+)
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.data_executor import DataQueryExecutor
 from app.services.ai.executors.chat_executor import GeneralChatExecutor
@@ -26,10 +31,12 @@ class AgentDispatcher:
         trace_buffer: List[AgentExecutionStep],
         debug_options: Optional[Dict[str, Any]] = None,
         user_info: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        shared_turn: Optional[SharedTurn] = None,
     ) -> BaseExecutor:
         """
         Determines and returns the correct Executor instance.
+        shared_turn: 多智能体/会话级已算好的分类，避免重复意图 LLM。
         """
         
         # 1. External Engine Check
@@ -39,66 +46,51 @@ class AgentDispatcher:
         if agent_config.engine_type == 'OPENCLAW':
             return OpenClawExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
 
-        # 2. Capability Check first — 只有具备 data_query 能力的智能体才需要意图识别。
-        #    非数据智能体一律走 GeneralChatExecutor，提前返回可省掉一次昂贵且注定被丢弃的意图识别 LLM 调用。
         can_do_data = "data_query" in (agent_config.capabilities or [])
-        if not can_do_data:
-            return GeneralChatExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
 
-        # 2.5 元操作短路：本轮是对已有对话/结果的“管理类操作”（如创建/保存技能），本身不需要查数。
-        #     直接走 GeneralChatExecutor（自带 create_skills 等系统隐式工具且无“先查库”护栏），
-        #     避免被 DataQueryExecutor 机械地拖入 查Schema -> 执行SQL 的冗余流程。
-        if looks_like_meta_action(user_query):
-            return GeneralChatExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+        # 2. 轮次分类（共享或独立解析）
+        if shared_turn is not None:
+            classification, intent_info, intent_elapsed_ms = shared_turn
+            classification = adapt_classification_for_agent(classification, can_do_data=can_do_data)
+        elif can_do_data:
+            classification, intent_info, intent_elapsed_ms = await resolve_turn_classification(
+                user_query,
+                messages,
+                can_do_data=True,
+                user_info=user_info,
+                conversation_id=conversation_id,
+            )
+        else:
+            classification, intent_info, intent_elapsed_ms = await resolve_turn_for_session(
+                user_query,
+                messages,
+                can_do_data=False,
+                user_info=user_info,
+                conversation_id=conversation_id,
+            )
+            classification = adapt_classification_for_agent(classification, can_do_data=False)
 
-        # 3. 廉价短路：本轮明显是对上一轮数据结果的追问（可视化/分析等），且确实存在
-        #    可复用的结构化结果时，直接走 DataQueryExecutor，省掉一次意图识别 LLM 调用。
-        if conversation_id and looks_like_data_followup(user_query):
-            last_data_result = await AgentDispatcher._load_last_data_result(user_info, conversation_id)
-            if last_data_result:
-                executor = DataQueryExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
-                executor.intent_info = IntentResponse(
-                    intent=IntentType.DATA_QUERY,
-                    confidence=1.0,
-                    reasoning="检测到对上一轮数据结果的追问，复用结果（启发式短路，跳过意图识别）",
-                    entities=[],
-                )
-                executor.intent_elapsed_ms = 0.0
-                return executor
+        logger.info(
+            "[Dispatcher] turn=%s executor=%s skip_intent=%s agent=%s",
+            turn_type_label(classification.turn_type),
+            "DataQuery" if (can_do_data and classification.use_data_executor) else "GeneralChat",
+            classification.skip_intent_llm,
+            agent_config.agent_name,
+        )
 
-        # 4. Intent Recognition（仅数据能力智能体）—— 传入最近对话，帮助识别省略主语的追问
-        intent_start = time.time()
-        prior_messages = messages[:-1] if messages else None
-        intent_info = await intent_service.identify_intent(user_query, history=prior_messages)
-        intent_elapsed_ms = (time.time() - intent_start) * 1000
+        if can_do_data and classification.use_data_executor:
+            executor = DataQueryExecutor(
+                agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id
+            )
+        else:
+            executor = GeneralChatExecutor(
+                agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id
+            )
 
-        if intent_info.intent == IntentType.DATA_QUERY:
-            executor = DataQueryExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
-            executor.intent_info = intent_info  # Attach for potential use
-            executor.intent_elapsed_ms = intent_elapsed_ms
-            return executor
-
-        # Fallback to General Chat
-        return GeneralChatExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
-
-    @staticmethod
-    async def _load_last_data_result(
-        user_info: Optional[Dict[str, Any]],
-        conversation_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        """读取本会话最近一次结构化查询结果，用于追问短路判断。"""
-        if not user_info:
-            return None
-        raw_user_id = user_info.get("user_id") or user_info.get("id")
-        if not raw_user_id:
-            return None
-        try:
-            user_id = int(raw_user_id)
-        except (TypeError, ValueError):
-            return None
-        try:
-            from app.services.ai.memory_service import memory_service
-            return await memory_service.get_last_data_result(user_id, conversation_id)
-        except Exception as e:
-            logger.warning(f"[Dispatcher] Failed to load last data result: {e}")
-            return None
+        attach_turn_classification(
+            executor,
+            classification,
+            intent_info=intent_info,
+            intent_elapsed_ms=intent_elapsed_ms,
+        )
+        return executor

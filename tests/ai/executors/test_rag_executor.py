@@ -34,6 +34,29 @@ def rag_config():
 # --- Tests ---
 
 @pytest.mark.asyncio
+async def test_rag_executor_uses_conversation_id(rag_config):
+    """RAGFlow 会话 ID 应与平台 conversation_id 对齐，而非每轮 trace_id。"""
+    executor = RAGExecutor(
+        agent_config=rag_config,
+        trace_id="trace-abc",
+        trace_buffer=[],
+        conversation_id="conv-xyz",
+    )
+
+    async def mock_stream(*args, **kwargs):
+        assert kwargs.get("conversation_id") == "conv-xyz"
+        yield {"type": "answer", "content": "ok"}
+
+    with patch("app.services.ai.ragflow_client.RagFlowClient.chat_stream", side_effect=mock_stream), \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+        history = [{"role": "user", "content": "Hi"}]
+        events = []
+        async for chunk in executor.execute(history):
+            events.append(chunk)
+
+    assert any(e.get("content") == "ok" for e in events if "content" in e)
+
+@pytest.mark.asyncio
 async def test_rag_executor_success(rag_config):
     """测试 RAG 执行器的成功流式输出和引用记录"""
     executor = RAGExecutor(agent_config=rag_config, trace_id="test-rag-1", trace_buffer=[])

@@ -3,6 +3,20 @@ import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.services.ai.agent_service import AgentService
 from app.schemas.agent import ChatConfig, AgentExecutionStep
+from app.services.ai.turn_classifier import TurnClassification, TurnType
+from app.services.ai.intent_service import IntentType
+
+SESSION_TURN = (
+    TurnClassification(
+        turn_type=TurnType.GENERAL,
+        reasoning="测试",
+        use_data_executor=False,
+        skip_intent_llm=True,
+        intent=IntentType.GENERAL,
+    ),
+    None,
+    0.0,
+)
 
 @pytest.mark.asyncio
 async def test_execute_multi_agent_parallel():
@@ -24,7 +38,8 @@ async def test_execute_multi_agent_parallel():
     mock_executor.execute = mock_execute
 
     # Mock Dispatcher
-    with patch('app.services.ai.dispatcher.AgentDispatcher.dispatch', return_value=mock_executor):
+    mock_dispatch = AsyncMock(return_value=mock_executor)
+    with patch('app.services.ai.dispatcher.AgentDispatcher.dispatch', mock_dispatch):
         # Mock AgentManager to resolve secondary
         mock_secondary_config = ChatConfig(
             agent_id="secondary", agent_name="SecondaryAgent", system_prompt="S", tools=[], capabilities=[],
@@ -40,7 +55,7 @@ async def test_execute_multi_agent_parallel():
                 
                 chunks = []
                 async for chunk in service._execute_multi_agent(
-                    primary_config, ["secondary-id"], "hello", [], "trace-1", [], {}, None, None
+                    primary_config, ["secondary-id"], "hello", [], "trace-1", [], {}, None, None, None, SESSION_TURN
                 ):
                     chunks.append(chunk)
                 
@@ -53,6 +68,11 @@ async def test_execute_multi_agent_parallel():
                 
                 # Verify final content
                 assert any(c.get("content") == "Final Combined Answer" for c in chunks)
+
+                # shared_turn 应传给每次 dispatch（2 个 agent）
+                assert mock_dispatch.call_count == 2
+                for call in mock_dispatch.call_args_list:
+                    assert call.kwargs.get("shared_turn") is not None
 
 @pytest.mark.asyncio
 async def test_multi_agent_error_handling():
@@ -89,7 +109,7 @@ async def test_multi_agent_error_handling():
             with patch.object(AgentService, '_synthesize_multi_agent_results', side_effect=mock_synthesis):
                 chunks = []
                 async for chunk in service._execute_multi_agent(
-                    primary_config, ["secondary-id"], "hello", [], "trace-1", [], {}, None, None
+                    primary_config, ["secondary-id"], "hello", [], "trace-1", [], {}, None, None, None, SESSION_TURN
                 ):
                     chunks.append(chunk)
                 

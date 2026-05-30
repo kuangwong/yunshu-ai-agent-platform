@@ -109,6 +109,32 @@ def looks_like_data_followup(user_question: str) -> bool:
     return looks_like_pure_result_followup(user_question)
 
 
+# 知识库/SOP 类问法（与 DATA_QUERY 的「查记录/统计」区分）
+_KNOWLEDGE_SIGNALS = [
+    "流程是什么", "怎么处理", "如何处理", "怎么做", "如何做", "怎样处理",
+    "规范", "手册", "sop", "注意事项", "制度", "指引", "文档说明",
+    "操作步骤", "处理流程", "标准流程", "预案", "是什么意思",
+]
+_DATA_QUERY_SIGNALS = [
+    "查询", "查一下", "查下", "统计", "多少", "列表", "记录", "趋势",
+    "最近", "今天", "本月", "上月", "top", "明细", "汇总", "对比",
+]
+
+
+def looks_like_knowledge_query(user_question: str) -> bool:
+    """轻量启发式：用户是否在问 SOP/制度/操作指引（非结构化业务数据）。"""
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    if looks_like_meta_action(q) or looks_like_context_action(q) or looks_like_skill_execution(q):
+        return False
+    if looks_like_compound_query_with_viz(user_question):
+        return False
+    if any(sig in q for sig in _DATA_QUERY_SIGNALS):
+        return False
+    return any(sig in q for sig in _KNOWLEDGE_SIGNALS)
+
+
 # 元操作（Meta-Action）：对已有对话/结果做封装、保存、记忆等管理动作，本身不查询业务数据。
 # 命中后 dispatcher 直接走 GeneralChatExecutor，避免被数据查询执行器的“先查库”护栏拖入冗余流程。
 _META_ACTION_PATTERNS = [

@@ -244,6 +244,17 @@ class GeneralChatPrompts:
     # 达到最大执行步骤的提示
     MAX_STEPS_REACHED = "[系统提示] 达到最大执行步骤，停止执行。"
 
+    KNOWLEDGE_SEARCH_CORRECTION_MSG = (
+        "【必须执行】本轮为知识库/SOP 类问答。"
+        "请先调用 search_knowledge_base，query 填用户问题的关键词；"
+        "在未获得工具返回前，禁止凭记忆编造流程或制度内容。"
+    )
+
+    KNOWLEDGE_TURN_SYSTEM_HINT = (
+        "【知识库问答模式】用户正在询问文档/SOP/操作指引。"
+        "若工具集中有 search_knowledge_base，必须先检索再作答。"
+    )
+
     @staticmethod
     def synthesis_user_message(user_question: str, execution_review: str) -> str:
         """通用对话 ReAct 后最终合成阶段的用户消息。"""

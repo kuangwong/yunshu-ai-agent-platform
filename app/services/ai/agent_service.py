@@ -283,21 +283,45 @@ class AgentService:
                 else:
                     agent_config.system_prompt = skills_profile
 
-            # --- Global Skill Discovery Hint ---
-            try:
-                from app.core.config import settings
+            # --- Global Skill Discovery Hint（已有挂载/解析技能时省略，减少 prompt 噪声）---
+            skills_already_loaded = bool(skills_injection) or bool(mounted_skill_ids)
+            if not skills_already_loaded:
+                try:
+                    from app.core.config import settings
 
-                skills_dir = settings.SKILLS_DIR
-                skill_discovery_hint = AgentServicePrompts.skill_discovery_hint(skills_dir)
-                if agent_config.system_prompt:
-                    agent_config.system_prompt = f"{skill_discovery_hint}\n\n{agent_config.system_prompt}"
-                else:
-                    agent_config.system_prompt = skill_discovery_hint
-            except Exception as skill_hint_err:
-                logger.warning("[Skills] Failed to inject skill discovery hint: %s", skill_hint_err)
+                    skills_dir = settings.SKILLS_DIR
+                    skill_discovery_hint = AgentServicePrompts.skill_discovery_hint(skills_dir)
+                    if agent_config.system_prompt:
+                        agent_config.system_prompt = f"{skill_discovery_hint}\n\n{agent_config.system_prompt}"
+                    else:
+                        agent_config.system_prompt = skill_discovery_hint
+                except Exception as skill_hint_err:
+                    logger.warning("[Skills] Failed to inject skill discovery hint: %s", skill_hint_err)
+
+            # --- 按轮次类型裁剪上下文注入（与会话级 Turn 分类共用，不重复调意图 LLM）---
+            from app.services.ai.turn_classifier import (
+                resolve_turn_for_session,
+                should_inject_ltm,
+                should_inject_memory_recall_hint,
+                should_inject_user_context,
+                should_run_active_memory_preload,
+                turn_type_label,
+                default_thought_expanded,
+            )
+
+            can_do_data = "data_query" in (agent_config.capabilities or [])
+            turn_classification, turn_intent_info, turn_intent_elapsed_ms = await resolve_turn_for_session(
+                user_query,
+                messages,
+                can_do_data=can_do_data,
+                user_info=user_info,
+                conversation_id=conversation_id,
+            )
+            session_turn = (turn_classification, turn_intent_info, turn_intent_elapsed_ms)
+            early_turn_type = turn_classification.turn_type
 
             # --- Long-Term Memory (LTM) Injection ---
-            if user_info:
+            if should_inject_ltm(early_turn_type) and user_info:
                 u_id = user_info.get("user_id", user_info.get("id"))
                 if u_id:
                     try:
@@ -317,22 +341,23 @@ class AgentService:
                         logger.warning(f"[LTM] Failed to inject long-term memory for user {u_id}: {ltm_err}")
 
             # --- Cross-session memory recall hint (memory_search tool) ---
-            try:
-                from app.services.memory_config_service import MemoryConfigService
-                from app.services.ai.memory_recall_policy import CROSS_SESSION_MEMORY_SYSTEM_HINT
+            if should_inject_memory_recall_hint(early_turn_type):
+                try:
+                    from app.services.memory_config_service import MemoryConfigService
+                    from app.services.ai.memory_recall_policy import CROSS_SESSION_MEMORY_SYSTEM_HINT
 
-                if await MemoryConfigService.get_bool("memory_service_enabled", True):
-                    if agent_config.system_prompt:
-                        agent_config.system_prompt = (
-                            f"{CROSS_SESSION_MEMORY_SYSTEM_HINT}\n\n{agent_config.system_prompt}"
-                        )
-                    else:
-                        agent_config.system_prompt = CROSS_SESSION_MEMORY_SYSTEM_HINT
-            except Exception as mem_hint_err:
-                logger.warning("[Memory] Failed to inject cross-session recall hint: %s", mem_hint_err)
+                    if await MemoryConfigService.get_bool("memory_service_enabled", True):
+                        if agent_config.system_prompt:
+                            agent_config.system_prompt = (
+                                f"{CROSS_SESSION_MEMORY_SYSTEM_HINT}\n\n{agent_config.system_prompt}"
+                            )
+                        else:
+                            agent_config.system_prompt = CROSS_SESSION_MEMORY_SYSTEM_HINT
+                except Exception as mem_hint_err:
+                    logger.warning("[Memory] Failed to inject cross-session recall hint: %s", mem_hint_err)
 
             # --- Dynamic Auto-Memory Ingest (Active Memory) ---
-            if user_info and user_query:
+            if should_run_active_memory_preload(early_turn_type) and user_info and user_query:
                 u_id = user_info.get("user_id", user_info.get("id"))
                 if u_id:
                     try:
@@ -393,10 +418,9 @@ class AgentService:
                     except Exception as recall_err:
                         logger.warning(f"[ActiveMemory] Failed to preload memory context: {recall_err}", exc_info=True)
 
-            # --- User Identity Injection (Universal) ---
-            if user_info:
+            # --- User Identity Injection（查数轮次可省略以减 prompt 噪声）---
+            if should_inject_user_context(early_turn_type) and user_info:
                 id_msg = await self._build_user_context_msg(user_info)
-                # Insert at the beginning so it sets the persona's perspective of the user
                 messages.insert(0, id_msg)
 
             # --- Debug Overrides ---
@@ -473,7 +497,10 @@ class AgentService:
                 "type": "meta", 
                 "agent_name": agent_config.agent_name,
                 "agent_display_name": agent_config.agent_display_name or agent_config.agent_name,
-                "model": actual_model
+                "model": actual_model,
+                "turn_type": turn_classification.turn_type.value,
+                "turn_type_label": turn_type_label(turn_classification.turn_type),
+                "thought_expanded_default": default_thought_expanded(turn_classification.turn_type),
             }
 
             # 3. Execution (Branch: Single vs Multi)
@@ -482,7 +509,17 @@ class AgentService:
             if enable_multi_agent and secondary_agents:
                 # --- Multi-Agent Parallel Execution Mode ---
                 async for chunk in self._execute_multi_agent(
-                    agent_config, secondary_agents, user_query, messages, trace_id, trace_buffer, debug_options, user_info, api_key
+                    agent_config,
+                    secondary_agents,
+                    user_query,
+                    messages,
+                    trace_id,
+                    trace_buffer,
+                    debug_options,
+                    user_info,
+                    api_key,
+                    conversation_id,
+                    session_turn,
                 ):
                     if "content" in chunk:
                         full_response_content += chunk["content"]
@@ -491,19 +528,26 @@ class AgentService:
                 # --- Standard Single Agent Mode ---
                 # Dispatch to Executor
                 executor = await AgentDispatcher.dispatch(
-                    agent_config, user_query, messages, trace_id, trace_buffer, debug_options, user_info, conversation_id
+                    agent_config,
+                    user_query,
+                    messages,
+                    trace_id,
+                    trace_buffer,
+                    debug_options,
+                    user_info,
+                    conversation_id,
+                    shared_turn=session_turn,
                 )
                 
-                # Log Intent if applicable
-                if hasattr(executor, 'intent_info'):
-                    yield {
-                        "type": "log",
-                        "title": "意图识别",
-                        "details": f"检测到数据查询意图。原因: {executor.intent_info.reasoning}",
-                        "status": "success",
-                        "category": "intent",
-                        "execution_time_ms": getattr(executor, "intent_elapsed_ms", None)
-                    }
+                yield {
+                    "type": "log",
+                    "title": "轮次分类",
+                    "details": f"{turn_type_label(turn_classification.turn_type)}。{turn_classification.reasoning}",
+                    "status": "success",
+                    "category": "intent",
+                    "turn_type": turn_classification.turn_type.value,
+                    "execution_time_ms": turn_intent_elapsed_ms,
+                }
 
                 # Execution
                 async for chunk in executor.execute(messages):
@@ -604,11 +648,26 @@ class AgentService:
         debug_options: Dict[str, Any],
         user_info: Optional[Dict[str, Any]],
         api_key: Optional[str],
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        session_turn=None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Executes primary and secondary agents in parallel and yields combined results.
         """
+        from app.services.ai.turn_classifier import turn_type_label
+
+        if session_turn:
+            tc, _, tc_elapsed = session_turn
+            yield {
+                "type": "log",
+                "title": "轮次分类",
+                "details": f"{turn_type_label(tc.turn_type)}。{tc.reasoning}",
+                "status": "success",
+                "category": "intent",
+                "turn_type": tc.turn_type.value,
+                "execution_time_ms": tc_elapsed,
+            }
+
         # 1. Resolve Secondary Configs
         secondary_configs = []
         async with AsyncSessionLocal() as session:
@@ -622,7 +681,15 @@ class AgentService:
         executors = []
         for config in all_configs:
             exec = await AgentDispatcher.dispatch(
-                config, user_query, messages, trace_id, trace_buffer, debug_options, user_info, conversation_id
+                config,
+                user_query,
+                messages,
+                trace_id,
+                trace_buffer,
+                debug_options,
+                user_info,
+                conversation_id,
+                shared_turn=session_turn,
             )
             executors.append(exec)
 

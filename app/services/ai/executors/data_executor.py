@@ -19,6 +19,11 @@ from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
 
 from app.services.ai.executors.base import BaseExecutor
+from app.services.ai.executors.common import (
+    convert_history_to_messages,
+    extract_tokens_from_message,
+    parse_xml_tool_calls,
+)
 from app.services.ai.executors.prompts import DataQueryPrompts, SharedPrompts
 from app.services.ai.intent_service import (
     looks_like_context_action,
@@ -27,28 +32,6 @@ from app.services.ai.intent_service import (
 )
 
 logger = logging.getLogger(__name__)
-
-def _extract_tokens_from_message(msg: Any) -> dict:
-    """
-    Extract token usage from LangChain message or chunk.
-    """
-    res = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    if not msg:
-        return res
-    if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-        um = msg.usage_metadata
-        res["prompt_tokens"] = um.get("input_tokens") or 0
-        res["completion_tokens"] = um.get("output_tokens") or 0
-        res["total_tokens"] = um.get("total_tokens") or (res["prompt_tokens"] + res["completion_tokens"])
-        return res
-    if hasattr(msg, "response_metadata") and isinstance(msg.response_metadata, dict):
-        tu = msg.response_metadata.get("token_usage")
-        if isinstance(tu, dict):
-            res["prompt_tokens"] = tu.get("prompt_tokens") or tu.get("input_tokens") or 0
-            res["completion_tokens"] = tu.get("completion_tokens") or tu.get("output_tokens") or 0
-            res["total_tokens"] = tu.get("total_tokens") or (res["prompt_tokens"] + res["completion_tokens"])
-            return res
-    return res
 
 class DataQueryExecutor(BaseExecutor):
     def __init__(self, config: ChatConfig, trace_id: str, trace_buffer: List[AgentExecutionStep], debug_options: Dict[str, Any] = None, user_info: Optional[Dict[str, Any]] = None, conversation_id: Optional[str] = None):
@@ -68,6 +51,7 @@ class DataQueryExecutor(BaseExecutor):
         # 本轮是否“需要重新查数”（K1）。对已有结果做保存/导出/发送/记忆/建技能等动作（K3）时为 False，
         # 届时关闭“必须先查库”的强制护栏，允许直接基于上下文调用工具或作答。
         self._requires_fresh_data = True
+        self._skip_few_shot = False
         self._skill_ready = False
         self._needs_skill_prep = False
 
@@ -196,76 +180,7 @@ class DataQueryExecutor(BaseExecutor):
         return ("No authorized datasets found" in s) or ("未找到相关的授权数据集" in s)
 
     def _convert_history(self, history: List[Dict[str, str]]) -> List[BaseMessage]:
-        messages = []
-        for m in history:
-            role = m["role"]
-            content = m["content"]
-            if role == "user":
-                import base64
-                import os
-                files = m.get("files")
-                img_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-                img_files = []
-                non_img_files = []
-                if files:
-                    for f in files:
-                        if f.get("type") in ("skill", "knowledge_base"):
-                            continue
-                        ext = f.get("ext", "")
-                        if not ext and f.get("url"):
-                            ext = os.path.splitext(f["url"])[1]
-                        if ext and ext.lower() in img_extensions:
-                            img_files.append(f)
-                        else:
-                            non_img_files.append(f)
-                
-                # 构造非图片/Skills 的路径附随与引导提示词
-                attachment_prompt = ""
-                if non_img_files:
-                    lines = [SharedPrompts.NON_IMAGE_ATTACHMENT_HEADER]
-                    for f in non_img_files:
-                        url = f.get("url", "")
-                        filename = f.get("filename", "未知文件")
-                        size_str = f"{(f.get('size', 0) / 1024):.1f} KB" if f.get("size") else "未知大小"
-                        unique_name = os.path.basename(url)
-                        abs_path = f"/app/data/uploads/{unique_name}"
-                        lines.append(f"- 文件名: {filename} (大小: {size_str})")
-                        lines.append(f"  服务器内绝对路径: {abs_path}")
-                    lines.append(SharedPrompts.NON_IMAGE_ATTACHMENT_FOOTER)
-                    attachment_prompt = "\n".join(lines)
-                
-                final_text = content + attachment_prompt
-                
-                if img_files:
-                    multimodal_content = [{"type": "text", "text": final_text}]
-                    for f in img_files:
-                        url = f.get("url", "")
-                        base64_data = None
-                        if url.startswith("/static/uploads/"):
-                            filename = os.path.basename(url)
-                            local_path = os.path.join("data/uploads", filename)
-                            if os.path.exists(local_path):
-                                try:
-                                    with open(local_path, "rb") as image_file:
-                                        encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-                                    ext_cleaned = f.get("ext", "png").lower().strip(".")
-                                    if ext_cleaned == "jpg": ext_cleaned = "jpeg"
-                                    mime_type = f"image/{ext_cleaned}"
-                                    base64_data = f"data:{mime_type};base64,{encoded_string}"
-                                except Exception as e:
-                                    logger.warning(f"Failed to read local image for vision: {e}")
-                        img_url = base64_data if base64_data else url
-                        if img_url:
-                            multimodal_content.append({
-                                "type": "image_url",
-                                "image_url": {"url": img_url}
-                            })
-                    messages.append(HumanMessage(content=multimodal_content))
-                else:
-                    messages.append(HumanMessage(content=final_text))
-            elif role == "assistant": messages.append(AIMessage(content=content))
-            elif role == "system": messages.append(SystemMessage(content=content))
-        return messages
+        return convert_history_to_messages(history)
 
     def _current_user_id(self) -> Optional[int]:
         if not self.user_info:
@@ -387,7 +302,7 @@ class DataQueryExecutor(BaseExecutor):
             yield {"type": "log", "id": f"syn_err_{uuid.uuid4().hex[:6]}", "title": "⚠️ 总结生成失败", "details": str(syn_err), "status": "error"}
             yield {"content": fallback}
 
-        tokens = _extract_tokens_from_message(accumulated_msg)
+        tokens = extract_tokens_from_message(accumulated_msg)
 
         self._increment_step()
         self.trace_buffer.append(AgentExecutionStep(
@@ -437,8 +352,13 @@ class DataQueryExecutor(BaseExecutor):
         system_prompt = self.config.system_prompt
         self._current_user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
 
-        # 本轮是否需要重新查数：对“已有上下文/上一轮结果”做动作（保存/导出/发送/记忆/建技能等）时不需要。
-        self._requires_fresh_data = not looks_like_context_action(self._current_user_question)
+        turn_cls = getattr(self, "turn_classification", None)
+        if turn_cls is not None:
+            self._requires_fresh_data = turn_cls.requires_fresh_data
+            self._skip_few_shot = not turn_cls.requires_few_shot
+        else:
+            self._requires_fresh_data = not looks_like_context_action(self._current_user_question)
+            self._skip_few_shot = not self._requires_fresh_data
 
         if self._is_last_result_followup(self._current_user_question):
             last_result = await self._load_last_data_result_for_followup(self._current_user_question)
@@ -515,70 +435,75 @@ class DataQueryExecutor(BaseExecutor):
         self._non_data_tool_called = False
         # 注：_requires_fresh_data / _skill_ready / _needs_skill_prep 在本轮入口或下方按最终 system_prompt 计算。
         
-        # [经验库] Few-Shot 检索与注入
-        # 策略：将 Few-Shot 块插到 System Prompt【头部】，避免被 Lost-in-Middle 效应淹没
-        # 同时保存 reminder，在 get_dataset_schema 返回后再次强调
-        _few_shot_reminder = ""  # 用于 Schema 返回后的二次提醒
-        _schema_reminder_injected = False  # 确保只注入一次
+        # [经验库] Few-Shot 检索与注入（K1 / 技能执行等需要新 SQL 的轮次才检索）
+        _few_shot_reminder = ""
+        _schema_reminder_injected = False
         fewshot_start = time.time()
         fewshot_log_id = f"fewshot_search_{uuid.uuid4().hex[:8]}"
-        yield {
-            "type": "log",
-            "id": fewshot_log_id,
-            "title": "检索经验库",
-            "details": "正在查找可复用的历史优质 SQL 案例...",
-            "status": "pending",
-            "started_at": int(fewshot_start * 1000),
-        }
-        try:
-            from app.services.chatbi_example_service import ExampleService
-            user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
-            if user_question:
-                examples = await ExampleService.search_examples(
-                    user_question, 
-                    dataset_id=None, 
-                    top_k=5,
-                    history=langchain_messages
-                )
-                if examples:
-                    max_sim = max([ex.get('similarity', 0) for ex in examples])
-                    hit_titles = [f"#{ex.get('id', '?')} 「{ex['question'][:15]}...」 (相似度: {ex.get('similarity', 0):.2f})" for ex in examples]
-                    sim_status = "匹配度极高" if max_sim >= 0.80 else "匹配度一般"
-                    yield {
-                        "type": "log", 
-                        "id": f"fewshot_{uuid.uuid4().hex[:6]}", 
-                        "title": f"✨ 命中经验库案例 ({len(examples)}条, {sim_status})", 
-                        "details": f"已匹配到历史优质 SQL 案例：\n" + "\n".join(hit_titles) + f"\n\n当前最高相似度: {max_sim:.2f}。\n这些案例将作为强制性参考引导模型生成 SQL，以减少冗余迭代。",
-                        "status": "success"
-                    }
-                    
-                    few_shot_block = ExampleService.build_few_shot_prompt(examples)
-                    if few_shot_block:
-                        # [优化1] 插到 System Prompt 头部，确保模型在处理所有信息前先看到案例
-                        system_prompt = few_shot_block + "\n\n---\n\n" + system_prompt
-                        logger.info(f"[FewShot] Injected {len(examples)} examples at HEAD of system prompt for trace_id: {self.trace_id}")
-                    
-                    # [优化2] 构建二次提醒，用于 get_dataset_schema 返回后注入
-                    _few_shot_reminder = ExampleService.build_few_shot_reminder(examples)
-                    
-                    # 异步记录使用统计
-                    try:
-                        example_ids = [ex["id"] for ex in examples if ex.get("id")]
-                        similarities = [ex.get("similarity", 0) for ex in examples if ex.get("id")]
-                        if example_ids:
-                            asyncio.create_task(ExampleService.record_usage(example_ids, self.trace_id, similarities=similarities))
-                    except Exception as ree:
-                        logger.error(f"[FewShot] Failed to record usage statistic: {ree}")
-        except Exception as fe:
-            logger.warning(f"[FewShot] Failed to search/inject examples: {fe}")
-        yield {
-            "type": "log",
-            "id": fewshot_log_id,
-            "title": "检索经验库完成",
-            "details": "经验库检索完成，继续构建本轮提示上下文。",
-            "status": "success",
-            "execution_time_ms": (time.time() - fewshot_start) * 1000,
-        }
+        if self._skip_few_shot:
+            yield {
+                "type": "log",
+                "id": fewshot_log_id,
+                "title": "跳过经验库检索",
+                "details": "本轮无需新 SQL 生成，已跳过经验库检索以节省延迟。",
+                "status": "success",
+                "execution_time_ms": 0,
+            }
+        else:
+            yield {
+                "type": "log",
+                "id": fewshot_log_id,
+                "title": "检索经验库",
+                "details": "正在查找可复用的历史优质 SQL 案例...",
+                "status": "pending",
+                "started_at": int(fewshot_start * 1000),
+            }
+            try:
+                from app.services.chatbi_example_service import ExampleService
+                user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
+                if user_question:
+                    examples = await ExampleService.search_examples(
+                        user_question, 
+                        dataset_id=None, 
+                        top_k=5,
+                        history=langchain_messages
+                    )
+                    if examples:
+                        max_sim = max([ex.get('similarity', 0) for ex in examples])
+                        hit_titles = [f"#{ex.get('id', '?')} 「{ex['question'][:15]}...」 (相似度: {ex.get('similarity', 0):.2f})" for ex in examples]
+                        sim_status = "匹配度极高" if max_sim >= 0.80 else "匹配度一般"
+                        yield {
+                            "type": "log", 
+                            "id": f"fewshot_{uuid.uuid4().hex[:6]}", 
+                            "title": f"✨ 命中经验库案例 ({len(examples)}条, {sim_status})", 
+                            "details": f"已匹配到历史优质 SQL 案例：\n" + "\n".join(hit_titles) + f"\n\n当前最高相似度: {max_sim:.2f}。\n这些案例将作为强制性参考引导模型生成 SQL，以减少冗余迭代。",
+                            "status": "success"
+                        }
+                        
+                        few_shot_block = ExampleService.build_few_shot_prompt(examples)
+                        if few_shot_block:
+                            system_prompt = few_shot_block + "\n\n---\n\n" + system_prompt
+                            logger.info(f"[FewShot] Injected {len(examples)} examples at HEAD of system prompt for trace_id: {self.trace_id}")
+                        
+                        _few_shot_reminder = ExampleService.build_few_shot_reminder(examples)
+                        
+                        try:
+                            example_ids = [ex["id"] for ex in examples if ex.get("id")]
+                            similarities = [ex.get("similarity", 0) for ex in examples if ex.get("id")]
+                            if example_ids:
+                                asyncio.create_task(ExampleService.record_usage(example_ids, self.trace_id, similarities=similarities))
+                        except Exception as ree:
+                            logger.error(f"[FewShot] Failed to record usage statistic: {ree}")
+            except Exception as fe:
+                logger.warning(f"[FewShot] Failed to search/inject examples: {fe}")
+            yield {
+                "type": "log",
+                "id": fewshot_log_id,
+                "title": "检索经验库完成",
+                "details": "经验库检索完成，继续构建本轮提示上下文。",
+                "status": "success",
+                "execution_time_ms": (time.time() - fewshot_start) * 1000,
+            }
 
         if "{dataset_menu}" in system_prompt:
             # 注入用户权限信息
@@ -697,7 +622,7 @@ class DataQueryExecutor(BaseExecutor):
                 break
 
             response = accumulated_msg
-            tokens = _extract_tokens_from_message(response)
+            tokens = extract_tokens_from_message(response)
             if response is None:
                 if step == 1 and not accumulated_content:
                     return # No response from model
@@ -705,7 +630,7 @@ class DataQueryExecutor(BaseExecutor):
                 response = AIMessage(content=accumulated_content)
 
             if not response.tool_calls and "<function_calls>" in accumulated_content:
-                response.tool_calls = self._parse_xml_tool_calls(accumulated_content)
+                response.tool_calls = parse_xml_tool_calls(accumulated_content)
 
             thought_elapsed_ms = (time.time() - start_thought) * 1000
             self.trace_buffer.append(AgentExecutionStep(
@@ -1139,7 +1064,7 @@ class DataQueryExecutor(BaseExecutor):
         if not isinstance(s_model, str): s_model = str(self.config.model_name)
         if not isinstance(s_temp, (int, float)): s_temp = float(self.config.temperature or 0.7)
 
-        tokens = _extract_tokens_from_message(accumulated_msg)
+        tokens = extract_tokens_from_message(accumulated_msg)
 
         self.trace_buffer.append(AgentExecutionStep(
             step_number=self.step_counter, event_type="synthesis", agent_name=self.config.agent_name,
@@ -1326,15 +1251,4 @@ class DataQueryExecutor(BaseExecutor):
         return f"工具 {tool_name} 执行出错: {err_str}"
 
     def _parse_xml_tool_calls(self, content: str) -> List[Dict[str, Any]]:
-        import re; tool_calls = []
-        match = re.search(r"<function_calls>(.*?)</function_calls>", content, re.DOTALL | re.IGNORECASE)
-        if not match: return tool_calls
-        try:
-            from xml.etree import ElementTree as ET
-            root = ET.fromstring(match.group(0))
-            for invoke in root.findall("invoke"):
-                name = invoke.get("name")
-                args = {p.get("name"): p.text for p in invoke.findall("parameter") if p.get("name")}
-                if name: tool_calls.append({"name": name, "args": args, "id": f"xml_call_{uuid.uuid4().hex[:8]}"})
-        except: pass
-        return tool_calls
+        return parse_xml_tool_calls(content)

@@ -17,44 +17,34 @@ from langchain_core.messages import (
 from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
-from app.services.ai.executors.prompts import GeneralChatPrompts, SharedPrompts
+from app.services.ai.executors.base import BaseExecutor
+from app.services.ai.executors.common import (
+    convert_history_to_messages,
+    extract_tokens_from_message,
+    parse_xml_tool_calls,
+    tools_include_named,
+)
+from app.services.ai.executors.prompts import GeneralChatPrompts
+from app.services.ai.turn_classifier import TurnType
 
 logger = logging.getLogger(__name__)
 
-def _extract_tokens_from_message(msg: Any) -> dict:
-    """
-    Extract token usage from LangChain message or chunk.
-    """
-    res = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    if not msg:
-        return res
-    if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-        um = msg.usage_metadata
-        res["prompt_tokens"] = um.get("input_tokens") or 0
-        res["completion_tokens"] = um.get("output_tokens") or 0
-        res["total_tokens"] = um.get("total_tokens") or (res["prompt_tokens"] + res["completion_tokens"])
-        return res
-    if hasattr(msg, "response_metadata") and isinstance(msg.response_metadata, dict):
-        tu = msg.response_metadata.get("token_usage")
-        if isinstance(tu, dict):
-            res["prompt_tokens"] = tu.get("prompt_tokens") or tu.get("input_tokens") or 0
-            res["completion_tokens"] = tu.get("completion_tokens") or tu.get("output_tokens") or 0
-            res["total_tokens"] = tu.get("total_tokens") or (res["prompt_tokens"] + res["completion_tokens"])
-            return res
-    return res
 
-class GeneralChatExecutor:
-    def __init__(self, config: ChatConfig, trace_id: str, trace_buffer: List[AgentExecutionStep], debug_options: Dict[str, Any] = {}, user_info: Optional[Dict[str, Any]] = None, conversation_id: Optional[str] = None):
-        self.config = config
-        self.trace_id = trace_id
-        self.trace_buffer = trace_buffer
-        self.debug_options = debug_options
-        self.user_info = user_info
-        self.conversation_id = conversation_id
-        self.step_counter = 0
-
-    def _increment_step(self):
-        self.step_counter += 1
+class GeneralChatExecutor(BaseExecutor):
+    def __init__(
+        self,
+        config: ChatConfig,
+        trace_id: str,
+        trace_buffer: List[AgentExecutionStep],
+        debug_options: Dict[str, Any] = None,
+        user_info: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+    ):
+        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+        self.intent_info = None
+        self.intent_elapsed_ms = 0.0
+        self.turn_classification = None
+        self._requires_knowledge_search = False
 
     async def execute(
         self,
@@ -70,82 +60,23 @@ class GeneralChatExecutor:
         if system_tools:
             tools.extend(system_tools)
 
-        # 2. Build Messages
-        langchain_messages = []
-        system_content = self.config.system_prompt
-        langchain_messages.append(SystemMessage(content=system_content))
+        if self._requires_knowledge_search or (
+            getattr(self, "turn_classification", None)
+            and self.turn_classification.turn_type == TurnType.KNOWLEDGE
+        ):
+            self._requires_knowledge_search = True
 
-        for m in history:
-            role = m["role"]
-            content = m["content"]
-            if role == "user":
-                import base64
-                import os
-                files = m.get("files")
-                img_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-                img_files = []
-                non_img_files = []
-                if files:
-                    for f in files:
-                        if f.get("type") in ("skill", "knowledge_base"):
-                            continue
-                        ext = f.get("ext", "")
-                        if not ext and f.get("url"):
-                            ext = os.path.splitext(f["url"])[1]
-                        if ext and ext.lower() in img_extensions:
-                            img_files.append(f)
-                        else:
-                            non_img_files.append(f)
-                
-                # 构造非图片/Skills 的路径附随与引导提示词
-                attachment_prompt = ""
-                if non_img_files:
-                    lines = [SharedPrompts.NON_IMAGE_ATTACHMENT_HEADER]
-                    for f in non_img_files:
-                        url = f.get("url", "")
-                        filename = f.get("filename", "未知文件")
-                        size_str = f"{(f.get('size', 0) / 1024):.1f} KB" if f.get("size") else "未知大小"
-                        unique_name = os.path.basename(url)
-                        abs_path = f"/app/data/uploads/{unique_name}"
-                        lines.append(f"- 文件名: {filename} (大小: {size_str})")
-                        lines.append(f"  服务器内绝对路径: {abs_path}")
-                    lines.append(SharedPrompts.NON_IMAGE_ATTACHMENT_FOOTER)
-                    attachment_prompt = "\n".join(lines)
-                
-                final_text = content + attachment_prompt
-                
-                if img_files:
-                    multimodal_content = [{"type": "text", "text": final_text}]
-                    for f in img_files:
-                        url = f.get("url", "")
-                        base64_data = None
-                        if url.startswith("/static/uploads/"):
-                            filename = os.path.basename(url)
-                            local_path = os.path.join("data/uploads", filename)
-                            if os.path.exists(local_path):
-                                try:
-                                    with open(local_path, "rb") as image_file:
-                                        encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-                                    ext_cleaned = f.get("ext", "png").lower().strip(".")
-                                    if ext_cleaned == "jpg": ext_cleaned = "jpeg"
-                                    mime_type = f"image/{ext_cleaned}"
-                                    base64_data = f"data:{mime_type};base64,{encoded_string}"
-                                except Exception as e:
-                                    logger.warning(f"Failed to read local image for vision: {e}")
-                        img_url = base64_data if base64_data else url
-                        if img_url:
-                            multimodal_content.append({
-                                "type": "image_url",
-                                "image_url": {"url": img_url}
-                            })
-                    langchain_messages.append(HumanMessage(content=multimodal_content))
-                else:
-                    langchain_messages.append(HumanMessage(content=final_text))
-            elif role == "assistant":
-                langchain_messages.append(AIMessage(content=content))
-            elif role == "system":
-                # Crucial: Preserving injected identity and guidelines
-                langchain_messages.append(SystemMessage(content=content))
+        if self._requires_knowledge_search and not tools_include_named(tools, "search_knowledge_base"):
+            kb_tool = await ToolRegistry.get_tool("search_knowledge_base")
+            if kb_tool:
+                tools.append(kb_tool)
+
+        # 2. Build Messages
+        system_content = self.config.system_prompt or ""
+        if self._requires_knowledge_search:
+            system_content = f"{GeneralChatPrompts.KNOWLEDGE_TURN_SYSTEM_HINT}\n\n{system_content}"
+        langchain_messages = [SystemMessage(content=system_content)]
+        langchain_messages.extend(convert_history_to_messages(history))
 
         # 3. Execution Mode Selection
         if not tools:
@@ -171,7 +102,7 @@ class GeneralChatExecutor:
                     full_content += chunk.content
                     yield {"content": chunk.content}
             
-            tokens = _extract_tokens_from_message(accumulated_msg)
+            tokens = extract_tokens_from_message(accumulated_msg)
             
             # Record final answer as a trace step
             self._increment_step()
@@ -221,6 +152,11 @@ class GeneralChatExecutor:
                     last_user_message_text(history)
                 )
 
+        knowledge_search_pending = (
+            self._requires_knowledge_search
+            and tools_include_named(tools, "search_knowledge_base")
+        )
+
         while step < MAX_STEPS:
             step += 1
             self._increment_step()
@@ -231,6 +167,7 @@ class GeneralChatExecutor:
             accumulated_msg = None
             has_tool_call_indicator = False
             force_memory_recall = recall_query_pending and step == 1
+            force_knowledge_search = knowledge_search_pending and step == 1
             
             yield {"type": "thinking", "status": "continuing"}
             
@@ -246,18 +183,18 @@ class GeneralChatExecutor:
                         has_tool_call_indicator = True
                     
                     # If it's a direct answer in Step 1, stream it (skip when recall query needs memory_search first)
-                    if not has_tool_call_indicator and step == 1 and not force_memory_recall:
+                    if not has_tool_call_indicator and step == 1 and not force_memory_recall and not force_knowledge_search:
                         yield {"content": chunk.content}
                     
                     accumulated_content += chunk.content
 
             response = accumulated_msg
-            tokens = _extract_tokens_from_message(response)
+            tokens = extract_tokens_from_message(response)
             
             # --- [SPECIAL LOGIC: XML Tool Call Parsing] ---
             current_tool_calls = getattr(response, "tool_calls", [])
             if not current_tool_calls and accumulated_content and "<function_calls>" in accumulated_content:
-                parsed_calls = self._parse_xml_tool_calls(accumulated_content)
+                parsed_calls = parse_xml_tool_calls(accumulated_content)
                 if parsed_calls:
                     current_tool_calls = parsed_calls
 
@@ -278,6 +215,19 @@ class GeneralChatExecutor:
             ))
 
             if not current_tool_calls:
+                 if force_knowledge_search:
+                     yield {
+                         "type": "log",
+                         "id": f"knowledge_search_intercept_{step}",
+                         "title": "流程守护: 强制知识库检索",
+                         "details": "本轮为知识库问答，须先调用 search_knowledge_base。",
+                         "status": "warning",
+                     }
+                     langchain_messages.append(response)
+                     langchain_messages.append(SystemMessage(content=GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG))
+                     knowledge_search_pending = False
+                     continue
+
                  if force_memory_recall:
                      yield {
                          "type": "log",
@@ -321,6 +271,8 @@ class GeneralChatExecutor:
             for i, tool_call in enumerate(current_tool_calls):
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
+                if tool_name == "search_knowledge_base":
+                    knowledge_search_pending = False
                 if not tool_call.get("id"): tool_call["id"] = f"call_{uuid.uuid4().hex[:8]}"
                 
                 yield {"type": "log", "id": tool_call['id'], "title": f"调用工具: {tool_name}", "details": f"参数: {json.dumps(tool_args, ensure_ascii=False)}", "status": "pending"}
@@ -401,7 +353,7 @@ class GeneralChatExecutor:
                     full_synthesis_content += chunk.content
                     yield {"content": chunk.content}
 
-            tokens = _extract_tokens_from_message(accumulated_msg)
+            tokens = extract_tokens_from_message(accumulated_msg)
 
             # Trace Synthesis
             self._increment_step()
@@ -549,26 +501,3 @@ class GeneralChatExecutor:
                 lines.append(f"  [结果] {status_icon} {output_str}")
 
         return "\n".join(lines)
-
-    def _parse_xml_tool_calls(self, content: str) -> List[Dict[str, Any]]:
-        tool_calls = []
-        match = re.search(r"<function_calls>(.*?)</function_calls>", content, re.DOTALL | re.IGNORECASE)
-        if not match: match = re.search(r"<function_calls>(.*)", content, re.DOTALL | re.IGNORECASE)
-        if not match: return tool_calls
-        xml_content = match.group(0)
-        try:
-            from xml.etree import ElementTree as ET
-            fixed_xml = xml_content.replace("</invokefunction_calls>", "</invoke></function_calls>")
-            if not fixed_xml.endswith("</function_calls>"): fixed_xml += "</function_calls>"
-            root = ET.fromstring(fixed_xml)
-            for invoke in root.findall("invoke"):
-                name = invoke.get("name")
-                args = {}
-                for param in invoke.findall("parameter"):
-                    p_name = param.get("name")
-                    p_value = param.text
-                    if p_name: args[p_name] = p_value
-                if name: tool_calls.append({"name": name, "args": args, "id": f"call_{uuid.uuid4().hex[:8]}"})
-        except:
-            pass
-        return tool_calls

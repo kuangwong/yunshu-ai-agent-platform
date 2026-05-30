@@ -73,11 +73,10 @@ class RAGExecutor(BaseExecutor):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Use trace_id as conversation_id
                 content_emitted = False
                 async for chunk in self.client.chat_stream(
                     query=query,
-                    conversation_id=self.trace_id,
+                    conversation_id=self.conversation_id or self.trace_id,
                     history=history,
                     config=self.config.engine_config
                 ):

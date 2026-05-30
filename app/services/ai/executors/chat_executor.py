@@ -17,6 +17,7 @@ from langchain_core.messages import (
 from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
+from app.services.ai.executors.prompts import GeneralChatPrompts, SharedPrompts
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class GeneralChatExecutor:
                 # 构造非图片/Skills 的路径附随与引导提示词
                 attachment_prompt = ""
                 if non_img_files:
-                    lines = ["\n\n【用户随随上传了非图片附件信息】："]
+                    lines = [SharedPrompts.NON_IMAGE_ATTACHMENT_HEADER]
                     for f in non_img_files:
                         url = f.get("url", "")
                         filename = f.get("filename", "未知文件")
@@ -108,7 +109,7 @@ class GeneralChatExecutor:
                         abs_path = f"/app/data/uploads/{unique_name}"
                         lines.append(f"- 文件名: {filename} (大小: {size_str})")
                         lines.append(f"  服务器内绝对路径: {abs_path}")
-                    lines.append("[系统提示: 以上非图片文件或 skills 配置已安全保存在服务器。如果您拥有相关的读取文件工具、数据分析工具、数据库工具或 Python 代码解释器工具，可以直接使用上述绝对路径读取文件内容并为用户进行深度分析。]")
+                    lines.append(SharedPrompts.NON_IMAGE_ATTACHMENT_FOOTER)
                     attachment_prompt = "\n".join(lines)
                 
                 final_text = content + attachment_prompt
@@ -381,12 +382,7 @@ class GeneralChatExecutor:
             # [IMPROVED] Use structured trace instead of just raw tool outputs
             execution_review = self._format_trace_for_synthesis(self.trace_buffer)
 
-            synthesis_messages.append(HumanMessage(content=(
-                f"【当前追问】：{user_question}\n\n"
-                f"{execution_review}\n\n"
-                "请结合上述【执行过程回顾】和最新结果，为用户提供准确、连贯的最终回答。\n"
-                "注：如果执行过程主要是执行了一个外部动作（如发送钉钉消息、创建任务等），请直接简洁地告知执行结果即可，无需重复发送的具体内容或进行冗长的总结。"
-            )))
+            synthesis_messages.append(HumanMessage(content=GeneralChatPrompts.synthesis_user_message(user_question, execution_review)))
             
             final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
             
@@ -425,7 +421,7 @@ class GeneralChatExecutor:
             ))
 
         if step >= MAX_STEPS:
-             yield {"content": "[系统提示] 达到最大执行步骤，停止执行。"}
+             yield {"content": GeneralChatPrompts.MAX_STEPS_REACHED}
 
     async def _execute_single_tool_safe(self, tool_call: Dict, tools: List[Any], index: int) -> Dict[str, Any]:
         from langchain_core.messages import ToolMessage

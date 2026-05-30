@@ -5,6 +5,7 @@ from app.services.ai.agent_manager import AgentManagerService
 from app.services.ai.router_service import router_service
 from app.core.context import set_debug_context, set_agent_context, AgentContext
 from app.schemas.agent import ChatConfig
+from app.services.ai.agent_prompts import ContextManagerPrompts
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ class AgentContextManager:
                 agent_version="default",
                 model_name=default_model,
                 temperature=0.7,
-                system_prompt="You are a helpful AI assistant. Answer the user's questions to the best of your ability.",
+                system_prompt=ContextManagerPrompts.GENERAL_CHAT_FALLBACK_SYSTEM_PROMPT,
                 tools=[],
                 capabilities=["chat"],
                 engine_type="LOCAL"

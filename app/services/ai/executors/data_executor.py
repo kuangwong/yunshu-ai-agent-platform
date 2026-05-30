@@ -19,6 +19,7 @@ from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
 
 from app.services.ai.executors.base import BaseExecutor
+from app.services.ai.executors.prompts import DataQueryPrompts, SharedPrompts
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ class DataQueryExecutor(BaseExecutor):
                 # 构造非图片/Skills 的路径附随与引导提示词
                 attachment_prompt = ""
                 if non_img_files:
-                    lines = ["\n\n【用户随附上传了非图片附件信息】："]
+                    lines = [SharedPrompts.NON_IMAGE_ATTACHMENT_HEADER]
                     for f in non_img_files:
                         url = f.get("url", "")
                         filename = f.get("filename", "未知文件")
@@ -211,7 +212,7 @@ class DataQueryExecutor(BaseExecutor):
                         abs_path = f"/app/data/uploads/{unique_name}"
                         lines.append(f"- 文件名: {filename} (大小: {size_str})")
                         lines.append(f"  服务器内绝对路径: {abs_path}")
-                    lines.append("[系统提示: 以上非图片文件或 skills 配置已安全保存在服务器。如果您拥有相关的读取文件工具、数据分析工具、数据库工具或 Python 代码解释器工具，可以直接使用上述绝对路径读取文件内容并为用户进行深度分析。]")
+                    lines.append(SharedPrompts.NON_IMAGE_ATTACHMENT_FOOTER)
                     attachment_prompt = "\n".join(lines)
                 
                 final_text = content + attachment_prompt
@@ -334,7 +335,7 @@ class DataQueryExecutor(BaseExecutor):
         }
         yield {"type": "thinking", "status": "continuing"}
 
-        prompt_without_menu = (system_prompt or "").replace("{dataset_menu}", "本轮复用上一轮结构化查询结果，不重新检索数据集。")
+        prompt_without_menu = (system_prompt or "").replace("{dataset_menu}", DataQueryPrompts.REUSE_DATASET_MENU_PLACEHOLDER)
         result_json = json.dumps(last_result, ensure_ascii=False, indent=2)
         if len(result_json) > 30000:
             result_json = result_json[:30000] + "\n... [上一轮结果过长已截断]"
@@ -343,13 +344,7 @@ class DataQueryExecutor(BaseExecutor):
         for msg in langchain_messages[-6:-1]:
             if isinstance(msg, (HumanMessage, AIMessage)) and getattr(msg, "content", None):
                 synthesis_messages.append(msg)
-        synthesis_messages.append(HumanMessage(content=(
-            f"【当前追问】：{user_question}\n\n"
-            "【上一轮结构化查询结果】\n"
-            f"{result_json}\n\n"
-            "请只基于上一轮结构化查询结果完成分析或可视化，不要声称已重新查询数据库。\n"
-            "如果适合可视化，请输出 markdown 结论并附带 ```chart JSON``` 图表配置。"
-        )))
+        synthesis_messages.append(HumanMessage(content=DataQueryPrompts.followup_synthesis_user_message(user_question, result_json)))
 
         final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
         full_synthesis_content = ""
@@ -380,7 +375,7 @@ class DataQueryExecutor(BaseExecutor):
                 }
         except Exception as syn_err:
             logger.error(f"[DataExecutor] Follow-up synthesis failed: {syn_err}")
-            fallback = "⚠️ 抱歉，基于上一轮结果生成分析时发生异常，请稍后重试。"
+            fallback = DataQueryPrompts.FOLLOWUP_SYNTHESIS_FALLBACK
             full_synthesis_content = fallback
             yield {"type": "log", "id": f"syn_err_{uuid.uuid4().hex[:6]}", "title": "⚠️ 总结生成失败", "details": str(syn_err), "status": "error"}
             yield {"content": fallback}
@@ -428,7 +423,7 @@ class DataQueryExecutor(BaseExecutor):
                     "details": "检测到本轮是基于上一轮结果的分析/可视化请求，但当前会话没有保存的结构化查询结果。",
                     "status": "error",
                 }
-                yield {"content": "当前会话没有可复用的上一轮查询结果，请先完成一次数据查询后再进行可视化或分析。"}
+                yield {"content": DataQueryPrompts.NO_REUSABLE_RESULT}
             return
 
         # 2. Prepare Tools
@@ -566,26 +561,8 @@ class DataQueryExecutor(BaseExecutor):
         # --- [Accuracy Upgrade] Force Plan -> SQL workflow (generic) ---
         # We add a strict instruction once per executor instance to reduce grain/join errors.
         if not self._sql_plan_enforcement_added:
-            langchain_messages.append(SystemMessage(content=(
-                "【SQL 生成强约束（通用）】\n"
-                "当你准备调用 execute_sql_query 之前，建议先在 <thought> 中输出一段结构化计划（用于提高准确性，避免 JOIN 放大/粒度错）。格式如下：\n"
-                "<thought><sql_plan>{\n"
-                "  \"dataset_name\": \"...\",\n"
-                "  \"data_source\": \"...\",\n"
-                "  \"grain_keys\": [\"...\"],\n"
-                "  \"time_window\": {\"field\": \"...\", \"range\": \"...\"},\n"
-                "  \"metrics_hit\": [\"...\"],\n"
-                "  \"joins\": [{\"table\": \"...\", \"on\": \"...\", \"cardinality_risk\": \"1:1|1:N|N:M\"}],\n"
-                "  \"ratio\": {\"numerator\": \"...\", \"denominator\": \"...\", \"denominator_semantics\": \"single_value|aggregate\"}\n"
-                "}</sql_plan></thought>\n"
-                "并遵循：先对齐粒度（CTE 聚合）→ 再 JOIN → 再计算比率/占比。禁止在明细粒度多对多 JOIN 后再聚合。\n"
-            )))
-            langchain_messages.append(SystemMessage(content=(
-                "【追问复用约束】\n"
-                "如果用户本轮只是要求“可视化一下 / 分析一下 / 总结一下 / 画个图 / 换成柱状图 / 基于刚才的数据”，"
-                "且没有新增查询对象、筛选条件、时间范围或指标口径，应基于上一轮结构化查询结果分析，不要把“可视化/分析”当作 schema 检索关键词。\n"
-                "只有用户明确提出重新查询、改变条件、改变时间范围或新增指标时，才进入新的 get_dataset_schema -> execute_sql_query 流程。\n"
-            )))
+            langchain_messages.append(SystemMessage(content=DataQueryPrompts.SQL_PLAN_ENFORCEMENT))
+            langchain_messages.append(SystemMessage(content=DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT))
             self._sql_plan_enforcement_added = True
 
         # 3. Model Setup
@@ -712,9 +689,7 @@ class DataQueryExecutor(BaseExecutor):
                 # Some unit tests and UI flows rely on this exact wording.
                 if step == 1 and len(accumulated_content or "") > 50:
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=(
-                        "检测到你在描述计划但未调用工具。请直接使用工具获取数据，不要只描述计划。"
-                    )))
+                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL))
                     continue
                 # If required tools are not available, don't spin in enforcement loops.
                 # This happens in some unit tests (only schema tool is provided).
@@ -724,14 +699,14 @@ class DataQueryExecutor(BaseExecutor):
                 # Hard rule: DataQueryExecutor is not allowed to answer without querying data.
                 # Always drive the model to tools (schema -> sql -> execute) across ALL steps.
                 if not self._schema_fetched_ok:
-                    must_msg = "你处于数据查询模式，禁止在未查数前给出回答。请先调用 get_dataset_schema(keywords) 获取 Schema。"
+                    must_msg = DataQueryPrompts.MUST_FETCH_SCHEMA
                 elif not self._schema_no_authorized and not self._sql_attempted:
-                    must_msg = "你已拿到 Schema，但尚未执行 SQL。禁止编造或直接总结。请立即调用 execute_sql_query(sql, data_source, dataset_name) 查数。"
+                    must_msg = DataQueryPrompts.MUST_EXECUTE_SQL
                 elif not self._schema_no_authorized and self._sql_attempted and not self._sql_succeeded:
-                    must_msg = "你已尝试执行 SQL 但未成功。禁止直接回答。请根据错误信息修正 SQL 并再次调用 execute_sql_query。"
+                    must_msg = DataQueryPrompts.MUST_FIX_SQL
                 else:
                     # Either no authorized datasets, or already executed successfully but model stopped calling tools.
-                    must_msg = "你处于数据查询模式。若仍需数据支撑，请继续调用工具获取数据；否则仅在已执行查询成功且结果充分时再进入总结。"
+                    must_msg = DataQueryPrompts.CONTINUE_OR_SUMMARIZE
                 langchain_messages.append(response)
                 langchain_messages.append(SystemMessage(content=must_msg))
                 continue
@@ -744,26 +719,18 @@ class DataQueryExecutor(BaseExecutor):
                 if require_plan:
                     # Block once and require plan in <thought> to keep UI clean.
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=(
-                        "你当前问题属于高风险数据查询（包含比率/趋势/排名/分组等），为避免算错口径，执行 SQL 前必须先输出计划。\n"
-                        "请先输出：<thought><sql_plan>{...}</sql_plan></thought>（简短即可，至少包含 dataset_name/data_source/grain_keys/time_window/joins/ratio）。\n"
-                        "然后再调用 execute_sql_query。"
-                    )))
+                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN))
                     continue
                 else:
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=(
-                        "提示：你将执行 SQL，但未输出 <thought><sql_plan>{...}</sql_plan></thought>。为提升准确性建议补齐（可简短）。本次不阻断执行。"
-                    )))
+                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING))
 
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
             if self._schema_fetched_ok and not self._schema_no_authorized and not self._sql_attempted:
                 has_sql_call = any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls)
                 if not has_sql_call:
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=(
-                        "你已经拿到数据集 Schema。下一步必须执行 SQL 查数（调用 execute_sql_query），禁止直接进入总结或输出结论。"
-                    )))
+                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_EXECUTE_SQL_AFTER_SCHEMA))
                     continue
 
             # Process Tool Calls
@@ -849,48 +816,7 @@ class DataQueryExecutor(BaseExecutor):
                         if anomaly_reason:
                             self._ratio_anomaly_feedback_sent = True
                             needs_followup_after_sql = True
-                            langchain_messages.append(SystemMessage(content=(
-                                f"【结果异常复核触发】检测到比率/占比类结果可能异常：{anomaly_reason}。\n"
-                                "请不要直接给最终结论。你必须：\n"
-                                "1) 复核统计粒度 grain_keys 与 JOIN 是否导致分子/分母被放大；\n"
-                                "2) 如是比率/负载率/利用率等，请追加最多 1 条【对账 SQL】（必须同一过滤条件/同一时间窗），并强制返回以下字段别名：\n"
-                                "   - grain_keys: 与当前输出一致的分组键（如 site_id/site_name/dept_id/day 等）\n"
-                                "   - numerator_value: 分子（已按 grain 聚合后的数值）\n"
-                                "   - denominator_value: 分母（已按 grain 对齐后的数值；若应为单值，用 MAX/MIN/ANY_VALUE 等确保不被 JOIN 放大）\n"
-                                "   - ratio_calc: 复算比率 = numerator_value / NULLIF(denominator_value, 0)\n"
-                                "   - ratio_returned: 原 SQL 返回的比率（同 grain_keys 对齐）\n"
-                                "   - diff_pct: (ratio_returned - ratio_calc) / NULLIF(ratio_calc, 0)\n"
-                                "   对账 SQL 输出行数应与当前分组行数一致（或可 join 对齐），并用于定位是 grain/单位/JOIN/分母异常导致。\n"
-                                "   通用模板（示意，按实际字段/表名替换）：\n"
-                                "   ```sql\n"
-                                "   SELECT\n"
-                                "     n.<grain_keys>,\n"
-                                "     n.numerator_value,\n"
-                                "     d.denominator_value,\n"
-                                "     (n.numerator_value / NULLIF(d.denominator_value, 0)) AS ratio_calc,\n"
-                                "     o.ratio_returned,\n"
-                                "     ((o.ratio_returned - (n.numerator_value / NULLIF(d.denominator_value, 0))) / NULLIF((n.numerator_value / NULLIF(d.denominator_value, 0)), 0)) AS diff_pct\n"
-                                "   FROM (\n"
-                                "       SELECT <grain_keys>, <numerator_expr> AS numerator_value\n"
-                                "       FROM <fact_tables>\n"
-                                "       WHERE <same_filters>\n"
-                                "       GROUP BY <grain_keys>\n"
-                                "   ) n\n"
-                                "   LEFT JOIN (\n"
-                                "       SELECT <grain_keys>, <denominator_expr> AS denominator_value\n"
-                                "       FROM <dim_or_fact_tables>\n"
-                                "       WHERE <same_filters_or_dim_filters>\n"
-                                "       GROUP BY <grain_keys>\n"
-                                "   ) d USING (<grain_keys>)\n"
-                                "   LEFT JOIN (\n"
-                                "       -- 直接复用原 SQL 或抽取其结果为 ratio_returned\n"
-                                "       SELECT <grain_keys>, <ratio_expr> AS ratio_returned\n"
-                                "       FROM <original_query_or_cte>\n"
-                                "   ) o USING (<grain_keys>)\n"
-                                "   LIMIT 1000;\n"
-                                "   ```\n"
-                                "3) 若对账不一致，按“先聚合对齐粒度→再 JOIN→再计算”的 SELECT 子查询骨架重写原 SQL，再执行。\n"
-                            )))
+                            langchain_messages.append(SystemMessage(content=DataQueryPrompts.ratio_anomaly_recheck(anomaly_reason)))
 
                 # --- [新增] 针对元数据检索日志的精简与增强逻辑 ---
                 if tool_call['name'] == "get_dataset_schema":
@@ -906,21 +832,7 @@ class DataQueryExecutor(BaseExecutor):
                         # After schema is fetched, force an explicit, tool-call-only nudge once.
                         if (not self._schema_no_authorized) and (not self._sql_attempted) and (not self._sql_after_schema_nudge_sent):
                             self._sql_after_schema_nudge_sent = True
-                            langchain_messages.append(SystemMessage(content=(
-                                "【下一步强制动作】你已经拿到 Schema。现在禁止输出任何解释性文字，必须立刻调用 execute_sql_query 查数。\n"
-                                "要求：\n"
-                                "1) 先输出 <sql_plan>{...}</sql_plan>（简短即可），grain_keys 必须明确；\n"
-                                "2) 随后直接发起 execute_sql_query 工具调用；\n"
-                                "3) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。\n"
-                                "工具调用示例（参数名必须是 sql/data_source/dataset_name）：\n"
-                                "<function_calls>\n"
-                                "  <invoke name=\"execute_sql_query\">\n"
-                                "    <parameter name=\"sql\">SELECT 1 LIMIT 1</parameter>\n"
-                                "    <parameter name=\"data_source\">your_data_source</parameter>\n"
-                                "    <parameter name=\"dataset_name\">your_dataset</parameter>\n"
-                                "  </invoke>\n"
-                                "</function_calls>"
-                            )))
+                            langchain_messages.append(SystemMessage(content=DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA))
                     keywords = tool_call['args'].get('keywords', '未指定')
                     # 在日志详情顶部增加检索词
                     header = f"🔍 [检索关键词]: {keywords}\n" + "-"*30 + "\n"
@@ -1002,7 +914,7 @@ class DataQueryExecutor(BaseExecutor):
                         "status": "error",
                         "execution_time_ms": 0,
                     }
-                    yield {"content": "⚠️ 元数据检索服务（RAGFlow）当前不可用，暂时无法获取数据集结构信息，因此无法完成本次数据查询。请稍后重试或联系管理员。"}
+                    yield {"content": DataQueryPrompts.METADATA_UNAVAILABLE}
                     return
 
                 # [优化2] get_dataset_schema 成功返回后，立即注入经验库案例二次提醒
@@ -1035,8 +947,8 @@ class DataQueryExecutor(BaseExecutor):
 
         # Hard gate: never synthesize a final answer without executing SQL (unless no authorized datasets).
         if not self._sql_attempted and not self._schema_no_authorized:
-            yield {"type": "log", "id": f"gate_{uuid.uuid4().hex[:8]}", "title": "⚠️ 缺少 SQL 查询", "details": "未执行 execute_sql_query，已阻止生成回复以避免编造。", "status": "error"}
-            yield {"content": "⚠️ 抱歉，本次未能成功执行数据查询，因此无法给出结论。请稍后重试或调整查询条件。"}
+            yield {"type": "log", "id": f"gate_{uuid.uuid4().hex[:8]}", "title": "⚠️ 缺少 SQL 查询", "details": DataQueryPrompts.GATE_NO_SQL_LOG_DETAILS, "status": "error"}
+            yield {"content": DataQueryPrompts.GATE_NO_SQL_CONTENT}
             return
 
         start_synthesis = time.time()
@@ -1068,12 +980,7 @@ class DataQueryExecutor(BaseExecutor):
         # [IMPROVED] Use structured trace instead of just raw tool outputs
         execution_review = self._format_trace_for_synthesis(self.trace_buffer)
         
-        synthesis_messages.append(HumanMessage(content=(
-            f"【当前追问】：{user_question}\n\n"
-            f"{execution_review}\n\n"
-            "请结合上述【执行过程回顾】和查询结果，为用户提供连贯且专业的最终回答。\n"
-            "注：如果执行过程主要是执行了一个外部动作（如发送消息、启动/暂停任务等），请直接简洁地告知执行结果即可，无需赘述。"
-        )))
+        synthesis_messages.append(HumanMessage(content=DataQueryPrompts.synthesis_user_message(user_question, execution_review)))
 
         final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
         content_emitted = False
@@ -1115,7 +1022,7 @@ class DataQueryExecutor(BaseExecutor):
             yield {"type": "log", "id": f"syn_err_{uuid.uuid4().hex[:6]}", "title": "⚠️ 总结生成失败", "details": f"模型在总结阶段返回异常: {str(syn_err)}", "status": "error"}
             # 即使合成失败，也尝试将累积的内容保存或返回
             if not full_synthesis_content:
-                full_synthesis_content = "⚠️ 抱歉，总结生成过程中发生模型异常，请参考上方的执行步骤。"
+                full_synthesis_content = DataQueryPrompts.SYNTHESIS_FAILED_FALLBACK
                 yield {"content": full_synthesis_content}
         
         self._increment_step()

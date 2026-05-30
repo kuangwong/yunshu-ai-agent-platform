@@ -1070,7 +1070,7 @@
             <input 
               v-model="skillSelectorSearchQuery"
               type="text" 
-              placeholder="搜索技能名称或标识..." 
+              placeholder="搜索技能名称、标识或目录..." 
               class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
             />
           </div>
@@ -1107,6 +1107,16 @@
                 <span class="text-[9px] font-mono text-gray-400 shrink-0 select-all uppercase">ID: {{ skill.id }}</span>
               </div>
               <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{{ skill.description || '暂无描述信息' }}</p>
+              <div
+                v-if="skill.path"
+                class="mt-1.5 flex items-center gap-1 text-[9px] font-mono text-gray-400 dark:text-gray-500 min-w-0"
+                :title="skill.path"
+              >
+                <svg class="w-3 h-3 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <span class="truncate">{{ skill.path }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -2713,7 +2723,8 @@ const filteredSkillsForSelector = computed(() => {
   return allSkillsList.value.filter(s => 
     s.name?.toLowerCase().includes(query) || 
     s.id?.toLowerCase().includes(query) ||
-    s.description?.toLowerCase().includes(query)
+    s.description?.toLowerCase().includes(query) ||
+    s.path?.toLowerCase().includes(query)
   );
 });
 

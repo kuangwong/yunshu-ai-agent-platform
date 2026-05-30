@@ -20,7 +20,11 @@ from app.services.ai.config import AgentConfigProvider
 
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.prompts import DataQueryPrompts, SharedPrompts
-from app.services.ai.intent_service import looks_like_context_action
+from app.services.ai.intent_service import (
+    looks_like_context_action,
+    looks_like_skill_execution,
+    looks_like_pure_result_followup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +68,16 @@ class DataQueryExecutor(BaseExecutor):
         # 本轮是否“需要重新查数”（K1）。对已有结果做保存/导出/发送/记忆/建技能等动作（K3）时为 False，
         # 届时关闭“必须先查库”的强制护栏，允许直接基于上下文调用工具或作答。
         self._requires_fresh_data = True
+        self._skill_ready = False
+        self._needs_skill_prep = False
 
     # 数据查询类工具：调用这些以外的工具（如 create_skills）视为“元操作/外部动作”，
     # 不应再被“必须先查库”的护栏阻断。
     DATA_TOOL_NAMES = {"get_dataset_schema", "execute_sql_query", "update_dashboard_context"}
+    SKILL_TOOL_NAMES = {"list_available_skills", "read_skill_instruction"}
+
+    def _active_skills_in_system_prompt(self, system_prompt: str) -> bool:
+        return "[Active Skills Loaded]" in (system_prompt or "")
 
     def _increment_step(self):
         self.step_counter += 1
@@ -269,30 +279,8 @@ class DataQueryExecutor(BaseExecutor):
             return None
 
     def _is_last_result_followup(self, user_question: str) -> bool:
-        q = (user_question or "").strip().lower()
-        if not q:
-            return False
-
-        # 带“动作动词”的请求（保存/导出/发送/创建技能等）不是纯加工追问，
-        # 需要进入带工具的 ReAct 循环去真正执行动作，因此不走“无工具复用合成”分支。
-        if looks_like_context_action(user_question):
-            return False
-
-        followup_keywords = [
-            "可视化", "图表", "画图", "画个图", "柱状图", "折线图", "饼图", "分析一下", "总结一下",
-            "解读一下", "基于上", "基于刚才", "根据上", "根据刚才", "上面的", "刚才的", "这个结果",
-            "这些数据", "上一轮", "前面的", "按这个结果", "对这些",
-            "visual", "chart", "plot", "graph", "analyze", "summarize",
-        ]
-        if not any(keyword in q for keyword in followup_keywords):
-            return False
-
-        new_query_keywords = [
-            "重新查", "再查", "查询", "查一下", "查下", "统计", "列出", "筛选", "过滤", "最近",
-            "今天", "昨天", "本周", "上周", "本月", "上月", "新增条件", "换成条件",
-            "select ", "where ", "group by",
-        ]
-        return not any(keyword in q for keyword in new_query_keywords)
+        """K2 纯加工追问：复用上一轮结构化结果，同句不含新的查数诉求。"""
+        return looks_like_pure_result_followup(user_question)
 
     async def _load_last_data_result_for_followup(self, user_question: str) -> Optional[Dict[str, Any]]:
         if not self.conversation_id or not self._is_last_result_followup(user_question):
@@ -525,7 +513,7 @@ class DataQueryExecutor(BaseExecutor):
         self._sql_after_schema_nudge_sent = False
         self._no_tool_call_streak = 0
         self._non_data_tool_called = False
-        # 注：_requires_fresh_data 已在本轮入口按用户问题计算，此处不再重置覆盖。
+        # 注：_requires_fresh_data / _skill_ready / _needs_skill_prep 在本轮入口或下方按最终 system_prompt 计算。
         
         # [经验库] Few-Shot 检索与注入
         # 策略：将 Few-Shot 块插到 System Prompt【头部】，避免被 Lost-in-Middle 效应淹没
@@ -625,6 +613,12 @@ class DataQueryExecutor(BaseExecutor):
             langchain_messages.append(SystemMessage(content=DataQueryPrompts.SQL_PLAN_ENFORCEMENT))
             langchain_messages.append(SystemMessage(content=DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT))
             self._sql_plan_enforcement_added = True
+
+        # 技能执行：口头指定「使用 XX 技能」时，须先就绪技能指令再进入查数护栏。
+        self._skill_ready = self._active_skills_in_system_prompt(system_prompt)
+        self._needs_skill_prep = looks_like_skill_execution(self._current_user_question) and not self._skill_ready
+        if self._skill_ready:
+            langchain_messages.append(SystemMessage(content=DataQueryPrompts.SKILL_EXECUTION_GUIDE))
 
         # K3（对已有结果做动作/可直接基于上下文作答）：注入上一轮结构化结果并放宽“先查库”约束，
         # 让模型可以直接调用工具（保存/导出/记忆/创建技能等）或基于上下文作答，而非机械重查。
@@ -786,6 +780,11 @@ class DataQueryExecutor(BaseExecutor):
                 if self._schema_fetched_ok and "execute_sql_query" not in tool_names:
                     langchain_messages.append(response)
                     break
+                # 用户要求使用技能但尚未加载技能指令：优先引导 list/read_skill，而非直接逼查 Schema。
+                if self._needs_skill_prep and not self._skill_ready:
+                    langchain_messages.append(response)
+                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_LOAD_SKILL_FIRST))
+                    continue
                 # Hard rule: DataQueryExecutor is not allowed to answer without querying data.
                 # Always drive the model to tools (schema -> sql -> execute) across ALL steps.
                 if not self._schema_fetched_ok:
@@ -816,8 +815,14 @@ class DataQueryExecutor(BaseExecutor):
                     langchain_messages.append(SystemMessage(content=DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING))
 
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
-            # （K3 非新查数轮不强制：模型若已取 Schema 仅作参考，允许直接执行其它动作工具。）
-            if self._requires_fresh_data and self._schema_fetched_ok and not self._schema_no_authorized and not self._sql_attempted:
+            # （K3 非新查数轮不强制；技能尚未就绪时也不强制，应先 read_skill_instruction。）
+            if (
+                self._requires_fresh_data
+                and (self._skill_ready or not self._needs_skill_prep)
+                and self._schema_fetched_ok
+                and not self._schema_no_authorized
+                and not self._sql_attempted
+            ):
                 has_sql_call = any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls)
                 if not has_sql_call:
                     langchain_messages.append(response)
@@ -879,6 +884,9 @@ class DataQueryExecutor(BaseExecutor):
                 # 用于放松“必须先查库”的护栏：本轮若是元操作则允许在未查库时收尾。
                 if tool_status == "success" and tool_call['name'] not in self.DATA_TOOL_NAMES:
                     self._non_data_tool_called = True
+                if tool_status == "success" and tool_call['name'] == "read_skill_instruction":
+                    self._skill_ready = True
+                    self._needs_skill_prep = False
 
                 # --- [优化] SQL 执行日志显示增强 ---
                 # 强制所有 execute_sql_query 都显示SQL语句，不管状态如何
@@ -999,6 +1007,8 @@ class DataQueryExecutor(BaseExecutor):
                 if tool_call["name"] == "update_dashboard_context" and tool_status == "success":
                     yield {"type": "context_update", "data": tool_call["args"]}
                 langchain_messages.append(ToolMessage(content=str(feedback), tool_call_id=tool_call["id"]))
+                if tool_status == "success" and tool_call["name"] == "read_skill_instruction":
+                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.SKILL_EXECUTION_GUIDE))
 
                 # 元数据服务不可用：硬终止，直接给出明确失败结论，绝不进入 execute_sql_query 臆造查询。
                 if self._metadata_unavailable:
@@ -1236,7 +1246,7 @@ class DataQueryExecutor(BaseExecutor):
             return "success", None, False
 
         out_str = str(output or "")
-        low = out_str.lower()
+        low = out_str.lower().strip()
         critical_signals = (
             "critical",
             "authentication failed",
@@ -1251,12 +1261,27 @@ class DataQueryExecutor(BaseExecutor):
         if low.startswith("[tool_error]"):
             return "error", out_str[:200], any(s in low for s in critical_signals)
 
+        # Application/business error prefixes returned by sql_query_execution_service / data_api
+        # (e.g. "Error: Dataset 'xxx' not found", "[Validation Failed]", "[Permission Denied]")
+        if re.match(
+            r"^\s*("
+            r"error:|错误[：:]|"
+            r"\[(validation failed|permission denied|security error|tool_error|tool error|"
+            r"rag error|system config error|rag connection error)\]"
+            r")",
+            low,
+            flags=re.IGNORECASE,
+        ):
+            return "error", out_str[:200], any(s in low for s in critical_signals)
+
         # Strong error signals
         strong_signals = (
             "traceback",
             "exception",
             "sql error",
             "syntax error",
+            "sql validation failed",
+            "validation failed",
             "permission denied",
             "access denied",
             "unauthorized",
@@ -1264,7 +1289,19 @@ class DataQueryExecutor(BaseExecutor):
             "timeout",
             "timed out",
             "connection refused",
+            "connection error",
             "failed",
+            "not found",
+            "parse failed",
+            "are not allowed",
+            "are prohibited",
+            "empty sql query",
+            "only read-only queries",
+            "dangerous keyword",
+            "external api error",
+            "error from api",
+            "本地执行 sql 失败",
+            "执行超时",
         )
         if any(s in low for s in strong_signals):
             return "error", out_str[:200], any(s in low for s in critical_signals)

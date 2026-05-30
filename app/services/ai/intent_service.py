@@ -64,24 +64,49 @@ _FOLLOWUP_KEYWORDS = [
     "visual", "chart", "plot", "graph", "analyze", "summarize",
 ]
 _NEW_QUERY_KEYWORDS = [
-    "重新查", "再查", "查询", "查一下", "查下", "统计", "列出", "筛选", "过滤", "最近",
+    "重新查", "再查", "查询", "查一下", "查下", "统计", "列出", "列表", "筛选", "过滤", "最近",
     "今天", "昨天", "本周", "上周", "本月", "上月", "新增条件", "换成条件",
+    "获取", "拉取", "看看", "展示", "显示", "查",
     "select ", "where ", "group by",
+]
+# 同句「查数 + 可视化/分析」时的可视化侧信号（与 _FOLLOWUP_KEYWORDS 部分重叠，用于识别复合 K1）。
+_COMPOUND_VIZ_KEYWORDS = [
+    "可视化", "图表", "画图", "画个图", "柱状图", "折线图", "饼图", "分析",
+    "visual", "chart", "plot", "graph", "analyze",
 ]
 
 
-def looks_like_data_followup(user_question: str) -> bool:
-    """轻量启发式：判断本轮是否为对上一轮数据结果的追问/加工。
-
-    与 DataQueryExecutor._is_last_result_followup 保持一致，供 dispatcher 在
-    确实存在可复用数据结果时做"跳过意图识别 LLM"的短路。
-    """
+def looks_like_compound_query_with_viz(user_question: str) -> bool:
+    """同一句里既要查数又要可视化/分析 → K1 复合请求，不是 K2 复用上一轮。"""
     q = (user_question or "").strip().lower()
     if not q:
+        return False
+    has_viz = any(keyword in q for keyword in _COMPOUND_VIZ_KEYWORDS)
+    has_query = any(keyword in q for keyword in _NEW_QUERY_KEYWORDS)
+    return has_viz and has_query
+
+
+def looks_like_pure_result_followup(user_question: str) -> bool:
+    """K2：仅对已有结果做可视化/分析/总结，同句不含新的查数诉求。"""
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    if looks_like_context_action(user_question):
+        return False
+    if looks_like_compound_query_with_viz(user_question):
         return False
     if not any(keyword in q for keyword in _FOLLOWUP_KEYWORDS):
         return False
     return not any(keyword in q for keyword in _NEW_QUERY_KEYWORDS)
+
+
+def looks_like_data_followup(user_question: str) -> bool:
+    """轻量启发式：判断本轮是否为对上一轮数据结果的纯加工追问（K2）。
+
+    与 DataQueryExecutor 保持一致，供 dispatcher 在确实存在可复用数据结果时
+    做"跳过意图识别 LLM"的短路。同句含查数+可视化的复合请求不算 K2。
+    """
+    return looks_like_pure_result_followup(user_question)
 
 
 # 元操作（Meta-Action）：对已有对话/结果做封装、保存、记忆等管理动作，本身不查询业务数据。
@@ -100,6 +125,26 @@ def looks_like_meta_action(user_question: str) -> bool:
     if not q:
         return False
     return any(p.search(q) for p in _META_ACTION_PATTERNS)
+
+
+# 显式要求使用/执行某个已创建技能（与“创建技能”元操作区分）。
+_SKILL_EXEC_PATTERNS = [
+    re.compile(r"使用.{0,24}技能", re.I),
+    re.compile(r"用.{0,24}技能", re.I),
+    re.compile(r"(执行|运行|加载|触发|套用|按照).{0,16}技能", re.I),
+    re.compile(r"use\s+.{0,24}skill", re.I),
+    re.compile(r"run\s+.{0,24}skill", re.I),
+]
+
+
+def looks_like_skill_execution(user_question: str) -> bool:
+    """轻量启发式：用户是否在要求使用/执行某个技能（而非创建新技能）。"""
+    q = (user_question or "").strip()
+    if not q:
+        return False
+    if looks_like_meta_action(q):
+        return False
+    return any(p.search(q) for p in _SKILL_EXEC_PATTERNS)
 
 
 # 上下文动作（Context-Action）：对“已有对话/上一轮结果”执行保存、导出、发送、记忆等动作。

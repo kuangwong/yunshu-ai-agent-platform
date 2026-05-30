@@ -222,9 +222,11 @@ class AgentService:
                     if file_obj.get("type") == "skill":
                         active_skills.append(file_obj)
 
+            mounted_skill_ids = {s.get("url") for s in active_skills if s.get("url")}
+            skills_injection = []
+
             if active_skills:
                 import os
-                skills_injection = []
                 for skill_obj in active_skills:
                     skill_id = skill_obj.get("url")
                     skill_name = skill_obj.get("filename", skill_id).replace(" (技能)", "")
@@ -245,13 +247,41 @@ class AgentService:
                             logger.error(f"[Skills] Failed to read skill markdown for {skill_id}: {read_err}")
                     else:
                         logger.warning(f"[Skills] Skill markdown file not found at {skill_md_path}")
-                
-                if skills_injection:
-                    skills_profile = AgentServicePrompts.skills_profile(skills_injection)
-                    if agent_config.system_prompt:
-                        agent_config.system_prompt = f"{skills_profile}\n\n{agent_config.system_prompt}"
-                    else:
-                        agent_config.system_prompt = skills_profile
+
+            # 用户口头指定「使用 XX 技能」但未在输入框挂载时，按 name/id 自动解析并注入。
+            if user_query:
+                try:
+                    from app.services.ai.skill_resolver import resolve_skills_from_query, load_skill_md_content
+
+                    for skill_meta in resolve_skills_from_query(user_query):
+                        skill_id = skill_meta.get("id")
+                        if not skill_id or skill_id in mounted_skill_ids:
+                            continue
+                        skill_content = load_skill_md_content(skill_id)
+                        if not skill_content:
+                            continue
+                        skill_name = skill_meta.get("name") or skill_id
+                        skills_injection.append(
+                            AgentServicePrompts.skill_injection_block(skill_name, skill_id, skill_content)
+                        )
+                        mounted_skill_ids.add(skill_id)
+                        logger.info("[Skills] Auto-resolved and injected skill %s from user query.", skill_id)
+                        yield {
+                            "type": "log",
+                            "id": f"skill_load_{skill_id}",
+                            "title": f"已加载技能: {skill_name}",
+                            "details": f"已从技能库匹配并注入技能「{skill_name}」(ID: {skill_id})，将按技能指令执行。",
+                            "status": "success",
+                        }
+                except Exception as resolve_err:
+                    logger.warning("[Skills] Failed to auto-resolve skills from query: %s", resolve_err)
+
+            if skills_injection:
+                skills_profile = AgentServicePrompts.skills_profile(skills_injection)
+                if agent_config.system_prompt:
+                    agent_config.system_prompt = f"{skills_profile}\n\n{agent_config.system_prompt}"
+                else:
+                    agent_config.system_prompt = skills_profile
 
             # --- Global Skill Discovery Hint ---
             try:

@@ -70,6 +70,21 @@ class DataQueryPrompts:
     # 未拿到 Schema 时强制先检索 Schema
     MUST_FETCH_SCHEMA = "你处于数据查询模式，禁止在未查数前给出回答。请先调用 get_dataset_schema(keywords) 获取 Schema。"
 
+    # 用户要求使用技能但尚未加载技能指令时，优先读取技能而非直接查 Schema
+    MUST_LOAD_SKILL_FIRST = (
+        "用户明确要求使用某个技能。请先调用 list_available_skills 定位技能 ID，"
+        "再调用 read_skill_instruction(skill_id) 读取完整技能指令；"
+        "若 System Prompt 中已存在 [Active Skills Loaded] 技能块，则直接严格按技能流程执行。"
+        "在技能指令尚未就绪前，禁止跳过技能直接调用 get_dataset_schema。"
+    )
+
+    # 技能已注入/已读取后，优先遵循技能流程再进入查数
+    SKILL_EXECUTION_GUIDE = (
+        "【技能执行模式】当前会话已加载技能指令。请严格按技能中的步骤与口径执行；"
+        "若技能包含数据查询步骤，再按技能要求调用 get_dataset_schema / execute_sql_query，"
+        "不要忽略技能自行编造查询流程。"
+    )
+
     # 已拿 Schema 未执行 SQL
     MUST_EXECUTE_SQL = "你已拿到 Schema，但尚未执行 SQL。禁止编造或直接总结。请立即调用 execute_sql_query(sql, data_source, dataset_name) 查数。"
 

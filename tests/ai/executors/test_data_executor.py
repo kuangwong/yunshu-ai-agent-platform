@@ -500,3 +500,49 @@ async def test_data_executor_retries_after_recoverable_sql_tool_error(data_confi
         assert mock_tool_sql.ainvoke.call_count == 2
         tool_steps = [step for step in executor.trace_buffer if step.event_type == "tool_call"]
         assert [step.status for step in tool_steps] == ["error", "success"]
+
+
+def test_analyze_result_dataset_not_found_is_error(data_config):
+    executor = DataQueryExecutor(config=data_config, trace_id="test-analyze-dataset", trace_buffer=[])
+    err = "Error: Dataset 'user_list' not found. Please verify the dataset name."
+    status, msg, critical = executor._analyze_result(err)
+    assert status == "error"
+    assert "not found" in (msg or "").lower()
+    assert critical is False
+
+
+def test_analyze_result_validation_failed_is_error(data_config):
+    executor = DataQueryExecutor(config=data_config, trace_id="test-analyze-validation", trace_buffer=[])
+    status, _, _ = executor._analyze_result("[Validation Failed] SQL语法错误: foo")
+    assert status == "error"
+
+
+def test_analyze_result_json_rows_still_success(data_config):
+    executor = DataQueryExecutor(config=data_config, trace_id="test-analyze-json", trace_buffer=[])
+    status, _, _ = executor._analyze_result('[{"id": 1}]')
+    assert status == "success"
+
+
+@pytest.mark.parametrize("err_text", [
+    "Error: Dataset 'user_list' not found. Please verify the dataset name.",
+    "[Validation Failed] SQL语法错误: foo",
+    "[Permission Denied] 无权访问表 't'",
+    "[Security Error] Failed to apply data permissions: x",
+    "[TOOL_ERROR] 本地执行 SQL 失败，错误信息: boom",
+    "[Tool Error] Failed to retrieve metadata: boom",
+    "[RAG Error] API returned 502: bad gateway",
+    "[System Config Error] RAGFlow API URL or API Key is missing.",
+    "Empty SQL query.",
+    "Only read-only queries (SELECT, EXPLAIN, SHOW, DESCRIBE) are allowed.",
+    "Multi-statement queries are prohibited.",
+    "Write/DDL operations are not allowed.",
+    "SQL parse failed: unexpected token",
+    "MySQL SQL Syntax Error: bad syntax",
+    "SQL Validation Failed: no select",
+])
+def test_analyze_result_common_sql_and_tool_errors(data_config, err_text):
+    executor = DataQueryExecutor(config=data_config, trace_id="test-analyze-errors", trace_buffer=[])
+    status, _, _ = executor._analyze_result(err_text)
+    assert status == "error", err_text
+
+

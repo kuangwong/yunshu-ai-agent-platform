@@ -2,7 +2,7 @@
 
 **状态**：已确认（未实现）  
 **日期**：2026-05-27  
-**关联**：`ChatFlow.md` §4.1、`MemoryService`、`ToolRegistry`、`MemoryManagement.vue`（待建）
+**关联**：`architech/design/chat/CHAT_FLOW.md` §4.1、`MemoryService`、`ToolRegistry`、`MemoryManagement.vue`
 
 ---
 

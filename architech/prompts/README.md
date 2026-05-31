@@ -1,20 +1,39 @@
-# 云枢智能体平台 提示词管理 (Prompts Management)
+# 云枢智能体平台 · 提示词草稿库
 
-本目录汇集了系统中所有涉及大语言模型（LLM）的提示词，便于统一管理、版本跟踪与优化。
+本目录存放**运营/架构迭代用的提示词 Markdown 草稿**，便于版本对比与导入智能体管理后台。  
+**运行时真相源**以代码与数据库为准：
 
-## 目录结构
+| 类型 | 运行时位置 |
+|------|------------|
+| 平台全局守则 | `app/services/ai/agent_prompts.py` → `PLATFORM_GLOBAL_SYSTEM_PROMPT` |
+| 路由 / 意图 | `router_service.py`、`intent_service.py`（内置，不可 DB 配置） |
+| 编排注入（技能/LTM/记忆） | `agent_prompts.py` + `agent_service.py` |
+| ChatBI / 通用对话护栏 | `app/services/ai/executors/prompts.py` |
+| 智能体主提示 | DB `ai_agent_versions.system_prompt` |
 
-- [意图识别 (Intent Recognition)](intent_recognition.md): 用于 `IntentService` 的核心分类逻辑。
-- [全局编排路由 (Orchestration Router)](orchestration_router.md): 用于 `RouterService` 的 Agent 智能分发逻辑。
-- [元数据解析生成 (Metadata Generator)](metadata_generator.md): 用于 DDL/Markdown 解析的专用提示词。
-- [智能体内部逻辑 (Internal Logic)](internal_logic.md): 包含 SQL 报错自愈（Self-Healing）与兜底说明逻辑。
-- **[系统智能体提示词 (System Agents)](system_agents/)**:
-    - [数据智能助手 (ChatBI)](system_agents/chatbi.md)
-    - [元数据专家 (Metadata Specialist)](system_agents/metadata_specialist.md)
-    - [知识库助手 (Knowledge Base)](system_agents/knowledge_base.md)
-    - [通用对话助手 (General Chat)](system_agents/general_chat.md)
+**流程文档**：[../design/chat/README.md](../design/chat/README.md)
 
-## 提示词调优说明
-1. **ChatBI 提示词**: 必须包含 `dataset_menu` 的动态注入逻辑，确保模型感知 ClickHouse 表结构。
-2. **路由提示词**: 应平衡“匹配精确度”与“兜底通用性”，避免过度路由至 ChatBI。
-3. **自愈提示词**: 针对 SQL 错误提供即时反馈，降低幻觉导致的失败率。
+---
+
+## 当前推荐草稿（`system_agents/`）
+
+| 智能体 | 文件 | 说明 |
+|--------|------|------|
+| ChatBI | [system_agents/chatbi/V7_chatbi_optimized.md](system_agents/chatbi/V7_chatbi_optimized.md) | 当前保留的最新 ChatBI 草稿 |
+| DevOps | [system_agents/devops/system_prompt_V5.md](system_agents/devops/system_prompt_V5.md) | 当前保留的最新运维助手草稿 |
+| 通用对话 | [system_agents/generl/general_chat_v2.md](system_agents/generl/general_chat_v2.md) | 通用对话 v2（目录名 `generl` 为历史拼写） |
+| 知识库 | [system_agents/knowledge/knowledge_base.md](system_agents/knowledge/knowledge_base.md) | 知识库助手 |
+| 元数据 | [system_agents/metadata/metadata_specialist.md](system_agents/metadata/metadata_specialist.md) | 元数据专家 |
+| 元数据生成 | [meta/metadata_generator.md](meta/metadata_generator.md) | DDL/Markdown 解析 |
+
+## 已归档（勿再作为线上依据）
+
+旧版 ChatBI（V2–V6）、DevOps（V2–V4）已移至 [archive/](archive/README.md)，仅作历史对照。
+
+---
+
+## 调优说明
+
+1. **ChatBI**：线上 `system_prompt` 须保留 `{dataset_menu}` 占位，由 `DataQueryExecutor` 按权限注入。
+2. **路由**：见 `RouterService.DEFAULT_SYSTEM_PROMPT`；产品说明见 `design/AGENT_ROUTING_DESIGN.md`。
+3. **全局安全/工具/记忆对照**：优先改代码中的 `PLATFORM_GLOBAL_SYSTEM_PROMPT`（含 memory_search、知识库、仅调用已绑定工具等），避免在每个智能体草稿里重复冗长安全段。

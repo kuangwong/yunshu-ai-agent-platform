@@ -431,6 +431,12 @@ class AgentService:
                 id_msg = await self._build_user_context_msg(user_info)
                 messages.insert(0, id_msg)
 
+            # --- 平台全局 System Prompt（置于 system_prompt 栈最顶；仅 LOCAL 引擎）---
+            if (agent_config.engine_type or "LOCAL") == "LOCAL":
+                agent_config.system_prompt = AgentServicePrompts.prepend_platform_global_system_prompt(
+                    agent_config.system_prompt
+                )
+
             # --- Debug Overrides ---
             if debug_options:
                 # 1. System Prompt Override

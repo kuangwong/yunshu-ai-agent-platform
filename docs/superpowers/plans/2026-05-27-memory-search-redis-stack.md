@@ -154,7 +154,7 @@
 ### Task 10: 文档与回归
 
 **Files:**
-- Modify: `ChatFlow.md`
+- Modify: `architech/design/chat/CHAT_FLOW.md`
 - Modify: `tests/CHECKLIST.md`（可选）
 
 - [ ] **Step 1:** 更新 ChatFlow §4.1 实现状态

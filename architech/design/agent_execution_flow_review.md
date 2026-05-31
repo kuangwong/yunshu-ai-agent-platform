@@ -1,8 +1,15 @@
 # 智能体执行流程架构评审
 
-> 文档日期：2026-05-30  
+> 文档日期：2026-05-30（评审记录）；2026-05-31 起主规范迁至 [chat/](./chat/)  
 > 范围：EmbedChat → AgentService → Dispatcher → Executors（Data / GeneralChat / RAG / OpenClaw）  
 > 关联改动：`turn_classifier.py`、Dispatcher 统一路由、DataExecutor 经验库裁剪、RAG conversation_id 修复
+
+**规范文档（请以代码同步维护）**：
+
+- [chat/CHAT_FLOW.md](./chat/CHAT_FLOW.md) — 端到端聊天流程  
+- [chat/PROMPT_LAYERS.md](./chat/PROMPT_LAYERS.md) — 提示词分层与 `PLATFORM_GLOBAL_SYSTEM_PROMPT`  
+
+本文档保留 **K1/K2/K3 评审结论与优化优先级**，不作为唯一流程说明。
 
 ---
 
@@ -185,7 +192,7 @@ AgentService 统一输出 **「轮次分类」** 日志（含 K3 / GENERAL / KNO
 |----|------|
 | 技能已加载时省略 discovery hint | ✓ 已做 |
 | 统一「轮次分类」日志 | ✓ 已做 |
-| 按 Turn 类型裁剪 prompt 注入块 | P1 待做 |
+| 按 Turn 类型裁剪 prompt 注入块 | ✓ 已做（见 `turn_classifier` + `PROMPT_LAYERS.md`） |
 | 多智能体与 Turn 分类脱节 | P1 待做 |
 
 ---

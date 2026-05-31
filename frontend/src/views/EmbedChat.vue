@@ -1763,12 +1763,18 @@ interface LogEntry {
   elapsed_time_ms?: number | null;
   started_at?: number | null;
 }
+interface SkillMeta {
+  id?: string;
+  name: string;
+  description?: string;
+}
 interface ChatFile {
   type?: string;
   url: string;
   filename: string;
   size: number;
   ext: string;
+  skillMeta?: SkillMeta;
 }
 interface Message {
   id: number;
@@ -2062,6 +2068,20 @@ const buildImageAttachmentHint = (file: ChatFile, path: string) => {
   return `用户本轮已上传图片：${file.filename}，该图片已作为视觉多模态输入随消息一并发送（托管路径：${path}）。`;
 };
 
+const buildSkillAttachmentHint = (file: ChatFile, path: string) => {
+  const skillName = file.filename.replace(" (技能)", "");
+  const meta = file.skillMeta;
+  const metaParts: string[] = [];
+  if (meta?.name) metaParts.push(`name: ${meta.name}`);
+  if (meta?.description) metaParts.push(`description: ${meta.description}`);
+  const metaText = metaParts.length > 0 ? metaParts.join(", ") : "";
+  let hint = `用户本轮已调用生态技能工作流：${skillName}，对应的物理描述文件绝对路径是：${path}。`;
+  if (metaText) {
+    hint += `\nskills meta 为：${metaText}`;
+  }
+  return hint;
+};
+
 const appendAttachmentContext = (content: string, files: ChatFile[]) => {
   if (files.length === 0) return content;
 
@@ -2072,8 +2092,7 @@ const appendAttachmentContext = (content: string, files: ChatFile[]) => {
     }
     const path = getServerAttachmentPath(file);
     if (file.type === "skill") {
-      const skillName = file.filename.replace(" (技能)", "");
-      return `用户本轮已调用生态技能工作流：${skillName}，对应的物理描述文件绝对路径是：${path}。`;
+      return buildSkillAttachmentHint(file, path);
     }
     if (isImageAttachment(file)) {
       return buildImageAttachmentHint(file, path);
@@ -2836,7 +2855,12 @@ const handleSelectSkill = (skill: any) => {
       url: skill.id, // url 作为技能 id
       filename: `${skill.name} (技能)`,
       size: 0,
-      ext: "skill"
+      ext: "skill",
+      skillMeta: {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description || "",
+      },
     });
   }
   showSkillSelector.value = false;

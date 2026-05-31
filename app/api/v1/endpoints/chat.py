@@ -22,12 +22,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+class SkillMeta(BaseModel):
+    id: Optional[str] = Field(default=None, description="技能 ID")
+    name: Optional[str] = Field(default=None, description="SKILL.md Frontmatter name")
+    description: Optional[str] = Field(default=None, description="SKILL.md Frontmatter description")
+
+
 class ChatFile(BaseModel):
     type: Optional[str] = Field(default=None, description="附件类型，如 skill 表示技能工作流")
     url: str = Field(..., description="附件可访问静态 URL")
     filename: str = Field(..., description="附件原始文件名")
     size: int = Field(..., description="文件字节大小")
     ext: str = Field(..., description="文件后缀名")
+    skillMeta: Optional[SkillMeta] = Field(default=None, description="技能 Frontmatter 元数据（type=skill 时）")
+    skill_meta: Optional[SkillMeta] = Field(default=None, description="skillMeta 蛇形命名别名")
 
 class ChatMessage(BaseModel):
     role: str = Field(..., pattern="^(user|assistant|system)$")

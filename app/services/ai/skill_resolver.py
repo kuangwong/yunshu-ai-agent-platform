@@ -27,21 +27,9 @@ def _validate_skill_id(skill_id: str) -> bool:
 
 
 def _parse_skill_frontmatter(skill_id: str, skill_md_path: str) -> Dict[str, str]:
-    meta = {"id": skill_id, "name": skill_id, "description": ""}
-    if not os.path.exists(skill_md_path):
-        return meta
-    try:
-        with open(skill_md_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read(8192)
-        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
-        if match:
-            for line in match.group(1).splitlines():
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    meta[key.strip().lower()] = value.strip().strip('"').strip("'")
-    except Exception as e:
-        logger.warning("[Skills] Failed to parse frontmatter for %s: %s", skill_id, e)
-    return meta
+    from app.utils.skill_metadata import parse_skill_frontmatter
+
+    return parse_skill_frontmatter(skill_id, skill_md_path)
 
 
 def list_skill_metas() -> List[Dict[str, str]]:

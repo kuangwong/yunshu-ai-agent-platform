@@ -107,6 +107,11 @@ class AgentService:
                 except ValueError:
                     max_context = 20
                 messages = server_history[-max_context:] if server_history else []
+
+        from app.utils.skill_metadata import enrich_messages_with_skill_meta
+
+        enrich_messages_with_skill_meta(messages)
+
         user_query = messages[-1]["content"] if messages else ""
         
         # --- Handle explicit @mention in text ---

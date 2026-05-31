@@ -23,6 +23,10 @@ from app.services.ai.executors.common import (
     extract_tokens_from_message,
     parse_xml_tool_calls,
     tools_include_named,
+    MODEL_STREAM_MAX_RETRIES,
+    build_stream_retry_log,
+    build_stream_error_log,
+    is_retryable_stream_error,
 )
 from app.services.ai.executors.prompts import GeneralChatPrompts
 from app.services.ai.turn_classifier import TurnType
@@ -101,17 +105,40 @@ class GeneralChatExecutor(BaseExecutor):
             full_content = ""
             content_emitted = False
             accumulated_msg = None
-            async for chunk in llm.astream(langchain_messages):
-                if accumulated_msg is None:
-                    accumulated_msg = chunk
-                else:
-                    accumulated_msg += chunk
-                if chunk.content:
-                    if not content_emitted:
-                        yield {"type": "log", "id": f"gen_s_{uuid.uuid4().hex[:8]}", "title": "✨ 开始生成回复", "status": "success"}
-                    content_emitted = True
-                    full_content += chunk.content
-                    yield {"content": chunk.content}
+            stream_succeeded = False
+            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
+                accumulated_msg = None
+                try:
+                    async for chunk in llm.astream(langchain_messages):
+                        if accumulated_msg is None:
+                            accumulated_msg = chunk
+                        else:
+                            accumulated_msg += chunk
+                        if chunk.content:
+                            if not content_emitted:
+                                yield {"type": "log", "id": f"gen_s_{uuid.uuid4().hex[:8]}", "title": "✨ 开始生成回复", "status": "success"}
+                            content_emitted = True
+                            full_content += chunk.content
+                            yield {"content": chunk.content}
+                    stream_succeeded = True
+                    break
+                except Exception as stream_err:
+                    logger.error(
+                        f"[ChatExecutor] Simple mode stream failed "
+                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {stream_err}"
+                    )
+                    if (
+                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
+                        and not content_emitted
+                        and is_retryable_stream_error(stream_err)
+                    ):
+                        yield build_stream_retry_log(stream_err, stream_attempt)
+                        await asyncio.sleep(2 ** stream_attempt)
+                        continue
+                    yield build_stream_error_log(stream_err)
+                    return
+            if not stream_succeeded:
+                return
             
             tokens = extract_tokens_from_message(accumulated_msg)
             
@@ -182,22 +209,49 @@ class GeneralChatExecutor(BaseExecutor):
             
             yield {"type": "thinking", "status": "continuing"}
             
-            # Turn 1: Stream to keep latency low. Following turns: accumulate for tool call detection.
-            async for chunk in model_with_tools.astream(langchain_messages):
-                if accumulated_msg is None:
-                    accumulated_msg = chunk
-                else:
-                    accumulated_msg += chunk
-                
-                if chunk.content:
-                    if "<function_calls" in (accumulated_content + chunk.content):
-                        has_tool_call_indicator = True
-                    
-                    # If it's a direct answer in Step 1, stream it (skip when recall query needs memory_search first)
-                    if not has_tool_call_indicator and step == 1 and not force_memory_recall and not force_knowledge_search:
-                        yield {"content": chunk.content}
-                    
-                    accumulated_content += chunk.content
+            user_content_emitted = False
+            stream_succeeded = False
+            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
+                accumulated_content = ""
+                accumulated_msg = None
+                has_tool_call_indicator = False
+                try:
+                    async for chunk in model_with_tools.astream(langchain_messages):
+                        if accumulated_msg is None:
+                            accumulated_msg = chunk
+                        else:
+                            accumulated_msg += chunk
+
+                        if chunk.content:
+                            if "<function_calls" in (accumulated_content + chunk.content):
+                                has_tool_call_indicator = True
+
+                            # If it's a direct answer in Step 1, stream it (skip when recall query needs memory_search first)
+                            if not has_tool_call_indicator and step == 1 and not force_memory_recall and not force_knowledge_search:
+                                user_content_emitted = True
+                                yield {"content": chunk.content}
+
+                            accumulated_content += chunk.content
+                    stream_succeeded = True
+                    break
+                except Exception as stream_err:
+                    logger.error(
+                        f"[ChatExecutor] ReAct stream failed at step {step} "
+                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {stream_err}"
+                    )
+                    if (
+                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
+                        and not user_content_emitted
+                        and is_retryable_stream_error(stream_err)
+                    ):
+                        yield build_stream_retry_log(stream_err, stream_attempt)
+                        await asyncio.sleep(2 ** stream_attempt)
+                        continue
+                    yield build_stream_error_log(stream_err)
+                    return
+
+            if not stream_succeeded:
+                return
 
             response = accumulated_msg
             tokens = extract_tokens_from_message(response)
@@ -352,17 +406,40 @@ class GeneralChatExecutor(BaseExecutor):
             content_emitted = False
             full_synthesis_content = ""
             accumulated_msg = None
-            async for chunk in final_llm.astream(synthesis_messages):
-                if accumulated_msg is None:
-                    accumulated_msg = chunk
-                else:
-                    accumulated_msg += chunk
-                if chunk.content:
-                    if not content_emitted:
-                        yield {"type": "log", "id": f"gen_start_{uuid.uuid4().hex[:8]}", "title": "✨ 开始生成回复", "status": "success"}
-                    content_emitted = True
-                    full_synthesis_content += chunk.content
-                    yield {"content": chunk.content}
+            stream_succeeded = False
+            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
+                accumulated_msg = None
+                try:
+                    async for chunk in final_llm.astream(synthesis_messages):
+                        if accumulated_msg is None:
+                            accumulated_msg = chunk
+                        else:
+                            accumulated_msg += chunk
+                        if chunk.content:
+                            if not content_emitted:
+                                yield {"type": "log", "id": f"gen_start_{uuid.uuid4().hex[:8]}", "title": "✨ 开始生成回复", "status": "success"}
+                            content_emitted = True
+                            full_synthesis_content += chunk.content
+                            yield {"content": chunk.content}
+                    stream_succeeded = True
+                    break
+                except Exception as stream_err:
+                    logger.error(
+                        f"[ChatExecutor] Synthesis stream failed "
+                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {stream_err}"
+                    )
+                    if (
+                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
+                        and not content_emitted
+                        and is_retryable_stream_error(stream_err)
+                    ):
+                        yield build_stream_retry_log(stream_err, stream_attempt)
+                        await asyncio.sleep(2 ** stream_attempt)
+                        continue
+                    yield build_stream_error_log(stream_err, title="⚠️ 总结生成失败")
+                    return
+            if not stream_succeeded:
+                return
 
             tokens = extract_tokens_from_message(accumulated_msg)
 

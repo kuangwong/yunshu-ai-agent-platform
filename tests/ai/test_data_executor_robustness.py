@@ -493,5 +493,115 @@ async def test_data_executor_followup_without_last_result_does_not_query_schema(
     mock_get_llm.assert_not_called()
     assert any("没有可复用的上一轮查询结果" in chunk.get("content", "") for chunk in events)
 
+
+@pytest.mark.asyncio
+async def test_data_executor_retries_on_model_stream_error():
+    """模型决策流式 transient 失败时应自动重试，而不是立即终止迭代。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-stream-retry", [], {"dry_run": False})
+
+    schema_response = MagicMock(spec=AIMessage)
+    schema_response.content = ""
+    schema_response.tool_calls = [{"name": "get_dataset_schema", "args": {"query": "users"}, "id": "call_1"}]
+
+    model_with_tools = MagicMock()
+    stream_calls = {"count": 0}
+
+    async def failing_then_success(*args, **kwargs):
+        stream_calls["count"] += 1
+        if stream_calls["count"] == 1:
+            raise IndexError("list index out of range")
+        yield schema_response
+
+    model_with_tools.astream.side_effect = failing_then_success
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="get_dataset_schema", spec=["name", "ainvoke"])])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")), \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", AsyncMock(return_value=[])), \
+         patch("asyncio.sleep", AsyncMock()):
+
+        executor._dispatch_tool_safe = AsyncMock(return_value=(
+            {"name": "get_dataset_schema", "id": "call_1", "args": {"query": "users"}},
+            "Schema YAML",
+            100.0,
+        ))
+
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查一下用户数量"}]):
+            events.append(chunk)
+
+    assert stream_calls["count"] >= 2
+    assert any(
+        chunk.get("type") == "log" and "正在重试" in chunk.get("title", "")
+        for chunk in events
+    )
+    assert not any(
+        chunk.get("type") == "log"
+        and chunk.get("title") == "⚠️ 模型响应异常"
+        and chunk.get("status") == "error"
+        for chunk in events
+    )
+    assert any(
+        chunk.get("type") == "log" and chunk.get("title") == "模型决策完成: 第 1 轮"
+        for chunk in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_executor_stream_error_exhausts_retries():
+    """流式失败且重试耗尽后，才终止迭代并上报最终错误。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-stream-fail", [], user_info={"user_id": 1001})
+
+    model_with_tools = MagicMock()
+
+    async def always_fail(*args, **kwargs):
+        raise IndexError("list index out of range")
+        yield  # pragma: no cover
+
+    model_with_tools.astream.side_effect = always_fail
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")), \
+         patch("asyncio.sleep", AsyncMock()):
+
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查一下用户数量"}]):
+            events.append(chunk)
+
+    assert model_with_tools.astream.call_count == 2
+    assert any(
+        chunk.get("type") == "log"
+        and chunk.get("title") == "⚠️ 模型响应异常"
+        and chunk.get("status") == "error"
+        for chunk in events
+    )
+    assert not any(chunk.get("content") for chunk in events if chunk.get("type") != "log")
+
+
 if __name__ == "__main__":
     asyncio.run(test_data_executor_react_nudge())

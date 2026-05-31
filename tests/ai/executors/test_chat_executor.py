@@ -215,3 +215,36 @@ async def test_max_steps_limit(chat_config, mock_tool):
         # Check final system message
         last_msg = events[-1]
         assert "[系统提示] 达到最大执行步骤" in last_msg.get("content", "")
+
+
+@pytest.mark.asyncio
+async def test_chat_executor_simple_mode_retries_on_stream_error(chat_config):
+    """无工具模式下流式 transient 失败应自动重试。"""
+    chat_config.tools = []
+    executor = GeneralChatExecutor(config=chat_config, trace_id="test-chat-retry", trace_buffer=[])
+
+    stream_calls = {"count": 0}
+
+    async def failing_then_success(*args, **kwargs):
+        stream_calls["count"] += 1
+        if stream_calls["count"] == 1:
+            raise IndexError("list index out of range")
+        yield AIMessage(content="Retry succeeded")
+
+    mock_llm = MagicMock()
+    mock_llm.astream.side_effect = failing_then_success
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=mock_llm)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("asyncio.sleep", AsyncMock()):
+
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "Hello"}]):
+            events.append(chunk)
+
+    assert stream_calls["count"] == 2
+    assert any(
+        chunk.get("type") == "log" and "正在重试" in chunk.get("title", "")
+        for chunk in events
+    )
+    assert any(chunk.get("content") == "Retry succeeded" for chunk in events)

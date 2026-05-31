@@ -1,12 +1,13 @@
 """Executor 公共工具：历史转换、Token 提取、XML 工具解析。"""
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, TypeVar
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
@@ -14,6 +15,23 @@ from app.services.ai.executors.prompts import SharedPrompts
 from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 
 logger = logging.getLogger(__name__)
+
+# 流式 LLM 输出失败时的最大尝试次数（含首次）
+MODEL_STREAM_MAX_RETRIES = 2
+
+_TRANSIENT_STREAM_KEYWORDS = (
+    "connection",
+    "timeout",
+    "reset",
+    "index out of range",
+    "unexpected",
+    "temporarily unavailable",
+    "502",
+    "503",
+    "504",
+)
+
+T = TypeVar("T")
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 USER_MESSAGE_CONTEXT_DIVIDER = "\n\n---\n\n"
@@ -83,6 +101,65 @@ def _attachment_abs_path(file_obj: Dict[str, Any]) -> str:
     if url.startswith("/static/uploads/"):
         return f"/app/data/uploads/{os.path.basename(url)}"
     return url or "/app/data/uploads/unknown"
+
+
+def is_retryable_stream_error(exc: Exception) -> bool:
+    """判断流式输出异常是否属于可重试的 transient 错误。"""
+    if isinstance(exc, (ConnectionError, TimeoutError, IndexError, KeyError, ValueError, RuntimeError)):
+        return True
+    msg = str(exc).lower()
+    return any(keyword in msg for keyword in _TRANSIENT_STREAM_KEYWORDS)
+
+
+def build_stream_retry_log(exc: Exception, attempt: int, max_retries: int = MODEL_STREAM_MAX_RETRIES) -> Dict[str, Any]:
+    wait_time = 2 ** attempt
+    return {
+        "type": "log",
+        "id": f"retry_{uuid.uuid4().hex[:8]}",
+        "title": "⚠️ 模型响应异常，正在重试",
+        "details": (
+            f"流式输出中断: {str(exc)}。"
+            f" {wait_time}s 后进行第 {attempt + 2} 次尝试..."
+        ),
+        "status": "warning",
+    }
+
+
+def build_stream_error_log(exc: Exception, *, title: str = "⚠️ 模型响应异常") -> Dict[str, Any]:
+    return {
+        "type": "log",
+        "id": f"err_{uuid.uuid4().hex[:8]}",
+        "title": title,
+        "details": f"流式输出中断: {str(exc)}",
+        "status": "error",
+    }
+
+
+async def stream_with_retry(
+    stream_factory: Callable[[], AsyncIterator[T]],
+    *,
+    max_retries: int = MODEL_STREAM_MAX_RETRIES,
+    allow_retry: Callable[[], bool] = lambda: True,
+) -> AsyncIterator[T]:
+    """对 async stream 做整流重试；仅在 allow_retry() 为真且错误可重试时生效。"""
+    last_err: Optional[Exception] = None
+    for attempt in range(max_retries):
+        try:
+            async for item in stream_factory():
+                yield item
+            return
+        except Exception as exc:
+            last_err = exc
+            should_retry = (
+                attempt < max_retries - 1
+                and allow_retry()
+                and is_retryable_stream_error(exc)
+            )
+            if not should_retry:
+                raise
+            await asyncio.sleep(2 ** attempt)
+    if last_err:
+        raise last_err
 
 
 def extract_tokens_from_message(msg: Any) -> dict:

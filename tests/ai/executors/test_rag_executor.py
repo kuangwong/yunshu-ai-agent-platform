@@ -160,3 +160,32 @@ async def test_rag_executor_mid_stream_failure(rag_config):
         assert "知识库连接中断" in content
         # Check that status is set to error in the last chunk
         assert events[-1].get("status") == "error"
+
+
+@pytest.mark.asyncio
+async def test_rag_executor_retries_on_index_error(rag_config):
+    """IndexError 等 transient 解析错误在尚未输出内容时应重试。"""
+    executor = RAGExecutor(agent_config=rag_config, trace_id="test-rag-index-retry", trace_buffer=[])
+
+    call_count = 0
+
+    async def mock_stream_index_retry(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise IndexError("list index out of range")
+        yield {"type": "answer", "content": "Recovered after index error"}
+
+    with patch("app.services.ai.ragflow_client.RagFlowClient.chat_stream", side_effect=mock_stream_index_retry), \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "Index retry test"}]):
+            events.append(chunk)
+
+    assert call_count == 2
+    assert any("Recovered after index error" in e.get("content", "") for e in events)
+    assert any(
+        e.get("type") == "log" and "正在重试" in e.get("title", "")
+        for e in events
+    )

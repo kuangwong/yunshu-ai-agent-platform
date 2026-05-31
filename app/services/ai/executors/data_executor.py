@@ -23,6 +23,10 @@ from app.services.ai.executors.common import (
     convert_history_to_messages,
     extract_tokens_from_message,
     parse_xml_tool_calls,
+    MODEL_STREAM_MAX_RETRIES,
+    build_stream_retry_log,
+    build_stream_error_log,
+    is_retryable_stream_error,
 )
 from app.services.ai.executors.prompts import DataQueryPrompts, SharedPrompts
 from app.services.ai.intent_service import (
@@ -299,19 +303,39 @@ class DataQueryExecutor(BaseExecutor):
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
         accumulated_msg = None
         try:
-            async for chunk in final_llm.astream(synthesis_messages):
-                if accumulated_msg is None:
-                    accumulated_msg = chunk
-                else:
-                    accumulated_msg += chunk
-                if chunk.content:
-                    if not content_emitted:
-                        generation_start = time.time()
-                        yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
-                    content_emitted = True
-                    full_synthesis_content += chunk.content
-                    yield {"content": chunk.content}
-            if generation_start:
+            stream_succeeded = False
+            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
+                accumulated_msg = None
+                try:
+                    async for chunk in final_llm.astream(synthesis_messages):
+                        if accumulated_msg is None:
+                            accumulated_msg = chunk
+                        else:
+                            accumulated_msg += chunk
+                        if chunk.content:
+                            if not content_emitted:
+                                generation_start = time.time()
+                                yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
+                            content_emitted = True
+                            full_synthesis_content += chunk.content
+                            yield {"content": chunk.content}
+                    stream_succeeded = True
+                    break
+                except Exception as syn_err:
+                    logger.error(
+                        f"[DataExecutor] Follow-up synthesis failed "
+                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {syn_err}"
+                    )
+                    if (
+                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
+                        and not content_emitted
+                        and is_retryable_stream_error(syn_err)
+                    ):
+                        yield build_stream_retry_log(syn_err, stream_attempt)
+                        await asyncio.sleep(2 ** stream_attempt)
+                        continue
+                    raise
+            if stream_succeeded and generation_start:
                 yield {
                     "type": "log",
                     "id": gen_log_id,
@@ -648,19 +672,42 @@ class DataQueryExecutor(BaseExecutor):
             accumulated_content = ""
             accumulated_msg = None
             has_tool_call_indicator = False
+            stream_succeeded = False
 
-            try:
-                async for chunk in model_with_tools.astream(langchain_messages):
-                    if accumulated_msg is None: accumulated_msg = chunk
-                    else: accumulated_msg += chunk
-                    
-                    if chunk.content:
-                        if "<function_calls" in (accumulated_content + chunk.content):
-                            has_tool_call_indicator = True
-                        accumulated_content += chunk.content
-            except Exception as stream_err:
-                logger.error(f"[DataExecutor] Stream error during thought at step {step}: {stream_err}")
-                yield {"type": "log", "id": f"err_{uuid.uuid4().hex[:6]}", "title": "⚠️ 模型响应异常", "details": f"流式输出中断: {str(stream_err)}", "status": "error"}
+            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
+                accumulated_content = ""
+                accumulated_msg = None
+                has_tool_call_indicator = False
+                try:
+                    async for chunk in model_with_tools.astream(langchain_messages):
+                        if accumulated_msg is None:
+                            accumulated_msg = chunk
+                        else:
+                            accumulated_msg += chunk
+
+                        if chunk.content:
+                            if "<function_calls" in (accumulated_content + chunk.content):
+                                has_tool_call_indicator = True
+                            accumulated_content += chunk.content
+                    stream_succeeded = True
+                    break
+                except Exception as stream_err:
+                    logger.error(
+                        f"[DataExecutor] Stream error during thought at step {step} "
+                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {stream_err}"
+                    )
+                    if (
+                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
+                        and is_retryable_stream_error(stream_err)
+                    ):
+                        yield build_stream_retry_log(stream_err, stream_attempt)
+                        await asyncio.sleep(2 ** stream_attempt)
+                        continue
+
+                    yield build_stream_error_log(stream_err)
+                    break
+
+            if not stream_succeeded:
                 break
 
             response = accumulated_msg
@@ -1086,27 +1133,47 @@ class DataQueryExecutor(BaseExecutor):
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
         accumulated_msg = None
         try:
-            async for chunk in final_llm.astream(synthesis_messages):
-                if accumulated_msg is None:
-                    accumulated_msg = chunk
-                else:
-                    accumulated_msg += chunk
-                if chunk.content:
-                    if not content_emitted:
-                         generation_start = time.time()
-                         yield {
-                             "type": "log",
-                             "id": syn_log_id,
-                             "title": "📝 汇总数据完成",
-                             "details": "已完成查询结果分析，开始生成最终回复。",
-                             "status": "success",
-                             "execution_time_ms": (time.time() - start_synthesis) * 1000,
-                         }
-                         yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
-                    content_emitted = True
-                    full_synthesis_content += chunk.content
-                    yield {"content": chunk.content}
-            if generation_start:
+            stream_succeeded = False
+            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
+                accumulated_msg = None
+                try:
+                    async for chunk in final_llm.astream(synthesis_messages):
+                        if accumulated_msg is None:
+                            accumulated_msg = chunk
+                        else:
+                            accumulated_msg += chunk
+                        if chunk.content:
+                            if not content_emitted:
+                                 generation_start = time.time()
+                                 yield {
+                                     "type": "log",
+                                     "id": syn_log_id,
+                                     "title": "📝 汇总数据完成",
+                                     "details": "已完成查询结果分析，开始生成最终回复。",
+                                     "status": "success",
+                                     "execution_time_ms": (time.time() - start_synthesis) * 1000,
+                                 }
+                                 yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
+                            content_emitted = True
+                            full_synthesis_content += chunk.content
+                            yield {"content": chunk.content}
+                    stream_succeeded = True
+                    break
+                except Exception as syn_err:
+                    logger.error(
+                        f"[DataExecutor] Stream error during synthesis "
+                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {syn_err}"
+                    )
+                    if (
+                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
+                        and not content_emitted
+                        and is_retryable_stream_error(syn_err)
+                    ):
+                        yield build_stream_retry_log(syn_err, stream_attempt)
+                        await asyncio.sleep(2 ** stream_attempt)
+                        continue
+                    raise
+            if stream_succeeded and generation_start:
                 yield {
                     "type": "log",
                     "id": gen_log_id,

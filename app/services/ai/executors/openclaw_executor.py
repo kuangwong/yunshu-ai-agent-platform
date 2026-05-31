@@ -11,6 +11,11 @@ from app.services.ai.executors.prompts import OpenClawPrompts
 from app.services.ai.openclaw_client import OpenClawClient
 from app.schemas.agent import AgentExecutionStep, ChatConfig
 from app.core.llm.client import get_llm_async
+from app.services.ai.executors.common import (
+    MODEL_STREAM_MAX_RETRIES,
+    build_stream_retry_log,
+    is_retryable_stream_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,109 +108,132 @@ class OpenClawExecutor(BaseExecutor):
         content_emitted = False
         full_content = ""
 
-        try:
-            # Determine session key for OpenClaw (Prefer Conversation ID for session persistence)
-            session_key = self.conversation_id or self.trace_id
+        for attempt in range(MODEL_STREAM_MAX_RETRIES):
+            try:
+                # Determine session key for OpenClaw (Prefer Conversation ID for session persistence)
+                session_key = self.conversation_id or self.trace_id
 
-            datasets: list[dict[str, Any]] = []
-            if self.user_info:
-                raw_uid = self.user_info.get("user_id") or self.user_info.get("id")
-                if raw_uid is not None:
-                    try:
-                        from app.core.orm import AsyncSessionLocal
-                        from app.services.permission_service import PermissionService
+                datasets: list[dict[str, Any]] = []
+                if self.user_info:
+                    raw_uid = self.user_info.get("user_id") or self.user_info.get("id")
+                    if raw_uid is not None:
+                        try:
+                            from app.core.orm import AsyncSessionLocal
+                            from app.services.permission_service import PermissionService
 
-                        uid_int = int(raw_uid)
-                        async with AsyncSessionLocal() as db:
-                            datasets = await PermissionService(db).get_accessible_ragflow_meta_datasets(uid_int)
-                    except Exception as e:
-                        logger.warning(
-                            "OpenClaw AUTH_CONTEXT datasets resolve failed: %s", e,
-                            exc_info=True,
-                        )
-            
-            async for chunk in self.client.chat_stream(
-                query=query,
-                conversation_id=session_key,
-                history=history,
-                config=self.config.engine_config,
-                user=username,
-                user_info=self.user_info,
-                datasets=datasets,
-            ):
-                if chunk.get("type") == "answer":
-                    if not content_emitted:
-                        # Update Log to Success
+                            uid_int = int(raw_uid)
+                            async with AsyncSessionLocal() as db:
+                                datasets = await PermissionService(db).get_accessible_ragflow_meta_datasets(uid_int)
+                        except Exception as e:
+                            logger.warning(
+                                "OpenClaw AUTH_CONTEXT datasets resolve failed: %s", e,
+                                exc_info=True,
+                            )
+
+                async for chunk in self.client.chat_stream(
+                    query=query,
+                    conversation_id=session_key,
+                    history=history,
+                    config=self.config.engine_config,
+                    user=username,
+                    user_info=self.user_info,
+                    datasets=datasets,
+                ):
+                    if chunk.get("type") == "answer":
+                        if not content_emitted:
+                            # Update Log to Success
+                            yield {
+                                "type": "log",
+                                "id": reasoning_log_id,
+                                "title": "✅ 思考完成",
+                                "details": f"OpenClaw 已准备好回答...",
+                                "status": "success"
+                            }
+
+                            ttft = time.time() - start_synthesis
+                            yield {
+                                "type": "log",
+                                "id": f"claw_gen_{uuid.uuid4().hex[:8]}",
+                                "title": f"✨ 开始生成回复 ({ttft:.2f}s)",
+                                "details": f"首字延迟 (TTFT): {ttft:.2f}s，OpenClaw 正在输出回复内容...",
+                                "status": "success"
+                            }
+                            content_emitted = True
+
+                        content = chunk.get("content", "")
+                        full_content += content
+                        yield {"content": content}
+
+                    elif chunk.get("type") == "error":
                         yield {
                             "type": "log",
                             "id": reasoning_log_id,
-                            "title": "✅ 思考完成",
-                            "details": f"OpenClaw 已准备好回答...",
-                            "status": "success"
+                            "title": "❌ OpenClaw 调用失败",
+                            "details": chunk.get("content", "未知错误"),
+                            "status": "error"
                         }
-                        
-                        ttft = time.time() - start_synthesis
+                        yield {"content": f"\n\n> ⚠️ **OpenClaw 服务异常**: {chunk.get('content')}"}
+                        return
+
+                # --- Output Safety Audit (Post-Retraction Logic) ---
+                if safety_enabled and full_content.strip():
+                    # Auditing for AI output content
+                    base_output_prompt = OpenClawPrompts.OUTPUT_SAFETY_AUDIT
+
+                    # Handle custom output prompt strategy
+                    custom_output_prompt = self.config.engine_config.get("safety_check_output_prompt")
+                    output_strategy = self.config.engine_config.get("safety_check_output_strategy", "append")
+
+                    if custom_output_prompt and custom_output_prompt.strip():
+                        if output_strategy == "override":
+                            output_audit_prompt = custom_output_prompt
+                        else:
+                            output_audit_prompt = f"{base_output_prompt}\n\n【用户自定义补充规则】\n{custom_output_prompt}"
+                    else:
+                        output_audit_prompt = base_output_prompt
+
+                    is_safe_output, reason_output = await self._verify_input_safety(full_content, output_audit_prompt)
+
+                    if not is_safe_output:
+                        logger.warning(f"[Security] Retracted unsafe output for agent {self.config.agent_name}. Reason: {reason_output}")
                         yield {
-                            "type": "log",
-                            "id": f"claw_gen_{uuid.uuid4().hex[:8]}",
-                            "title": f"✨ 开始生成回复 ({ttft:.2f}s)",
-                            "details": f"首字延迟 (TTFT): {ttft:.2f}s，OpenClaw 正在输出回复内容...",
-                            "status": "success"
+                            "type": "retraction",
+                            "content": f"\n\n> ⚠️ **安全警告**: 该回答由于包含敏感或违规信息（{reason_output}），已被系统自动撤回并拦截。",
+                            "reason": reason_output
                         }
-                        content_emitted = True
-                    
-                    content = chunk.get("content", "")
-                    full_content += content
-                    yield {"content": content}
-                
-                elif chunk.get("type") == "error":
+                        full_content = f"[RETRACTED DUE TO: {reason_output}]"
+                break
+
+            except Exception as e:
+                if content_emitted:
+                    logger.exception(f"OpenClaw execution error after output started: {str(e)}")
                     yield {
                         "type": "log",
                         "id": reasoning_log_id,
-                        "title": "❌ OpenClaw 调用失败",
-                        "details": chunk.get("content", "未知错误"),
+                        "title": "❌ 系统执行异常",
+                        "details": str(e),
                         "status": "error"
                     }
-                    yield {"content": f"\n\n> ⚠️ **OpenClaw 服务异常**: {chunk.get('content')}"}
+                    break
 
-            # --- Output Safety Audit (Post-Retraction Logic) ---
-            if safety_enabled and full_content.strip():
-                # Auditing for AI output content
-                base_output_prompt = OpenClawPrompts.OUTPUT_SAFETY_AUDIT
-                
-                # Handle custom output prompt strategy
-                custom_output_prompt = self.config.engine_config.get("safety_check_output_prompt")
-                output_strategy = self.config.engine_config.get("safety_check_output_strategy", "append")
+                logger.warning(
+                    f"[OpenClawRetry] Stream failed before output "
+                    f"(attempt {attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {e}"
+                )
+                if is_retryable_stream_error(e) and attempt < MODEL_STREAM_MAX_RETRIES - 1:
+                    yield build_stream_retry_log(e, attempt)
+                    await asyncio.sleep(2 ** attempt)
+                    continue
 
-                if custom_output_prompt and custom_output_prompt.strip():
-                    if output_strategy == "override":
-                        output_audit_prompt = custom_output_prompt
-                    else:
-                        output_audit_prompt = f"{base_output_prompt}\n\n【用户自定义补充规则】\n{custom_output_prompt}"
-                else:
-                    output_audit_prompt = base_output_prompt
-
-                is_safe_output, reason_output = await self._verify_input_safety(full_content, output_audit_prompt)
-                
-                if not is_safe_output:
-                    logger.warning(f"[Security] Retracted unsafe output for agent {self.config.agent_name}. Reason: {reason_output}")
-                    yield {
-                        "type": "retraction",
-                        "content": f"\n\n> ⚠️ **安全警告**: 该回答由于包含敏感或违规信息（{reason_output}），已被系统自动撤回并拦截。",
-                        "reason": reason_output
-                    }
-                    # Update full_content so the trace record reflects it's retracted
-                    full_content = f"[RETRACTED DUE TO: {reason_output}]"
-
-        except Exception as e:
-            logger.exception(f"OpenClaw execution error: {str(e)}")
-            yield {
-                "type": "log",
-                "id": reasoning_log_id,
-                "title": "❌ 系统执行异常",
-                "details": str(e),
-                "status": "error"
-            }
+                logger.exception(f"OpenClaw execution error: {str(e)}")
+                yield {
+                    "type": "log",
+                    "id": reasoning_log_id,
+                    "title": "❌ 系统执行异常",
+                    "details": str(e),
+                    "status": "error"
+                }
+                break
 
         # Final Trace Step
         execution_time = (time.time() - start_synthesis) * 1000

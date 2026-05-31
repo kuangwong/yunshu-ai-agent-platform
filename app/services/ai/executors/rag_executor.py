@@ -1,17 +1,17 @@
 import logging
-import json
 import asyncio
 import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional, AsyncGenerator
-from app.services.ai.ragflow_client import RagFlowClient
-from app.schemas.agent import AgentExecutionStep
-
-logger = logging.getLogger(__name__)
 
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.ragflow_client import RagFlowClient
 from app.schemas.agent import AgentExecutionStep, ChatConfig
+from app.services.ai.executors.common import (
+    MODEL_STREAM_MAX_RETRIES,
+    build_stream_retry_log,
+    is_retryable_stream_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class RAGExecutor(BaseExecutor):
         }
         
         start_synthesis = time.time()
-        max_retries = 3
+        max_retries = MODEL_STREAM_MAX_RETRIES
         for attempt in range(max_retries):
             try:
                 content_emitted = False
@@ -158,11 +158,13 @@ class RAGExecutor(BaseExecutor):
                     break
                 
                 # If we haven't yielded anything yet, we can retry safe-ish
-                is_retryable = isinstance(e, (ConnectionError, TimeoutError)) or "connection" in str(e).lower()
-                
-                if is_retryable and attempt < max_retries - 1:
+                if is_retryable_stream_error(e) and attempt < max_retries - 1:
                     wait_time = 2 ** attempt
-                    logger.warning(f"[RAGRetry] Connection failed (attempt {attempt+1}/{max_retries}). Retrying in {wait_time}s... Error: {e}")
+                    logger.warning(
+                        f"[RAGRetry] Stream failed before output "
+                        f"(attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s... Error: {e}"
+                    )
+                    yield build_stream_retry_log(e, attempt)
                     await asyncio.sleep(wait_time)
                     continue
                 else:

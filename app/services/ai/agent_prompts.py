@@ -137,7 +137,13 @@ class AgentServicePrompts:
         tool_names = set()
         if agent_config:
             if getattr(agent_config, "tools", None):
-                tool_names.update(agent_config.tools)
+                for t in agent_config.tools:
+                    if isinstance(t, str):
+                        tool_names.add(t)
+                    elif hasattr(t, "name"):
+                        tool_names.add(getattr(t, "name"))
+                    elif isinstance(t, dict) and "name" in t:
+                        tool_names.add(t["name"])
             # 系统隐式工具
             try:
                 from app.services.ai.tools.registry import ToolRegistry

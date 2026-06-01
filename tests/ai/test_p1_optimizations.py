@@ -103,3 +103,29 @@ def test_injection_profile_for_data_turns():
     assert should_inject_memory_recall_hint(TurnType.KNOWLEDGE) is False
     assert should_inject_user_context(TurnType.K1_NEW_QUERY) is False
     assert should_inject_user_context(TurnType.GENERAL) is True
+
+
+def test_prepend_platform_global_system_prompt_with_tool_config_items():
+    from app.services.ai.agent_prompts import AgentServicePrompts
+    from app.schemas.agent import ToolConfigItem
+    from unittest.mock import MagicMock
+
+    # 模拟一个同时包含 str、ToolConfigItem 实例和 dict 的复杂工具配置
+    mock_config = MagicMock()
+    mock_config.tools = [
+        "get_dataset_schema",
+        ToolConfigItem(name="execute_sql_query", model_name="gpt-4o", temperature=0.1),
+        {"name": "read_file"}
+    ]
+    mock_config.capabilities = ["knowledge_base"]
+
+    # 执行全局提示词的 prepend 拼接动作，应成功运行且不抛出 unhashable type 异常
+    result = AgentServicePrompts.prepend_platform_global_system_prompt(
+        system_prompt="My custom prompt",
+        agent_config=mock_config
+    )
+
+    # 验证全局守则和业务提示词均被正确合并拼装
+    assert "[云枢智能体平台 · 全局守则]" in result
+    assert "My custom prompt" in result
+

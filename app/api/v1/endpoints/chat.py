@@ -332,16 +332,33 @@ async def get_history(
 
     result = await db.execute(query)
     
+    # 动态获取智能体 ID 到 (Slug 标识名, 显示名) 的映射，用以丰富前端历史列表展现
+    try:
+        from app.services.ai.agent_manager import AgentManagerService
+        all_agents = await AgentManagerService.list_agents(db, user=user_info)
+        agent_map = {str(a.id): (a.name, a.display_name) for a in all_agents}
+    except Exception as e:
+        logger.warning(f"[History API] Failed to fetch active agents mapping: {e}")
+        agent_map = {}
+
     items = []
     if group_by_conversation:
         rows = result.all()
         for row_obj, turn_count in rows:
             item = AgentExecutionHistoryResponse.from_orm(row_obj)
             item.turn_count = turn_count
+            if item.agent_id in agent_map:
+                item.agent_name = agent_map[item.agent_id][0]
+                item.agent_display_name = agent_map[item.agent_id][1]
             items.append(item)
     else:
         rows = result.scalars().all()
-        items = [AgentExecutionHistoryResponse.from_orm(row) for row in rows]
+        for row in rows:
+            item = AgentExecutionHistoryResponse.from_orm(row)
+            if item.agent_id in agent_map:
+                item.agent_name = agent_map[item.agent_id][0]
+                item.agent_display_name = agent_map[item.agent_id][1]
+            items.append(item)
     
     return StandardResponse(data=AgentExecutionHistoryListResponse(
         total=total,

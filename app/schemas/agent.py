@@ -119,6 +119,8 @@ class AgentExecutionHistoryResponse(BaseModel):
     total_tokens: Optional[int] = 0
     turn_count: Optional[int] = None # 新增：对话轮数
     created_at: datetime
+    agent_name: Optional[str] = None
+    agent_display_name: Optional[str] = None
 
     class Config:
         from_attributes = True

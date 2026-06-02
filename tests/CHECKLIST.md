@@ -104,5 +104,6 @@
 | General 路由通用 hint 弱提示注入 (General Route Hints) | `agent_service.py`, `dispatcher.py`, `chat_executor.py`, `tests/ai/executors/test_chat_executor.py` | **路由标签消费边界**：验证 `turn_labels / relation_to_previous / user_action_type` 会透传至 GeneralChatExecutor 并注入为弱 system hint，辅助 LLM 理解追问/动作/话题关系；ChatBI/DataQueryExecutor 不使用该 hint 决定内部查数类别。 | ✅ 通过 | 2026-06-02 |
 | ChatBI 偏好记忆改写优化 (ChatBI LTM Alias Rewrite) | `tests/test_chatbi_ltm_rewrite.py`, `app/services/ai/executors/data_executor.py` | **长时记忆正则提取与别名改写**：验证在系统提示词中包含 `[Memory Profile]` 块时，改写器能够通过正则表达式精准提取用户偏好并强行触发 LLM 改写，将同义词与俗称（如“临港”）标准化（如“书院”），且不额外混入与改写无关的专属专规（`[Agent Rules]`）等背景噪音。 | ✅ 通过 | 2026-06-02 |
 | 长期记忆清除工具 (Long-Term Memory Delete Tool) | `app/services/ai/tools/memory_ltm_tools.py`, `app/services/ai/tools/registry.py` | **长期记忆清除工具与注册**：验证 `delete_user_preference` 能够按单个偏好 Key 精准清除 Redis HASH 中对应偏好，并在工具注册器以及系统隐式工具中正确注册发布。 | ✅ 已完成 | 2026-06-02 |
+| 历史会话智能体显示增强 (History Agent Label Display) | `app/schemas/agent.py`, `app/api/v1/endpoints/chat.py`, `EmbedChat.vue`, `AgentDebug.vue` | **历史会话智能体标识显示**：验证接口无感映射补全 `agent_name` 及 `agent_display_name` 字段逻辑；验证前端加载会话详情与审计列表历史消息时正确解构该字段并唤醒服务胶囊展示。 | ✅ 已完成 | 2026-06-02 |
 
 

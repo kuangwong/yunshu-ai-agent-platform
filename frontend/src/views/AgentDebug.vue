@@ -433,6 +433,7 @@ const loadSessionHistory = async (id: string) => {
           isThinking: false,
           isHistory: true, // Mark as history
           feedback: m.feedback,
+          agentName: m.agent_name || undefined,
         })
       );
       if (historyMsg.length > 0) {

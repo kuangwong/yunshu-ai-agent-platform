@@ -3321,6 +3321,8 @@ const fetchConversationHistory = async (isLoadMore = false) => {
                   logs: [],
                   isThinking: false,
                   feedback: null, 
+                  agentName: item.agent_name ?? undefined,
+                  agentDisplayName: item.agent_display_name ?? undefined,
                   prompt_tokens: item.prompt_tokens ?? undefined,
                   completion_tokens: item.completion_tokens ?? undefined,
                   total_tokens: item.total_tokens ?? undefined,

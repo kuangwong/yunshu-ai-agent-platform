@@ -32,8 +32,12 @@ from app.services.ai.executors.common import (
     is_retryable_stream_error,
 )
 from app.services.ai.executors.prompts import DataQueryPrompts, SharedPrompts
+from app.services.ai.data_query_turn_classifier import (
+    DataQueryTurnType,
+    data_query_turn_type_label,
+    resolve_data_query_turn_classification,
+)
 from app.services.ai.intent_service import (
-    looks_like_context_action,
     looks_like_skill_execution,
     looks_like_pure_result_followup,
 )
@@ -67,7 +71,7 @@ class DataQueryExecutor(BaseExecutor):
         self._current_user_question = ""
         self._no_tool_call_streak = 0
         self._non_data_tool_called = False
-        # 本轮是否“需要重新查数”（K1）。对已有结果做保存/导出/发送/记忆/建技能等动作（K3）时为 False，
+        # 本轮是否“需要重新查数”。对已有结果做保存/导出/发送/记忆/建技能等上下文动作时为 False，
         # 届时关闭“必须先查库”的强制护栏，允许直接基于上下文调用工具或作答。
         self._requires_fresh_data = True
         self._skip_few_shot = False
@@ -75,6 +79,7 @@ class DataQueryExecutor(BaseExecutor):
         self._skill_ready = False
         self._needs_skill_prep = False
         self._sql_plan_block_used = False
+        self._standalone_query = ""
 
     # 数据查询类工具：调用这些以外的工具（如 create_skills）视为“元操作/外部动作”，
     # 不应再被“必须先查库”的护栏阻断。
@@ -248,8 +253,91 @@ class DataQueryExecutor(BaseExecutor):
             return None
 
     def _is_last_result_followup(self, user_question: str) -> bool:
-        """K2 纯加工追问：复用上一轮结构化结果，同句不含新的查数诉求。"""
+        """纯加工追问：复用上一轮结构化结果，同句不含新的查数诉求。"""
         return looks_like_pure_result_followup(user_question)
+
+    def _should_rewrite_contextual_new_data_query(
+        self,
+        user_question: str,
+        langchain_messages: List[BaseMessage],
+    ) -> bool:
+        """Only rewrite short/context-dependent new data queries; complete questions stay untouched."""
+        q = (user_question or "").strip()
+        if not q:
+            return False
+
+        prior_messages = [
+            m for m in langchain_messages[:-1]
+            if isinstance(m, (HumanMessage, AIMessage)) and getattr(m, "content", None)
+        ]
+        if not prior_messages:
+            return False
+
+        q_lower = q.lower()
+        context_markers = [
+            "那", "这个", "那个", "它", "其", "刚才", "上面", "上一轮", "前面", "之前",
+            "本月呢", "上月呢", "今天呢", "昨天呢", "本周呢", "上周呢",
+            "再按", "再看", "再查", "换成", "改成", "只看", "只查", "也看", "也查",
+            "then", "this", "that", "it", "previous", "last one", "what about",
+        ]
+        if any(marker in q_lower for marker in context_markers):
+            return True
+
+        # Very short fragments are often contextual, unless they already include a concrete query verb.
+        query_verbs = ["查询", "查", "统计", "列出", "展示", "显示", "获取", "select", "show", "list"]
+        return len(q) < 8 and not any(verb in q_lower for verb in query_verbs)
+
+    async def _resolve_standalone_query_for_new_data_query(
+        self,
+        user_question: str,
+        langchain_messages: List[BaseMessage],
+    ) -> str:
+        """Rewrite contextual new data-query follow-up into a standalone retrieval query for examples/schema."""
+        q = (user_question or "").strip()
+        if not q or not self._should_rewrite_contextual_new_data_query(q, langchain_messages):
+            return q
+
+        recent_history = []
+        for msg in langchain_messages[-7:-1]:
+            if not isinstance(msg, (HumanMessage, AIMessage)):
+                continue
+            content = getattr(msg, "content", "") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            content = re.sub(r"\s+", " ", content).strip()
+            if not content:
+                continue
+            role = "用户" if isinstance(msg, HumanMessage) else "助手"
+            recent_history.append(f"{role}: {content[:220]}")
+
+        if not recent_history:
+            return q
+
+        prompt = (
+            "你是 ChatBI 查询改写器。请根据最近对话，把【最新提问】改写成一句独立、完整、适合检索元数据和历史 SQL 案例的查数问题。\n"
+            "要求：\n"
+            "1. 只补全上下文缺失的查询对象、指标、维度、时间范围或筛选条件。\n"
+            "2. 必须保留最新提问新增或修改的条件。\n"
+            "3. 不要生成 SQL，不要选择表名/字段名，不要解释。\n"
+            "4. 如果无法可靠补全，原样返回最新提问。\n\n"
+            "【最近对话】\n"
+            + "\n".join(recent_history)
+            + "\n\n【最新提问】\n"
+            + q
+            + "\n\n【改写后的独立查数问题】"
+        )
+
+        try:
+            model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
+            response = await model.ainvoke([SystemMessage(content=prompt)])
+            rewritten = (getattr(response, "content", "") or "").strip().strip('"').strip("'")
+            if not rewritten:
+                return q
+            # Keep the rewrite bounded; this is a retrieval query, not a new prompt.
+            return rewritten[:300]
+        except Exception as e:
+            logger.warning("[DataExecutor] Failed to rewrite standalone data query: %s", e)
+            return q
 
     async def _load_last_data_result_for_followup(self, user_question: str) -> Optional[Dict[str, Any]]:
         if not self.conversation_id or not self._is_last_result_followup(user_question):
@@ -257,7 +345,7 @@ class DataQueryExecutor(BaseExecutor):
         return await self._load_last_data_result()
 
     async def _load_last_data_result(self) -> Optional[Dict[str, Any]]:
-        """无条件加载本会话上一轮结构化查询结果（用于 K3 动作类请求注入上下文）。"""
+        """无条件加载本会话上一轮结构化查询结果（用于上下文动作类请求注入上下文）。"""
         if not self.conversation_id:
             return None
         user_id = self._current_user_id()
@@ -395,7 +483,7 @@ class DataQueryExecutor(BaseExecutor):
         ))
 
     async def _emit_direct_answer(self, final_text: str, start_thought: float) -> AsyncGenerator[Dict[str, Any], None]:
-        """K3 非新查数轮：模型已直接基于上下文作答，将其内容作为最终回答输出并记录 trace。"""
+        """非新查数轮：模型已直接基于上下文作答，将其内容作为最终回答输出并记录 trace。"""
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
         yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(time.time() * 1000)}
         yield {"content": final_text}
@@ -439,17 +527,40 @@ class DataQueryExecutor(BaseExecutor):
         langchain_messages = self._convert_history(history)
         system_prompt = self.config.system_prompt
         self._current_user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
+        last_data_result_for_turn = await self._load_last_data_result()
 
-        turn_cls = getattr(self, "turn_classification", None)
-        if turn_cls is not None:
-            self._requires_fresh_data = turn_cls.requires_fresh_data
-            self._skip_few_shot = not turn_cls.requires_few_shot
-        else:
-            self._requires_fresh_data = not looks_like_context_action(self._current_user_question)
-            self._skip_few_shot = not self._requires_fresh_data
+        turn_cls, turn_intent_info, turn_elapsed_ms = await resolve_data_query_turn_classification(
+            self._current_user_question,
+            history,
+            user_info=self.user_info,
+            conversation_id=self.conversation_id,
+            has_last_data_result=last_data_result_for_turn is not None,
+        )
+        self.turn_classification = turn_cls
+        self.intent_elapsed_ms = turn_elapsed_ms
+        self.intent_info = turn_intent_info
+        self._requires_fresh_data = turn_cls.requires_fresh_data
+        self._skip_few_shot = not turn_cls.requires_few_shot
+        yield {
+            "type": "log",
+            "id": f"chatbi_turn_{uuid.uuid4().hex[:8]}",
+            "title": "ChatBI 请求类别分析结果",
+            "details": f"{data_query_turn_type_label(turn_cls.turn_type)}。{turn_cls.reasoning}",
+            "status": "success",
+            "category": "intent",
+            "turn_type": turn_cls.turn_type.value,
+            "execution_time_ms": turn_elapsed_ms,
+        }
 
-        if self._is_last_result_followup(self._current_user_question):
-            last_result = await self._load_last_data_result_for_followup(self._current_user_question)
+        if (
+            turn_cls.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+            or self._is_last_result_followup(self._current_user_question)
+        ):
+            last_result = (
+                last_data_result_for_turn
+                if turn_cls.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+                else await self._load_last_data_result_for_followup(self._current_user_question)
+            )
             if last_result:
                 async for chunk in self._synthesize_from_last_data_result(
                     langchain_messages,
@@ -468,6 +579,13 @@ class DataQueryExecutor(BaseExecutor):
                 }
                 yield {"content": DataQueryPrompts.NO_REUSABLE_RESULT}
             return
+
+        self._standalone_query = (self._current_user_question or "").strip()
+        if self._requires_fresh_data:
+            self._standalone_query = await self._resolve_standalone_query_for_new_data_query(
+                self._current_user_question,
+                langchain_messages,
+            )
 
         # 2. Prepare Tools
 
@@ -525,7 +643,7 @@ class DataQueryExecutor(BaseExecutor):
         self._sql_plan_block_used = False
         # 注：_requires_fresh_data / _skill_ready / _needs_skill_prep 在本轮入口或下方按最终 system_prompt 计算。
         
-        # [经验库] Few-Shot 检索与注入（K1 / 技能执行等需要新 SQL 的轮次才检索）
+        # [经验库] Few-Shot 检索与注入（新数据查询 / 技能执行等需要新 SQL 的请求才检索）
         _few_shot_reminder = ""
         _schema_reminder_injected = False
         fewshot_start = time.time()
@@ -550,7 +668,7 @@ class DataQueryExecutor(BaseExecutor):
             }
             try:
                 from app.services.chatbi_example_service import ExampleService
-                user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
+                user_question = self._standalone_query or next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
                 if user_question:
                     examples = await ExampleService.search_examples(
                         user_question, 
@@ -640,7 +758,7 @@ class DataQueryExecutor(BaseExecutor):
         if self._skill_matched and not self._skill_ready:
             append_system_instruction(langchain_messages, DataQueryPrompts.MUST_READ_MATCHED_SKILLS)
 
-        # K3（对已有结果做动作/可直接基于上下文作答）：注入上一轮结构化结果并放宽“先查库”约束，
+        # 上下文动作（对已有结果做动作/可直接基于上下文作答）：注入上一轮结构化结果并放宽“先查库”约束，
         # 让模型可以直接调用工具（保存/导出/记忆/创建技能等）或基于上下文作答，而非机械重查。
         if not self._requires_fresh_data:
             last_result = await self._load_last_data_result()
@@ -793,7 +911,7 @@ class DataQueryExecutor(BaseExecutor):
                     langchain_messages.append(response)
                     break
 
-                # K3（非新查数轮）且未查库：模型选择直接基于上下文作答而非调用工具。
+                # 非新查数轮且未查库：模型选择直接基于上下文作答而非调用工具。
                 # 不强制其去查 Schema/SQL，直接把本轮内容作为最终回答收尾。
                 if not self._requires_fresh_data and not self._sql_attempted:
                     langchain_messages.append(response)
@@ -810,7 +928,7 @@ class DataQueryExecutor(BaseExecutor):
                     current_stage == DataQueryStage.NEED_SCHEMA
                     and "get_dataset_schema" in tool_names
                 ):
-                    schema_keywords = (self._current_user_question or "").strip()
+                    schema_keywords = (self._standalone_query or self._current_user_question or "").strip()
                     response = AIMessage(
                         content="",
                         tool_calls=[{
@@ -929,7 +1047,7 @@ class DataQueryExecutor(BaseExecutor):
                 continue
 
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
-            # （K3 非新查数轮不强制；技能/案例/记忆仅作辅助，不能阻断 ChatBI 查数主流程。）
+            # （非新查数轮不强制；技能/案例/记忆仅作辅助，不能阻断 ChatBI 查数主流程。）
             if (
                 self._current_data_stage() == DataQueryStage.NEED_SQL
             ):
@@ -1162,7 +1280,7 @@ class DataQueryExecutor(BaseExecutor):
             return
 
         # Hard gate: never synthesize a final answer without executing SQL
-        # （例外：本轮非新查数(K3)、无授权数据集，或已完成的元操作/外部动作如 create_skills）。
+        # （例外：本轮非新查数、无授权数据集，或已完成的元操作/外部动作如 create_skills）。
         if self._requires_fresh_data and not self._sql_attempted and not self._schema_no_authorized and not self._non_data_tool_called:
             yield {"type": "log", "id": f"gate_{uuid.uuid4().hex[:8]}", "title": "⚠️ 缺少 SQL 查询", "details": DataQueryPrompts.GATE_NO_SQL_LOG_DETAILS, "status": "error"}
             yield {"content": DataQueryPrompts.GATE_NO_SQL_CONTENT}

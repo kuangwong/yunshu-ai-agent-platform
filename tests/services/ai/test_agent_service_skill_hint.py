@@ -80,3 +80,64 @@ async def test_chat_stream_injects_skill_discovery_hint_into_system_prompt():
     assert "read_skill_instruction" in captured["system_prompt"]
     assert "扫描该目录下各技能的 SKILL.md" not in captured["system_prompt"]
     assert captured["system_prompt"].endswith("Base prompt")
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chatbi_agent_defers_turn_classification_to_data_executor():
+    service = AgentService()
+    agent_config = ChatConfig(
+        agent_id="agent-data",
+        agent_name="chatbi",
+        agent_display_name="ChatBI",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Data prompt",
+        tools=[],
+        capabilities=["data_query"],
+    )
+
+    captured = {}
+
+    async def fake_dispatch(config, *args, **kwargs):
+        captured["shared_turn"] = kwargs.get("shared_turn")
+        return _NoopExecutor()
+
+    with (
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.resolve_agent_config",
+            AsyncMock(return_value=(agent_config, None)),
+        ),
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.setup_context",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(side_effect=AssertionError("ChatBI turn classification must stay inside DataQueryExecutor")),
+        ),
+        patch(
+            "app.services.ai.agent_service.AgentDispatcher.dispatch",
+            side_effect=fake_dispatch,
+        ),
+        patch(
+            "app.services.ai.agent_service.AuditManager.log_transaction",
+            side_effect=_noop_audit,
+        ),
+        patch(
+            "app.services.config_service.ConfigService.get",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        chunks = []
+        async for chunk in service.chat_completion_stream(
+            [{"role": "user", "content": "那本月呢"}],
+            user_info={"user_id": "1", "role": "admin", "user_name": "admin"},
+            enable_multi_agent=False,
+        ):
+            chunks.append(chunk)
+
+    meta = next(chunk for chunk in chunks if chunk.get("type") == "meta")
+    assert meta["turn_type"] == "data_query_request"
+    assert meta["turn_type_label"] == "ChatBI 请求类别分析"
+    assert captured["shared_turn"] is None

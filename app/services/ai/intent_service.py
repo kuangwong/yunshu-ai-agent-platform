@@ -70,42 +70,64 @@ _NEW_QUERY_KEYWORDS = [
     "获取", "拉取", "看看", "展示", "显示", "查",
     "select ", "where ", "group by",
 ]
-# 同句「查数 + 可视化/分析」时的可视化侧信号（与 _FOLLOWUP_KEYWORDS 部分重叠，用于识别复合 K1）。
+_COMPOUND_NEW_QUERY_KEYWORDS = [
+    keyword for keyword in _NEW_QUERY_KEYWORDS
+    if keyword not in {"看看", "展示", "显示"}
+]
+# 同句「查数 + 可视化/分析」时的可视化侧信号（与 _FOLLOWUP_KEYWORDS 部分重叠，用于识别复合新数据查询）。
 _COMPOUND_VIZ_KEYWORDS = [
     "可视化", "图表", "画图", "画个图", "柱状图", "折线图", "饼图", "分析",
     "visual", "chart", "plot", "graph", "analyze",
 ]
+_RESULT_FORMATTING_PATTERNS = [
+    re.compile(r"(日期|时间|创建|更新时间|创建时间).{0,12}(yyyy|mm-dd|yyyy-mm-dd|格式|显示)", re.I),
+    re.compile(r"(yyyy|mm-dd|yyyy-mm-dd).{0,12}(显示|格式|输出)", re.I),
+    re.compile(r"(按|改成|转成|显示为).{0,12}(格式|yyyy|mm-dd|百分比|小数|千分位)", re.I),
+    re.compile(r"(保留|四舍五入).{0,8}(小数|位)", re.I),
+]
 
 
-def looks_like_compound_query_with_viz(user_question: str) -> bool:
-    """同一句里既要查数又要可视化/分析 → K1 复合请求，不是 K2 复用上一轮。"""
-    q = (user_question or "").strip().lower()
-    if not q:
-        return False
-    has_viz = any(keyword in q for keyword in _COMPOUND_VIZ_KEYWORDS)
-    has_query = any(keyword in q for keyword in _NEW_QUERY_KEYWORDS)
-    return has_viz and has_query
-
-
-def looks_like_pure_result_followup(user_question: str) -> bool:
-    """K2：仅对已有结果做可视化/分析/总结，同句不含新的查数诉求。"""
+def looks_like_result_formatting_followup(user_question: str) -> bool:
+    """仅调整上一轮结果展示格式，不应触发重新查数。"""
     q = (user_question or "").strip().lower()
     if not q:
         return False
     if looks_like_context_action(user_question):
         return False
+    return any(pattern.search(q) for pattern in _RESULT_FORMATTING_PATTERNS)
+
+
+def looks_like_compound_query_with_viz(user_question: str) -> bool:
+    """同一句里既要查数又要可视化/分析 → 新数据查询，不是复用上一轮结果。"""
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    has_viz = any(keyword in q for keyword in _COMPOUND_VIZ_KEYWORDS)
+    has_query = any(keyword in q for keyword in _COMPOUND_NEW_QUERY_KEYWORDS)
+    return has_viz and has_query
+
+
+def looks_like_pure_result_followup(user_question: str) -> bool:
+    """仅对已有结果做可视化/分析/总结，同句不含新的查数诉求。"""
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    if looks_like_context_action(user_question):
+        return False
+    if looks_like_result_formatting_followup(user_question):
+        return True
     if looks_like_compound_query_with_viz(user_question):
         return False
     if not any(keyword in q for keyword in _FOLLOWUP_KEYWORDS):
         return False
-    return not any(keyword in q for keyword in _NEW_QUERY_KEYWORDS)
+    return not any(keyword in q for keyword in _COMPOUND_NEW_QUERY_KEYWORDS)
 
 
 def looks_like_data_followup(user_question: str) -> bool:
-    """轻量启发式：判断本轮是否为对上一轮数据结果的纯加工追问（K2）。
+    """轻量启发式：判断本轮是否为对上一轮数据结果的纯加工追问。
 
     与 DataQueryExecutor 保持一致，供 dispatcher 在确实存在可复用数据结果时
-    做"跳过意图识别 LLM"的短路。同句含查数+可视化的复合请求不算 K2。
+    做"跳过意图识别 LLM"的短路。同句含查数+可视化的复合请求不算复用上一轮结果。
     """
     return looks_like_pure_result_followup(user_question)
 
@@ -126,6 +148,13 @@ def looks_like_knowledge_query(user_question: str) -> bool:
     """轻量启发式：用户是否在问 SOP/制度/操作指引（非结构化业务数据）。"""
     q = (user_question or "").strip().lower()
     if not q:
+        return False
+    formatting_correction_signals = [
+        "markdown", "格式", "渲染", "排版", "不符合", "不符",
+        "重新输出", "重新展示", "重新生成", "重新排版", "重新渲染", "重新格式化",
+        "format", "render",
+    ]
+    if any(sig in q for sig in formatting_correction_signals):
         return False
     if looks_like_meta_action(q) or looks_like_context_action(q) or looks_like_skill_execution(q):
         return False
@@ -176,7 +205,7 @@ def looks_like_skill_execution(user_question: str) -> bool:
 
 # 上下文动作（Context-Action）：对“已有对话/上一轮结果”执行保存、导出、发送、记忆等动作。
 # 与“元操作”相比覆盖面更广（不只限于技能），用于 DataQueryExecutor 判定本轮“是否需要重新查数”：
-# 命中即视为 K3（对已有结果做动作），不强制走 查Schema -> 执行SQL 的护栏。
+# 命中即视为上下文动作（对已有结果做动作），不强制走 查Schema -> 执行SQL 的护栏。
 _CONTEXT_ACTION_VERBS = [
     "保存", "存为", "存成", "存下来", "存到", "导出", "下载", "写入", "写到", "写成",
     "发送", "发给", "推送", "分享", "记住", "记录", "固化", "固定", "做成", "封装", "沉淀",

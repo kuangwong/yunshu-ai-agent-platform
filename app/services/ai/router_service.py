@@ -12,6 +12,9 @@ class RouteResult(BaseModel):
     secondary_agents: List[str] = []
     confidence: float
     reasoning: str
+    turn_labels: List[str] = []
+    relation_to_previous: str = "unknown"
+    user_action_type: str = "unknown"
 
 class LLMRouterResponse(BaseModel):
     """Internal structure for LLM output."""
@@ -19,6 +22,9 @@ class LLMRouterResponse(BaseModel):
     agent_name: str
     secondary_agents: List[str] = []
     confidence: float
+    turn_labels: List[str] = []
+    relation_to_previous: str = "unknown"
+    user_action_type: str = "unknown"
 
 class RouterService:
 
@@ -50,6 +56,23 @@ class RouterService:
 ### Step 4 复合意图判定 (Multi-Intent) — 保守
 - 仅当用户问题明确跨越两个不同智能体的职责、且可并行处理时，才填写 secondary_agents；否则 secondary_agents 必须为空（如无必要，勿增实体）。
 
+### Step 5 通用会话标签 (Generic Turn Hints) — 仅作为提示
+- 基于当前输入和历史，输出通用标签，供后续 executor 作为 hint。注意：这些标签不是任何具体智能体内部业务分类的最终结论。
+- turn_labels 可选值：
+  - new_business_request：新的业务请求或新的业务目标。
+  - continuation_followup：依赖上一轮上下文的继续追问。
+  - topic_switch：切换话题或切换业务领域。
+  - context_action：对已有上下文执行保存、导出、发送、记住等动作。
+  - meta_action：对智能体、技能、会话等系统对象做管理动作。
+  - business_related：和业务数据、业务知识或业务流程相关。
+  - same_topic：与上一轮保持同一主题。
+  - multi_intent：明确跨多个智能体职责。
+  - general_chat：闲聊或通用问答。
+  - ambiguous：上下文不足或标签不确定。
+- relation_to_previous 只能是：new_topic、followup、topic_switch、standalone、unknown。
+- user_action_type 只能是：ask_business_data_or_task、ask_knowledge、transform_context、save_or_export_context、manage_agent_or_skill、chat、unknown。
+- 如果不确定，请使用 ambiguous / unknown，不要编造标签。
+
 ## 4. 硬性约束 (Hard Constraints)
 - agent_name 与 secondary_agents 中的每个值，【必须】与清单中某个智能体的 name 字段完全一致（英文 slug，如 chat-bi）。严禁使用中文名、领域名或清单里不存在的名称。
 - 当没有任何业务智能体明显匹配（纯打招呼/闲聊/无法归类）时，选择兜底智能体 general-chat。
@@ -61,12 +84,38 @@ class RouterService:
   "thought": "1.指代消解结果 2.是否沿用上一轮及理由 3.命中清单里哪个/哪些 name 及理由",
   "agent_name": "清单中的某个 name",
   "secondary_agents": [],
-  "confidence": 0.95
+  "confidence": 0.95,
+  "turn_labels": ["continuation_followup", "business_related", "same_topic"],
+  "relation_to_previous": "followup",
+  "user_action_type": "transform_context"
 }
 
 ## 6. 示例 (名称以"清单"为准，下例仅示意格式)
-- 用户："你好" -> {"thought": "纯打招呼，无业务意图。", "agent_name": "general-chat", "secondary_agents": [], "confidence": 0.9}
-- 上一轮由 data-agent 处理，用户："那再画个柱状图" -> {"thought": "追问且无新领域意图，沿用上一轮 data-agent。", "agent_name": "data-agent", "secondary_agents": [], "confidence": 0.92}"""
+- 用户："你好" -> {"thought": "纯打招呼，无业务意图。", "agent_name": "general-chat", "secondary_agents": [], "confidence": 0.9, "turn_labels": ["general_chat"], "relation_to_previous": "standalone", "user_action_type": "chat"}
+- 上一轮由 data-agent 处理，用户："那再画个柱状图" -> {"thought": "追问且无新领域意图，沿用上一轮 data-agent。", "agent_name": "data-agent", "secondary_agents": [], "confidence": 0.92, "turn_labels": ["continuation_followup", "business_related", "same_topic"], "relation_to_previous": "followup", "user_action_type": "transform_context"}"""
+
+    ALLOWED_TURN_LABELS = {
+        "new_business_request",
+        "continuation_followup",
+        "topic_switch",
+        "context_action",
+        "meta_action",
+        "business_related",
+        "same_topic",
+        "multi_intent",
+        "general_chat",
+        "ambiguous",
+    }
+    ALLOWED_RELATIONS = {"new_topic", "followup", "topic_switch", "standalone", "unknown"}
+    ALLOWED_ACTION_TYPES = {
+        "ask_business_data_or_task",
+        "ask_knowledge",
+        "transform_context",
+        "save_or_export_context",
+        "manage_agent_or_skill",
+        "chat",
+        "unknown",
+    }
 
     def __init__(self):
         self._agents_cache: List[dict] = []
@@ -259,6 +308,17 @@ class RouterService:
         target_name = result_json.get("agent_name")
         secondary_names = result_json.get("secondary_agents", []) or []
         reasoning = result_json.get("thought") or result_json.get("reasoning", "")
+        turn_labels = self._normalize_turn_labels(result_json.get("turn_labels"))
+        relation_to_previous = self._normalize_choice(
+            result_json.get("relation_to_previous"),
+            self.ALLOWED_RELATIONS,
+            "unknown",
+        )
+        user_action_type = self._normalize_choice(
+            result_json.get("user_action_type"),
+            self.ALLOWED_ACTION_TYPES,
+            "unknown",
+        )
 
         # --- Confidence & Fallback Mechanism ---
         if confidence < 0.6:
@@ -285,7 +345,25 @@ class RouterService:
             secondary_agents=resolved_secondaries,
             confidence=confidence,
             reasoning=reasoning,
+            turn_labels=turn_labels,
+            relation_to_previous=relation_to_previous,
+            user_action_type=user_action_type,
         )
+
+    def _normalize_turn_labels(self, value) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        labels: List[str] = []
+        for item in value:
+            label = str(item or "").strip().lower()
+            if label in self.ALLOWED_TURN_LABELS and label not in labels:
+                labels.append(label)
+        return labels
+
+    @staticmethod
+    def _normalize_choice(value, allowed: set, default: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in allowed else default
 
     async def _fetch_agents_from_db(self) -> List[dict]:
         from app.core.orm import AsyncSessionLocal
@@ -353,7 +431,10 @@ class RouterService:
             return RouteResult(
                 agent_id=fallback_agent['id'],
                 confidence=0.1,
-                reasoning=f"Fallback: {reason}"
+                reasoning=f"Fallback: {reason}",
+                turn_labels=["ambiguous"],
+                relation_to_previous="unknown",
+                user_action_type="unknown",
             )
         return None
 

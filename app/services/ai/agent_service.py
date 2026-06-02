@@ -159,6 +159,9 @@ class AgentService:
                 r_thought = getattr(route_details, "reasoning", "No reasoning")
                 r_conf = getattr(route_details, "confidence", 0.0)
                 r_agent = getattr(route_details, "agent_id", "unknown")
+                r_turn_labels = getattr(route_details, "turn_labels", []) or []
+                r_relation = getattr(route_details, "relation_to_previous", "unknown")
+                r_action_type = getattr(route_details, "user_action_type", "unknown")
                 
                 # 1. Real-time SSE Event
                 yield {
@@ -166,6 +169,9 @@ class AgentService:
                     "thought": r_thought,
                     "confidence": r_conf,
                     "selected_agent": r_agent,
+                    "turn_labels": r_turn_labels,
+                    "relation_to_previous": r_relation,
+                    "user_action_type": r_action_type,
                     "status": "success",
                     "execution_time_ms": route_elapsed_ms
                 }
@@ -185,7 +191,10 @@ class AgentService:
                     tool_output={
                         "thought": r_thought,
                         "selected_agent": r_agent,
-                        "confidence": r_conf
+                        "confidence": r_conf,
+                        "turn_labels": r_turn_labels,
+                        "relation_to_previous": r_relation,
+                        "user_action_type": r_action_type,
                     },
                     status="success",
                     execution_time_ms=route_elapsed_ms
@@ -326,6 +335,8 @@ class AgentService:
 
             # --- 按轮次类型裁剪上下文注入（与会话级 Turn 分类共用，不重复调意图 LLM）---
             from app.services.ai.turn_classifier import (
+                TurnClassification,
+                TurnType,
                 resolve_turn_for_session,
                 should_inject_ltm,
                 should_inject_memory_recall_hint,
@@ -334,17 +345,30 @@ class AgentService:
                 turn_type_label,
                 default_thought_expanded,
             )
+            from app.services.ai.intent_service import IntentType
 
             can_do_data = "data_query" in (agent_config.capabilities or [])
-            turn_classification, turn_intent_info, turn_intent_elapsed_ms = await resolve_turn_for_session(
-                user_query,
-                messages,
-                can_do_data=can_do_data,
-                user_info=user_info,
-                conversation_id=conversation_id,
-            )
-            session_turn = (turn_classification, turn_intent_info, turn_intent_elapsed_ms)
+            if can_do_data:
+                turn_classification = TurnClassification(
+                    turn_type=TurnType.DATA_QUERY_REQUEST,
+                    reasoning="ChatBI 正在分析本轮请求类别，后续由数据查询执行器完成精确处理",
+                    skip_intent_llm=True,
+                    intent=IntentType.DATA_QUERY,
+                )
+                turn_intent_info = None
+                turn_intent_elapsed_ms = 0.0
+                session_turn = None
+            else:
+                turn_classification, turn_intent_info, turn_intent_elapsed_ms = await resolve_turn_for_session(
+                    user_query,
+                    messages,
+                    can_do_data=False,
+                    user_info=user_info,
+                    conversation_id=conversation_id,
+                )
+                session_turn = (turn_classification, turn_intent_info, turn_intent_elapsed_ms)
             early_turn_type = turn_classification.turn_type
+            turn_display_label = "ChatBI 请求类别分析" if can_do_data else turn_type_label(turn_classification.turn_type)
 
             # --- Long-Term Memory (LTM) Injection ---
             if should_inject_ltm(early_turn_type) and user_info:
@@ -532,7 +556,7 @@ class AgentService:
                 "agent_display_name": agent_config.agent_display_name or agent_config.agent_name,
                 "model": actual_model,
                 "turn_type": turn_classification.turn_type.value,
-                "turn_type_label": turn_type_label(turn_classification.turn_type),
+                "turn_type_label": turn_display_label,
                 "thought_expanded_default": default_thought_expanded(turn_classification.turn_type),
             }
 
@@ -575,7 +599,7 @@ class AgentService:
                 yield {
                     "type": "log",
                     "title": "轮次分类",
-                    "details": f"{turn_type_label(turn_classification.turn_type)}。{turn_classification.reasoning}",
+                    "details": f"{turn_display_label}。{turn_classification.reasoning}",
                     "status": "success",
                     "category": "intent",
                     "turn_type": turn_classification.turn_type.value,

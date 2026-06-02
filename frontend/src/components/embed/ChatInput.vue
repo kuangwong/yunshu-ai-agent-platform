@@ -321,8 +321,13 @@ const handleDropFile = async (e: DragEvent) => {
 };
 
 // 暴露属性给父组件
+const focus = () => {
+  inputRef.value?.focus();
+};
+
 defineExpose({
-  uploadedFiles
+  uploadedFiles,
+  focus
 });
 </script>
 

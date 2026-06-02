@@ -109,7 +109,7 @@ sequenceDiagram
 | `trace_id` | 绑定追踪 ID |
 | `content` | 追加助手正文 |
 | `log` | 思考/工具步骤日志 |
-| `router_log` | 智能路由决策展示 |
+| `router_log` | 智能路由决策展示，包含 `selected_agent`、`confidence`、`thought`，以及通用 hint：`turn_labels`、`relation_to_previous`、`user_action_type` |
 | `citation` | 知识库引用来源 |
 | `meta` | 智能体显示名等 |
 | `[DONE]` | 流结束 |
@@ -411,10 +411,10 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 |------|------|
 | 传了 `version_id` | 加载指定版本配置 |
 | 传了 `agent_id` / `agent_name` | 直接加载该智能体 |
-| 都未传 | `RouterService.route_query`：在用户有权限的智能体中 LLM 选型（可带 `secondary_agents` 做多智能体） |
+| 都未传 | `RouterService.route_query`：在用户有权限的智能体中结合多轮上下文做 LLM 选型（可带 `secondary_agents` 做多智能体，并输出通用会话 hint） |
 | 仍无配置 | 回退 **General Chat** 默认配置 |
 
-路由结果通过 SSE 发送 `router_log`，并写入执行 trace。
+路由结果通过 SSE 发送 `router_log`，并写入执行 trace。`turn_labels`、`relation_to_previous`、`user_action_type` 只表示路由层对当前轮次的通用理解，供 executor 参考；各 executor 是否使用这些 hint，由自身业务流程决定。
 
 ### 4.4 智能体访问权限
 
@@ -460,16 +460,16 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 |---------------------|--------|------|
 | `RAGFLOW` | `RAGExecutor` | 走 RAGFlow 应用对话 |
 | `OPENCLAW` | `OpenClawExecutor` | 走 OpenClaw 引擎 |
-| `LOCAL`（默认） | `turn_classifier` + 意图（可选） | 见下表 |
+| `LOCAL`（默认） | Dispatcher 按 engine/capability 选择执行器 | 见下表 |
 
-**LOCAL 分支**（`app/services/ai/dispatcher.py` + `turn_classifier.py`）：
+**LOCAL 分支**（`app/services/ai/dispatcher.py`）：
 
 | 条件 | 执行器 |
 |------|--------|
-| `TurnType` 需新查数 / K2 复用 / 技能执行等，且具备 `data_query` | `DataQueryExecutor` |
-| K3 上下文动作、元操作、GENERAL、KNOWLEDGE 等 | `GeneralChatExecutor` |
+| agent 具备 `data_query` capability | `DataQueryExecutor` |
+| 其他本地 agent | `GeneralChatExecutor` |
 
-轮次类型与经验库/SQL 护栏裁剪见 [../agent_execution_flow_review.md](../agent_execution_flow_review.md) §2。
+ChatBI 的「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」由 `DataQueryExecutor` 内部的 `DataQueryTurnClassifier` 判定；通用 `shared_turn` 不再决定 ChatBI 查数流程。请求类别与经验库/SQL 护栏裁剪见 [../agent_execution_flow_review.md](../agent_execution_flow_review.md) §2。
 
 ---
 
@@ -530,7 +530,8 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | 平台全局 / 编排提示词 | `app/services/ai/agent_prompts.py` |
 | 提示词分层说明 | [PROMPT_LAYERS.md](./PROMPT_LAYERS.md) |
 | 配置与路由 | `app/services/ai/context_manager.py`、`app/services/ai/router_service.py` |
-| 轮次分类 | `app/services/ai/turn_classifier.py` |
+| 通用请求分类 | `app/services/ai/turn_classifier.py` |
+| ChatBI 请求类别分析 | `app/services/ai/data_query_turn_classifier.py` |
 | 执行分发 | `app/services/ai/dispatcher.py` |
 | 执行器 / 执行器提示词 | `app/services/ai/executors/`、`executors/prompts.py` |
 | 会话记忆 | `app/services/ai/memory_service.py` |
@@ -540,7 +541,7 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | 前端 finalize | `frontend/src/utils/conversationFinalize.ts` |
 | 记忆管理 UI | `frontend/src/views/MemoryManagement.vue` |
 | 工具注册 | `app/services/ai/tools/registry.py` |
-| 执行流评审（K1/K2/K3） | [../agent_execution_flow_review.md](../agent_execution_flow_review.md) |
+| 执行流评审 / 请求类别边界 | [../agent_execution_flow_review.md](../agent_execution_flow_review.md) |
 | 智能路由设计 | [../AGENT_ROUTING_DESIGN.md](../AGENT_ROUTING_DESIGN.md) |
 | Embed / V1 API 设计 | [../AGENT_APP_DESIGN.md](../AGENT_APP_DESIGN.md) |
 

@@ -6,11 +6,14 @@ from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.turn_classifier import TurnClassification, TurnType
 from app.services.ai.intent_service import IntentType
 
+
+pytestmark = pytest.mark.no_infrastructure
+
+
 SESSION_TURN = (
     TurnClassification(
         turn_type=TurnType.GENERAL,
         reasoning="测试",
-        use_data_executor=False,
         skip_intent_llm=True,
         intent=IntentType.GENERAL,
     ),

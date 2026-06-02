@@ -1,13 +1,18 @@
-/** 与后端 TurnType 对齐，用于深度思考步骤折叠展示 */
+/** 与后端 TurnType / DataQueryTurnType 对齐，用于深度思考步骤折叠展示 */
 
 export type TurnType =
-  | "k1_new_query"
-  | "k2_reuse_result"
-  | "k3_context_action"
+  | "data_query_request"
+  | "new_data_query"
+  | "reuse_previous_result"
+  | "context_action"
   | "skill_execution"
   | "meta_action"
   | "general"
-  | "knowledge";
+  | "knowledge"
+  // 兼容历史会话里的旧 ChatBI 类型值。
+  | "k1_new_query"
+  | "k2_reuse_result"
+  | "k3_context_action";
 
 export interface TurnLogLike {
   title?: string;
@@ -16,16 +21,20 @@ export interface TurnLogLike {
 }
 
 const TURN_PANEL_TITLES: Record<TurnType, string> = {
-  k1_new_query: "K1 · 新查数",
-  k2_reuse_result: "K2 · 复用结果",
-  k3_context_action: "K3 · 上下文动作",
+  data_query_request: "ChatBI 请求类别分析",
+  new_data_query: "新数据查询",
+  reuse_previous_result: "复用上一轮结果",
+  context_action: "上下文动作",
   skill_execution: "技能执行",
   meta_action: "元操作",
   general: "通用对话",
   knowledge: "知识库问答",
+  k1_new_query: "新数据查询",
+  k2_reuse_result: "复用上一轮结果",
+  k3_context_action: "上下文动作",
 };
 
-/** ChatBI 数据流水线步骤（非 K1 时可折叠隐藏） */
+/** ChatBI 数据流水线步骤（非新数据查询时可折叠隐藏） */
 const DATA_PIPELINE_KEYWORDS = [
   "经验库",
   "schema",
@@ -81,6 +90,7 @@ export function filterLogsForTurn<T extends TurnLogLike>(
   if (!turnType) return logs;
 
   switch (turnType as TurnType) {
+    case "reuse_previous_result":
     case "k2_reuse_result":
       return logs.filter(
         (log) =>
@@ -89,6 +99,7 @@ export function filterLogsForTurn<T extends TurnLogLike>(
           log.category === "knowledge" ||
           !isDataPipelineStep(log),
       );
+    case "context_action":
     case "k3_context_action":
     case "meta_action":
       return logs.filter(
@@ -106,6 +117,7 @@ export function filterLogsForTurn<T extends TurnLogLike>(
       return logs.filter(
         (log) => isAlwaysVisible(log) || log.category === "tool" || !matchesAny(titleLower(log), ["经验库"]),
       );
+    case "new_data_query":
     case "k1_new_query":
     default:
       return logs;
@@ -124,7 +136,11 @@ export function getTurnPanelTitle(
 }
 
 export function defaultThoughtExpanded(turnType?: TurnType | string | null): boolean {
-  return turnType === "k1_new_query";
+  return (
+    turnType === "data_query_request" ||
+    turnType === "new_data_query" ||
+    turnType === "k1_new_query"
+  );
 }
 
 export function countHiddenLogs(

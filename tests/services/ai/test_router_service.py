@@ -87,6 +87,41 @@ async def test_route_query_high_confidence(mock_agents_metadata):
         assert result.agent_id == "agent-chatbi"
         assert result.confidence == 0.95
         assert result.reasoning == "Query asks for data table."
+        assert result.turn_labels == []
+        assert result.relation_to_previous == "unknown"
+        assert result.user_action_type == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_route_query_returns_generic_turn_hints(mock_agents_metadata):
+    """路由可输出通用会话标签，但它们只是 executor 可选择使用的 hint。"""
+    service = RouterService()
+
+    llm_resp_content = json.dumps({
+        "thought": "This is a follow-up to the previous data answer.",
+        "agent_name": "ChatBI",
+        "secondary_agents": [],
+        "confidence": 0.92,
+        "turn_labels": ["continuation_followup", "business_related", "same_topic", "unknown_label"],
+        "relation_to_previous": "followup",
+        "user_action_type": "transform_context"
+    })
+
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = MockLLMResponse(llm_resp_content)
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm:
+
+        mock_fetch.return_value = mock_agents_metadata
+        mock_get_llm.return_value = mock_llm
+
+        result = await service.route_query("把上面的结果画成柱状图")
+
+    assert result.agent_id == "agent-chatbi"
+    assert result.turn_labels == ["continuation_followup", "business_related", "same_topic"]
+    assert result.relation_to_previous == "followup"
+    assert result.user_action_type == "transform_context"
 
 @pytest.mark.asyncio
 async def test_route_query_low_confidence_fallback(mock_agents_metadata):

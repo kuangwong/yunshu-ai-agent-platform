@@ -1,4 +1,4 @@
-"""统一轮次分类：收敛 Dispatcher / Intent / DataExecutor 分散的 K1/K2/K3 判定。"""
+"""会话级通用请求分类：供路由、General/Knowledge 执行器复用。"""
 from __future__ import annotations
 
 import logging
@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 class TurnType(str, Enum):
-    K1_NEW_QUERY = "k1_new_query"
-    K2_REUSE_RESULT = "k2_reuse_result"
-    K3_CONTEXT_ACTION = "k3_context_action"
+    DATA_QUERY_REQUEST = "data_query_request"
+    CONTEXT_ACTION = "context_action"
     SKILL_EXECUTION = "skill_execution"
     META_ACTION = "meta_action"
     GENERAL = "general"
@@ -33,9 +32,8 @@ class TurnType(str, Enum):
 
 
 TURN_TYPE_LABELS: dict[TurnType, str] = {
-    TurnType.K1_NEW_QUERY: "K1 新查数",
-    TurnType.K2_REUSE_RESULT: "K2 复用结果",
-    TurnType.K3_CONTEXT_ACTION: "K3 上下文动作",
+    TurnType.DATA_QUERY_REQUEST: "数据查询请求",
+    TurnType.CONTEXT_ACTION: "上下文动作",
     TurnType.SKILL_EXECUTION: "技能执行",
     TurnType.META_ACTION: "元操作",
     TurnType.GENERAL: "通用对话",
@@ -51,21 +49,17 @@ def turn_type_label(turn_type: TurnType) -> str:
 class TurnClassification:
     turn_type: TurnType
     reasoning: str
-    requires_fresh_data: bool = True
-    requires_few_shot: bool = True
     requires_knowledge_search: bool = False
-    use_data_executor: bool = False
     skip_intent_llm: bool = False
     intent: Optional[IntentType] = None
 
 
 def should_inject_ltm(turn_type: Optional[TurnType]) -> bool:
-    """ChatBI 查数轮次通常不需要 LTM 画像块。"""
+    """数据查询/技能执行类请求通常不需要 LTM 画像块。"""
     if turn_type is None:
         return True
     return turn_type not in (
-        TurnType.K1_NEW_QUERY,
-        TurnType.K2_REUSE_RESULT,
+        TurnType.DATA_QUERY_REQUEST,
         TurnType.SKILL_EXECUTION,
     )
 
@@ -74,8 +68,7 @@ def should_inject_memory_recall_hint(turn_type: Optional[TurnType]) -> bool:
     if turn_type is None:
         return True
     return turn_type not in (
-        TurnType.K1_NEW_QUERY,
-        TurnType.K2_REUSE_RESULT,
+        TurnType.DATA_QUERY_REQUEST,
         TurnType.SKILL_EXECUTION,
         TurnType.KNOWLEDGE,
     )
@@ -85,26 +78,24 @@ def should_run_active_memory_preload(turn_type: Optional[TurnType]) -> bool:
     if turn_type is None:
         return True
     return turn_type not in (
-        TurnType.K1_NEW_QUERY,
-        TurnType.K2_REUSE_RESULT,
+        TurnType.DATA_QUERY_REQUEST,
         TurnType.SKILL_EXECUTION,
     )
 
 
 def should_inject_user_context(turn_type: Optional[TurnType]) -> bool:
-    """纯查数/技能执行轮次可省略用户画像 system 注入，权限仍走 user_info。"""
+    """数据查询/技能执行类请求可省略用户画像 system 注入，权限仍走 user_info。"""
     if turn_type is None:
         return True
     return turn_type not in (
-        TurnType.K1_NEW_QUERY,
-        TurnType.K2_REUSE_RESULT,
+        TurnType.DATA_QUERY_REQUEST,
         TurnType.SKILL_EXECUTION,
     )
 
 
 def default_thought_expanded(turn_type: Optional[TurnType]) -> bool:
-    """前端深度思考面板默认是否展开：仅 K1 默认展开。"""
-    return turn_type == TurnType.K1_NEW_QUERY
+    """前端深度思考面板默认是否展开：数据查询请求默认展开。"""
+    return turn_type == TurnType.DATA_QUERY_REQUEST
 
 
 SharedTurn = Tuple[TurnClassification, Optional[IntentResponse], float]
@@ -125,20 +116,14 @@ def classify_turn_heuristic(
         return TurnClassification(
             turn_type=TurnType.META_ACTION,
             reasoning="检测到元操作（创建/保存技能等），无需查数",
-            requires_fresh_data=False,
-            requires_few_shot=False,
-            use_data_executor=False,
             skip_intent_llm=True,
             intent=IntentType.GENERAL,
         )
 
     if looks_like_context_action(q):
         return TurnClassification(
-            turn_type=TurnType.K3_CONTEXT_ACTION,
+            turn_type=TurnType.CONTEXT_ACTION,
             reasoning="检测到对已有上下文/结果的动作（保存/导出/记住等）",
-            requires_fresh_data=False,
-            requires_few_shot=False,
-            use_data_executor=False,
             skip_intent_llm=True,
             intent=IntentType.GENERAL,
         )
@@ -147,20 +132,14 @@ def classify_turn_heuristic(
         return TurnClassification(
             turn_type=TurnType.SKILL_EXECUTION,
             reasoning="检测到显式技能执行请求",
-            requires_fresh_data=True,
-            requires_few_shot=True,
-            use_data_executor=True,
             skip_intent_llm=True,
             intent=IntentType.DATA_QUERY,
         )
 
     if can_do_data and looks_like_pure_result_followup(q) and has_last_data_result:
         return TurnClassification(
-            turn_type=TurnType.K2_REUSE_RESULT,
-            reasoning="检测到对上一轮数据结果的追问，复用结果（启发式短路，跳过意图识别）",
-            requires_fresh_data=False,
-            requires_few_shot=False,
-            use_data_executor=True,
+            turn_type=TurnType.DATA_QUERY_REQUEST,
+            reasoning="检测到对上一轮数据结果的追问（启发式短路，跳过意图识别）",
             skip_intent_llm=True,
             intent=IntentType.DATA_QUERY,
         )
@@ -169,21 +148,15 @@ def classify_turn_heuristic(
         return TurnClassification(
             turn_type=TurnType.KNOWLEDGE,
             reasoning="检测到知识库/SOP 类问法（启发式短路，跳过意图识别）",
-            requires_fresh_data=False,
-            requires_few_shot=False,
             requires_knowledge_search=True,
-            use_data_executor=False,
             skip_intent_llm=True,
             intent=IntentType.KNOWLEDGE_BASE,
         )
 
     if can_do_data and looks_like_compound_query_with_viz(q):
         return TurnClassification(
-            turn_type=TurnType.K1_NEW_QUERY,
+            turn_type=TurnType.DATA_QUERY_REQUEST,
             reasoning="检测到查数+可视化复合请求（启发式短路，跳过意图识别）",
-            requires_fresh_data=True,
-            requires_few_shot=True,
-            use_data_executor=True,
             skip_intent_llm=True,
             intent=IntentType.DATA_QUERY,
         )
@@ -202,35 +175,34 @@ def classify_turn_from_intent(
     if can_do_data and intent_info.intent == IntentType.DATA_QUERY:
         is_followup_semantics = False
         try:
-            from app.services.ai.intent_service import _FOLLOWUP_KEYWORDS
+            from app.services.ai.intent_service import _FOLLOWUP_KEYWORDS, _NEW_QUERY_KEYWORDS
+            q_lower = (user_query or "").lower()
+            has_new_query_signal = any(w in q_lower for w in _NEW_QUERY_KEYWORDS)
             is_followup_semantics = (
-                "追问" in (intent_info.reasoning or "")
-                or "可视化" in (intent_info.reasoning or "")
-                or "上一轮" in (intent_info.reasoning or "")
-                or "分析" in (intent_info.reasoning or "")
-                or "图表" in (intent_info.reasoning or "")
-                or any(w in (user_query or "").lower() for w in _FOLLOWUP_KEYWORDS)
+                not has_new_query_signal
+                and (
+                    "追问" in (intent_info.reasoning or "")
+                    or "可视化" in (intent_info.reasoning or "")
+                    or "上一轮" in (intent_info.reasoning or "")
+                    or "分析" in (intent_info.reasoning or "")
+                    or "图表" in (intent_info.reasoning or "")
+                    or any(w in q_lower for w in _FOLLOWUP_KEYWORDS)
+                )
             )
         except Exception:
             pass
 
         if has_last_data_result and is_followup_semantics:
             return TurnClassification(
-                turn_type=TurnType.K2_REUSE_RESULT,
-                reasoning=f"意图大模型识别为查数大类，检测到缓存数据且符合广义追问语义，无缝升级为 K2: {intent_info.reasoning}",
-                requires_fresh_data=False,
-                requires_few_shot=False,
-                use_data_executor=True,
+                turn_type=TurnType.DATA_QUERY_REQUEST,
+                reasoning=f"意图大模型识别为查数大类，检测到缓存数据且符合广义追问语义: {intent_info.reasoning}",
                 skip_intent_llm=False,
                 intent=IntentType.DATA_QUERY,
             )
 
         return TurnClassification(
-            turn_type=TurnType.K1_NEW_QUERY,
+            turn_type=TurnType.DATA_QUERY_REQUEST,
             reasoning=intent_info.reasoning,
-            requires_fresh_data=True,
-            requires_few_shot=True,
-            use_data_executor=True,
             skip_intent_llm=False,
             intent=IntentType.DATA_QUERY,
         )
@@ -239,10 +211,7 @@ def classify_turn_from_intent(
         return TurnClassification(
             turn_type=TurnType.KNOWLEDGE,
             reasoning=intent_info.reasoning,
-            requires_fresh_data=False,
-            requires_few_shot=False,
             requires_knowledge_search=True,
-            use_data_executor=False,
             skip_intent_llm=False,
             intent=IntentType.KNOWLEDGE_BASE,
         )
@@ -250,9 +219,6 @@ def classify_turn_from_intent(
     return TurnClassification(
         turn_type=TurnType.GENERAL,
         reasoning=intent_info.reasoning,
-        requires_fresh_data=False,
-        requires_few_shot=False,
-        use_data_executor=False,
         skip_intent_llm=False,
         intent=intent_info.intent,
     )
@@ -265,7 +231,7 @@ def attach_turn_classification(
     intent_info: Optional[IntentResponse] = None,
     intent_elapsed_ms: float = 0.0,
 ):
-    """把分类结果挂到 Executor 上，供 AgentService 日志与 DataExecutor 策略使用。"""
+    """把通用分类结果挂到 Executor 上，供日志与非 ChatBI 执行策略使用。"""
     executor.turn_classification = classification
     executor.intent_elapsed_ms = intent_elapsed_ms
 
@@ -279,10 +245,6 @@ def attach_turn_classification(
             entities=[],
         )
 
-    if hasattr(executor, "_requires_fresh_data"):
-        executor._requires_fresh_data = classification.requires_fresh_data
-    if hasattr(executor, "_skip_few_shot"):
-        executor._skip_few_shot = not classification.requires_few_shot
     if hasattr(executor, "_requires_knowledge_search"):
         executor._requires_knowledge_search = classification.requires_knowledge_search
 
@@ -354,9 +316,6 @@ def adapt_classification_for_agent(
     can_do_data: bool,
 ) -> TurnClassification:
     """多智能体场景：同一轮分类结果按各 Agent 能力适配 Executor 策略。"""
-    if can_do_data and classification.use_data_executor:
-        return classification
-
     knowledge = (
         classification.requires_knowledge_search
         or classification.turn_type == TurnType.KNOWLEDGE
@@ -364,10 +323,7 @@ def adapt_classification_for_agent(
     return TurnClassification(
         turn_type=classification.turn_type,
         reasoning=classification.reasoning,
-        requires_fresh_data=False,
-        requires_few_shot=False,
         requires_knowledge_search=knowledge,
-        use_data_executor=False,
         skip_intent_llm=classification.skip_intent_llm,
         intent=classification.intent,
     )
@@ -400,9 +356,6 @@ async def resolve_turn_for_session(
         classification = TurnClassification(
             turn_type=TurnType.GENERAL,
             reasoning="通用对话（非数据智能体，跳过意图识别）",
-            requires_fresh_data=False,
-            requires_few_shot=False,
-            use_data_executor=False,
             skip_intent_llm=True,
             intent=IntentType.GENERAL,
         )

@@ -1,6 +1,6 @@
 # 对话与提示词架构文档
 
-本目录描述**从用户发消息到模型回复**的端到端流程，以及**提示词如何分层、拼接、注入**。以当前代码为准（含 `PLATFORM_GLOBAL_SYSTEM_PROMPT`、轮次分类 `turn_classifier`）。
+本目录描述**从用户发消息到模型回复**的端到端流程，以及**提示词如何分层、拼接、注入**。以当前代码为准（含 `PLATFORM_GLOBAL_SYSTEM_PROMPT`、通用请求分类 `turn_classifier`、ChatBI 请求类别分析 `data_query_turn_classifier`）。
 
 | 文档 | 说明 |
 |------|------|
@@ -11,7 +11,7 @@
 
 | 文档 | 说明 |
 |------|------|
-| [../agent_execution_flow_review.md](../agent_execution_flow_review.md) | 执行流评审与 K1/K2/K3 优化记录（非主规范，含历史 P0/P1 状态） |
+| [../agent_execution_flow_review.md](../agent_execution_flow_review.md) | 执行流评审与请求类别边界（非主规范，含历史 P0/P1 状态） |
 | [../AGENT_ROUTING_DESIGN.md](../AGENT_ROUTING_DESIGN.md) | 智能体路由产品设计 |
 | [../AGENT_APP_DESIGN.md](../AGENT_APP_DESIGN.md) | V1 API、Embed、`debug_options` |
 | [../../prompts/README.md](../../prompts/README.md) | 运营侧智能体提示词草稿（ChatBI V7、DevOps V5 等） |

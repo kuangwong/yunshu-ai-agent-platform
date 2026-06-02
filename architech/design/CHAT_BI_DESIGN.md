@@ -1,111 +1,149 @@
 # ChatBI 智能体流程架构文档
 
-本文档详细描述了 ChatBI 智能体（数据查询助手）在系统中的完整执行流程、核心组件交互及关键机制。
+本文档描述 ChatBI 智能体（数据查询助手）的当前执行流程、核心组件交互及关键机制。
 
 ## 1. 核心流程概览
 
-ChatBI 的核心逻辑是一个基于 **意图识别 (Intent Classification)** 分发，配合 **ReAct (Reasoning + Acting)** 循环的自主代理系统。
+ChatBI 当前采用“两层边界”：
+
+1. **路由层只选智能体/执行器**：Router/Dispatcher 根据 agent 能力把请求送入 `DataQueryExecutor`，不判断 ChatBI 内部请求类别。
+2. **执行器内部做 ChatBI 请求类别分析**：`DataQueryExecutor` 第一阶段调用 `DataQueryTurnClassifier`，再决定是否新查数、复用上一轮结果，或处理上下文动作。该分类以 LLM 结合上下文主判，规则只做 LLM 失败后的兜底和硬约束。
 
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant API as AgentService (API)
-    participant Intent as IntentService (意图识别)
-    participant Executor as DataQueryExecutor (执行器)
-    participant LLM as 模型 (DeepSeek/GPT)
-    participant Tools as 工具集 (Schema/SQL/Dashboard)
+    participant API as AgentService
+    participant Dispatcher as AgentDispatcher
+    participant Executor as DataQueryExecutor
+    participant Classifier as DataQueryTurnClassifier
+    participant LLM as 模型
+    participant Tools as 工具集(Schema/SQL/Dashboard)
 
     User->>API: 发送聊天消息
-    API->>API: 1. 上下文准备 (加载配置, TraceID)
-    API->>Intent: 2. 识别意图 (identify_intent)
-    Intent-->>API: 返回: DATA_QUERY (Confidence: 0.9)
-    
-    rect rgb(240, 248, 255)
-        note right of API: 判定: 意图匹配且具备 data_query 能力
-        API->>Executor: 3. 初始化执行器 (DataQueryExecutor)
-        Executor->>Executor: 注入 System Prompt + Dataset Menu
-        
-        loop ReAct 循环 (Max 5 Steps)
-            Executor->>LLM: 4. 思考 (Thought)
-            LLM-->>Executor: 决定调用工具 (Action)
-            
-            alt调用 get_dataset_schema
-                Executor->>Tools: 检索表结构 (Schema Search)
-                Tools-->>Executor: 返回 YAML Schema
-            else 调用 execute_sql_query
-                Executor->>Tools: 5. 执行 SQL
-                note right of Tools: 语法校验 (SQLGlot) + 安全检查
-                Tools-->>Executor: 返回查询结果 (JSON)
-            else 调用 update_dashboard_context
-                Executor->>Tools: 更新前端图表
-            end
-            
-            Executor->>Executor: 6. 观察与自愈 (Self-Healing)
-            note right of Executor: 若报错: 生成"规划修正"提示
-        end
-    end
+    API->>API: 1. 加载历史、配置、TraceID
+    API->>Dispatcher: 2. 按 agent 能力选择 Executor
+    Dispatcher-->>API: DataQueryExecutor
+    API-->>User: SSE: 轮次分类=ChatBI 请求类别分析
 
-    Executor->>LLM: 7. 最终合成 (Final Synthesis)
-    LLM-->>User: 自然语言回答 (Markdown/Table)
-    API->>User: (流式输出 Stream Response)
+    API->>Executor: 3. 执行 ChatBI
+    Executor->>Classifier: 4. 分析 ChatBI 请求类别
+    Classifier-->>Executor: 新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行
+    Executor-->>User: SSE: ChatBI 请求类别分析结果
+
+    alt 新数据查询
+        Executor->>Tools: 检索经验库 / Schema
+        Tools-->>Executor: 返回历史案例 / YAML Schema
+        Executor->>LLM: 生成 SQL
+        Executor->>Tools: 执行 SQL
+        Tools-->>Executor: 返回查询结果
+        Executor->>LLM: 汇总数据
+        LLM-->>User: Markdown/Table/图表说明
+    else 复用上一轮结果
+        Executor->>Executor: 读取上一轮结构化查询结果
+        Executor->>LLM: 基于上一轮结果合成分析/可视化说明
+        LLM-->>User: Markdown/Table/图表说明
+    else 上下文动作
+        Executor->>Executor: 注入上一轮结构化结果并放宽查库护栏
+        Executor->>LLM: 调用保存/导出/记忆/创建技能等工具或直接答复
+        LLM-->>User: 操作结果
+    end
 ```
 
 ---
 
-## 2. 详细执行步骤
+## 2. 请求入口与路由
 
-### 阶段一：请求入口与初始化 (Request Entry)
-*   **入口组件**: `AgentService.chat_completion_stream`
-*   **职责**:
-    *   **上下文加载**: 根据 `agent_id` 或 `version_id` 加载智能体配置 (Model, Capabilities)。
-    *   **Trace ID 生成**: 为本次会话生成唯一追踪 ID，用于全链路日志审计。
-    *   **审计准备**: 初始化 `trace_buffer` 记录后续所有的思考和工具调用。
+### 阶段一：请求入口
 
-### 阶段二：意图识别 (Intent Recognition)
-*   **核心组件**: `IntentService`
-*   **逻辑**:
-    *   独立调用 LLM 分析用户输入的语义。
-    *   **分类体系**:
-        *   `DATA_QUERY`: 涉及查数、报表、趋势、指标记录。
-        *   `KNOWLEDGE_BASE`: 涉及 SOP、操作文档、规章制度。
-        *   `GENERAL`: 闲聊或通用问题。
-    *   **路由决策**: 若意图为 `DATA_QUERY` **且** 智能体配置包含 `data_query` 权限，则实例化 `DataQueryExecutor`，否则回退到通用聊天。
+- **入口组件**：`AgentService.chat_completion_stream`
+- **职责**：
+  - 加载会话历史、智能体配置、用户权限与 Trace ID。
+  - 对 ChatBI agent 输出外层 SSE 元信息：`turn_type=data_query_request`，展示名为「ChatBI 请求类别分析」。
+  - 对非 ChatBI agent 仍可调用通用 `resolve_turn_for_session`，生成 `shared_turn` 给 General/Knowledge 类 executor 复用。
 
-### 阶段三：ChatBI 执行引擎 (Execution Engine)
-*   **核心组件**: `DataQueryExecutor`
-*   **工作模式**: ReAct (Reasoning + Acting) 多轮迭代。
+### 阶段二：执行器选择
 
-#### 1. 动态提示词与上下文注入
-*   系统自动从数据库获取当前可见的 **数据集菜单 (Dataset Menu)**，并注入到 System Prompt 的 `{dataset_menu}` 占位符中。
-*   AI 借此获知系统中有哪些数据资产可用（如 "服务器性能表", "机房资产表"）。
+- **核心组件**：`AgentDispatcher`
+- **规则**：
+  - `engine_type=RAGFLOW` -> `RAGExecutor`
+  - `engine_type=OPENCLAW` -> `OpenClawExecutor`
+  - agent 具备 `data_query` capability -> `DataQueryExecutor`
+  - 其他本地 agent -> `GeneralChatExecutor`
 
-#### 2. 工具调用循环 (Tool Loop)
-智能体在每一步思考中可选择以下核心工具：
-
-| 工具名称 | 作用 | 关键逻辑 |
-| :--- | :--- | :--- |
-| **`get_dataset_schema`** | 获取元数据 | 支持 **关键词搜索** 或 **RAG 检索**。返回标准 YAML 格式的表结构，包含字段解释和枚举值。 |
-| **`execute_sql_query`** | 执行数据查询 | 1. **SQL 语法校验** (利用 `sqlglot` 库，确保符合 ClickHouse 语法)。<br>2. **安全风控** (正则屏蔽 DROP, DELETE 等高危指令)。<br>3. **执行** (调用外部 Data API 获取结果)。 |
-| **`update_dashboard_context`** | 前端联动 | 向前端发送指令，更新当前页面的图表上下文 (Context)。 |
-
-#### 3. 错误自愈机制 (Self-Healing)
-*   **机制**: `DataQueryExecutor` 会捕获工具执行的异常。
-*   **启发式反馈**:
-    *   **未知列 (Unknown column)** -> 提示 "请重新检查 Schema，确认列名正确"。
-    *   **语法错误 (Syntax Error)** -> 提示 "请注意 ClickHouse 语法特性 (如 `GLOBAL JOIN` 等)"。
-    *   **无结果** -> 提示 "可能是关键词不匹配，请尝试列出所有机房..."。
-*   **效果**: AI 收到报错后，会在下一次循环中自动修正 SQL，而不是直接报错给用户。
-
-### 阶段四：最终响应 (Final Synthesis)
-*   当工具返回有效数据后，LLM 结合 **用户问题** 和 **查询结果 (JSON)** 生成最终的自然语言回答。
-*   回答通常包含 Markdown 表格、关键指标总结以及对数据的解释。
+Dispatcher 不再根据 ChatBI 内部请求类别决定是否进入 DataQueryExecutor。
 
 ---
 
-## 3. 关键组件文件路径
+## 3. ChatBI 请求类别分析
 
-*   **编排入口**: `app/services/ai/agent_service.py`
-*   **意图服务**: `app/services/ai/intent_service.py`
-*   **执行器**: `app/services/ai/executors/data_executor.py`
-*   **工具实现**: `app/services/ai/tools/data_api.py`
-*   **工具定义**: `app/services/ai/tools/registry.py`
+**核心组件**：`app/services/ai/data_query_turn_classifier.py`
+
+分类原则：
+
+- **LLM 主判**：优先让大模型结合最近对话、当前问题、是否存在上一轮结构化查询结果，判断本轮属于哪类。
+- **规则兜底**：只有 LLM 返回无效 JSON、未知类别或调用失败时，才使用轻量规则兜底。
+- **硬约束**：如果判断为复用上一轮结果但当前没有结构化结果，执行器返回「缺少可复用查询结果」，不把「柱状图显示吧」这类追问拿去检索 Schema。
+
+| 请求类别 | 说明 | 典型用户说法 | 执行策略 |
+|----------|------|--------------|----------|
+| `NEW_DATA_QUERY` | 需要新查业务数据 | 「查一下用户列表」「那本月呢」 | 经验库/Schema -> SQL -> 汇总 |
+| `REUSE_PREVIOUS_RESULT` | 基于上一轮结构化结果加工 | 「可视化分析一下」「画个柱状图」 | 跳过 Schema/SQL，直接复用上一轮结果合成 |
+| `CONTEXT_ACTION` | 对已有结果执行动作 | 「保存这个结果」「导出上面表格」 | 注入上一轮结果，调用对应工具或直接答复 |
+| `SKILL_EXECUTION` | 显式使用技能 | 「使用用户列表查询技能」 | 按技能要求加载说明并执行 |
+
+前端 SSE 日志示例：
+
+```text
+轮次分类：ChatBI 请求类别分析
+ChatBI 请求类别分析结果：复用上一轮结果。检测到对上一轮数据结果的追问...
+```
+
+---
+
+## 4. 新数据查询流程
+
+1. **上下文独立化**：多轮短句如「那本月呢」会结合最近对话改写为完整查数问题，用于经验库和 Schema 检索。
+2. **经验库检索**：通过 `ExampleService.search_examples` 查找历史优质 SQL 案例，并注入 Few-Shot。
+3. **数据集菜单与 Schema**：加载当前用户可见数据集，必要时自动兜底调用 `get_dataset_schema`。
+4. **SQL 生成与执行**：模型必须先拿 Schema，再调用 `execute_sql_query`。
+5. **结果保存**：SQL 成功后保存结构化结果，供下一轮「复用上一轮结果」使用。
+6. **最终汇总**：合成 Markdown 表格、关键指标总结和解释。
+
+---
+
+## 5. 复用上一轮结果流程
+
+当当前问题是「可视化分析一下」「总结一下」「换成折线图」等纯加工追问，并且当前会话存在上一轮结构化查询结果时：
+
+1. `DataQueryExecutor` 读取上一轮 `last_data_result`。
+2. 跳过经验库、Schema、SQL。
+3. 将上一轮结构化结果与当前问题交给合成模型。
+4. 输出分析、可视化说明或格式调整后的回答。
+
+如果没有可复用结果，返回明确日志「缺少可复用查询结果」，避免凭空编造。
+
+---
+
+## 6. 上下文动作流程
+
+上下文动作不是新查数，例如：
+
+- 保存/导出上一轮结果
+- 记住某项偏好
+- 把当前流程沉淀成技能
+
+这类请求会注入上一轮结构化结果并放宽“必须查库”的护栏，允许模型直接调用系统隐式工具或基于上下文答复。
+
+---
+
+## 7. 关键组件文件路径
+
+| 用途 | 路径 |
+|------|------|
+| 编排入口 | `app/services/ai/agent_service.py` |
+| 执行器选择 | `app/services/ai/dispatcher.py` |
+| 通用请求分类 | `app/services/ai/turn_classifier.py` |
+| ChatBI 请求类别分析 | `app/services/ai/data_query_turn_classifier.py` |
+| ChatBI 执行器 | `app/services/ai/executors/data_executor.py` |
+| ChatBI 执行器提示词 | `app/services/ai/executors/prompts.py` |
+| 数据工具注册 | `app/services/ai/tools/registry.py` |

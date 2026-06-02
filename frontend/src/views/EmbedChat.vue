@@ -3891,6 +3891,9 @@ const sendMessage = async () => {
       });
     }
     scrollToBottom();
+    nextTick(() => {
+      chatInputRef.value?.focus();
+    });
   }
 };
 

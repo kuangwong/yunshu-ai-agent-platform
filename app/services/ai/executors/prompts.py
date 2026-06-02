@@ -222,7 +222,7 @@ class DataQueryPrompts:
             + cls._RATIO_ANOMALY_RECHECK_BODY
         )
 
-    # 上下文动作（K3）引导：本轮是对“已有对话/上一轮结果”做保存/导出/发送/记忆/创建技能等动作，
+    # 上下文动作引导：本轮是对“已有对话/上一轮结果”做保存/导出/发送/记忆/创建技能等动作，
     # 不需要重新查数。静态正文 + 可选的上一轮结构化结果。
     _CONTEXT_ACTION_GUIDE_BODY = (
         "【本轮为上下文动作（无需重新查数）】\n"
@@ -237,7 +237,7 @@ class DataQueryPrompts:
 
     @classmethod
     def context_action_guide(cls, result_json: str = "") -> str:
-        """上下文动作（K3）引导提示词；如有上一轮结构化结果则一并注入供动作复用。"""
+        """上下文动作引导提示词；如有上一轮结构化结果则一并注入供动作复用。"""
         if result_json:
             return (
                 cls._CONTEXT_ACTION_GUIDE_BODY

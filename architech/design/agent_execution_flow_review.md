@@ -1,15 +1,15 @@
 # 智能体执行流程架构评审
 
-> 文档日期：2026-05-30（评审记录）；2026-05-31 起主规范迁至 [chat/](./chat/)  
-> 范围：EmbedChat → AgentService → Dispatcher → Executors（Data / GeneralChat / RAG / OpenClaw）  
-> 关联改动：`turn_classifier.py`、Dispatcher 统一路由、DataExecutor 经验库裁剪、RAG conversation_id 修复
+> 文档日期：2026-05-30（评审记录）；2026-06-01 更新 ChatBI 请求类别拆分
+> 范围：EmbedChat -> AgentService -> Dispatcher -> Executors（Data / GeneralChat / RAG / OpenClaw）
+> 关联改动：`turn_classifier.py` 通用化、`data_query_turn_classifier.py`、Dispatcher 只做执行器选择、DataQueryExecutor 内部请求类别分析
 
 **规范文档（请以代码同步维护）**：
 
-- [chat/CHAT_FLOW.md](./chat/CHAT_FLOW.md) — 端到端聊天流程  
-- [chat/PROMPT_LAYERS.md](./chat/PROMPT_LAYERS.md) — 提示词分层与 `PLATFORM_GLOBAL_SYSTEM_PROMPT`  
+- [chat/CHAT_FLOW.md](./chat/CHAT_FLOW.md) — 端到端聊天流程
+- [chat/PROMPT_LAYERS.md](./chat/PROMPT_LAYERS.md) — 提示词分层与 `PLATFORM_GLOBAL_SYSTEM_PROMPT`
 
-本文档保留 **K1/K2/K3 评审结论与优化优先级**，不作为唯一流程说明。
+本文档保留执行流评审与优化优先级，不作为唯一流程说明。当前实现已不再使用历史缩写命名；ChatBI 内部请求类别为「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」。
 
 ---
 
@@ -17,187 +17,141 @@
 
 ```mermaid
 flowchart TB
-    subgraph FE[前端 EmbedChat]
-        U[用户消息 + 附件/技能/知识库]
+    subgraph FE["前端 EmbedChat"]
+        U["用户消息 + 附件/技能/知识库"]
     end
 
-    subgraph AS[AgentService]
-        M[Redis 会话记忆]
-        CM[ContextManager + RouterService]
-        INJ[注入: 技能/LTM/记忆/用户画像]
-        DP[AgentDispatcher]
+    subgraph AS["AgentService"]
+        M["Redis 会话记忆"]
+        CM["ContextManager + RouterService"]
+        INJ["注入: 技能/LTM/记忆/用户画像"]
+        DP["AgentDispatcher"]
     end
 
-    subgraph EX[Executor]
-        D[DataQueryExecutor]
-        G[GeneralChatExecutor]
-        R[RAGExecutor]
-        O[OpenClawExecutor]
+    subgraph EX["Executor"]
+        D["DataQueryExecutor"]
+        G["GeneralChatExecutor"]
+        R["RAGExecutor"]
+        O["OpenClawExecutor"]
     end
 
     U --> M
     M --> CM --> INJ --> DP
     DP --> D & G & R & O
-    D & G & R & O --> SSE[流式 content / log]
+    D & G & R & O --> SSE["流式 content / log"]
 ```
 
-**一轮请求的主路径**：Redis 读历史 → 路由选智能体 → 注入上下文 → **Dispatcher 选 Executor** → ReAct/合成 → 写回 Redis + Trace。
+**一轮请求的主路径**：Redis 读历史 -> 路由选智能体 -> 注入上下文 -> Dispatcher 选 Executor -> ReAct/合成 -> 写回 Redis + Trace。
 
-K1/K2/K3、技能自动加载、SQL 错误判定，主要落在 **TurnClassification + DataQueryExecutor + intent 启发式** 这一层。
+当前分类边界：
+
+- `TurnClassification` 是通用会话请求分类，只表达 `DATA_QUERY_REQUEST / CONTEXT_ACTION / SKILL_EXECUTION / META_ACTION / GENERAL / KNOWLEDGE` 等跨执行器概念。
+- `shared_turn` 只给非 ChatBI 执行器复用通用分类，避免重复意图调用；ChatBI 不再消费 `shared_turn` 决定查数流程。
+- ChatBI 专用请求类别由 `DataQueryTurnClassifier` 在 `DataQueryExecutor` 内部执行，结果为「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」。
 
 ---
 
-## 2. 轮次分类模型（K1 / K2 / K3）
+## 2. 请求类别模型
 
-| 类型 | 含义 | 典型用户说法 | Executor | 经验库 | 查库护栏 |
-|------|------|--------------|----------|--------|----------|
-| **K1** | 新查数 | 「查用户列表」「查 PUE 并可视化」 | DataQuery | ✓ | ✓ |
-| **K2** | 复用上一轮结果 | 「画个柱状图」「分析一下刚才的结果」 | DataQuery | ✗ | ✗ |
-| **K3** | 对已有上下文做动作 | 「保存这个结果」「导出上面表格」 | GeneralChat | ✗ | ✗ |
-| **技能执行** | 显式使用技能 | 「使用用户列表查询技能」 | DataQuery | ✓ | 按技能 |
-| **元操作** | 创建/保存技能 | 「把流程保存为技能」 | GeneralChat | ✗ | ✗ |
-| **KNOWLEDGE** | 知识库/SOP | 「处理流程是什么」 | GeneralChat | ✗ | ✗（强制 search_knowledge_base） |
-| **GENERAL** | 闲聊/通用 | 「你好」 | GeneralChat | ✗ | ✗ |
+### 2.1 通用会话分类（`turn_classifier.py`）
 
-\* KNOWLEDGE_BASE 意图走 GeneralChat，并在 Step 1 强制 `search_knowledge_base`（P1 已落地）。
+| 类型 | 含义 | 典型用户说法 | 主要消费者 |
+|------|------|--------------|------------|
+| `DATA_QUERY_REQUEST` | 数据查询类请求 | 「查用户列表」「查 PUE 并可视化」 | AgentService 日志、上下文注入裁剪 |
+| `CONTEXT_ACTION` | 对已有上下文做动作 | 「保存这个结果」「导出上面表格」 | GeneralChat/Knowledge 类执行器 |
+| `SKILL_EXECUTION` | 显式使用技能 | 「使用用户列表查询技能」 | GeneralChat/技能护栏 |
+| `META_ACTION` | 创建/保存技能等元操作 | 「把流程保存为技能」 | GeneralChatExecutor |
+| `KNOWLEDGE` | 知识库/SOP | 「处理流程是什么」 | GeneralChatExecutor，强制 `search_knowledge_base` |
+| `GENERAL` | 闲聊/通用 | 「你好」 | GeneralChatExecutor |
 
-### 分类流程（优化后）
+### 2.2 ChatBI 专用请求类别（`data_query_turn_classifier.py`）
+
+| 类型 | 含义 | 典型用户说法 | 经验库 | 查库护栏 |
+|------|------|--------------|--------|----------|
+| `NEW_DATA_QUERY` | 新数据查询 | 「查用户列表」「查 PUE 并可视化」 | 是 | 是 |
+| `REUSE_PREVIOUS_RESULT` | 复用上一轮结构化结果 | 「画个柱状图」「分析一下刚才的结果」 | 否 | 否 |
+| `CONTEXT_ACTION` | 对已有结果做保存/导出/记忆等动作 | 「保存这个结果」「导出上面表格」 | 否 | 否 |
+| `SKILL_EXECUTION` | 显式使用技能 | 「使用用户列表查询技能」 | 是 | 按技能 |
+
+ChatBI 请求类别采用 **LLM 主判、规则兜底**：
+
+- 主路径：LLM 结合最近对话、当前用户问题和上一轮结构化查询结果状态，输出四类之一。
+- 兜底路径：仅当 LLM 返回无效内容或调用失败时，使用轻量规则判断上下文动作、技能执行、复用上一轮结果或新数据查询。
+- 复用保护：如果本轮被判断为复用上一轮结果但没有可复用结构化结果，执行器直接提示缺少结果，不把展示/可视化追问当成 Schema 检索关键词。
+
+### 2.3 分类流程（当前实现）
 
 ```mermaid
 flowchart TD
-    A[用户本轮消息] --> B{engine_type?}
-    B -->|RAGFLOW| R[RAGExecutor]
-    B -->|OPENCLAW| O[OpenClawExecutor]
-    B -->|默认| C{有 data_query 能力?}
-    C -->|否| G[GeneralChatExecutor]
-    C -->|是| H[classify_turn_heuristic]
-    H -->|命中| I{use_data_executor?}
-    H -->|未命中| J[意图 LLM]
-    J --> K[classify_turn_from_intent]
-    K --> I
-    I -->|是| D[DataQueryExecutor]
-    I -->|否| G
+    A["用户本轮消息"] --> B{"engine_type?"}
+    B -->|"RAGFLOW"| R["RAGExecutor"]
+    B -->|"OPENCLAW"| O["OpenClawExecutor"]
+    B -->|"默认"| C{"agent 有 data_query 能力?"}
+    C -->|"是"| D["DataQueryExecutor"]
+    C -->|"否"| H["resolve_turn_for_session 通用分类"]
+    H --> G["GeneralChatExecutor"]
+    D --> Q["DataQueryTurnClassifier"]
+    Q --> N["新数据查询: Schema -> SQL -> 汇总"]
+    Q --> P["复用上一轮结果: 跳过 Schema/SQL -> 合成"]
+    Q --> A2["上下文动作: 注入上一轮结果并放宽查库护栏"]
 ```
 
-**实现位置**：`app/services/ai/turn_classifier.py` + `app/services/ai/dispatcher.py`
+实现位置：`turn_classifier.py`、`data_query_turn_classifier.py`、`dispatcher.py`、`executors/data_executor.py`。
 
 ---
 
 ## 3. Dispatcher（路由层）
 
-### 优化前问题
-
-1. **分类逻辑分散**：Dispatcher 只有 meta-action / K2 两条短路；K3、技能执行、复合 K1 在 DataExecutor 内部才处理。
-2. **`KNOWLEDGE_BASE` 无专门路由**：意图有该类型，但一律 GeneralChat。
-3. **K3 / 技能未在 Dispatcher 短路**：路径绕、步骤多、难观测。
-4. **意图日志只覆盖 DataQuery**：GeneralChat 分支无统一「本轮类型」日志。
-
-### 优化后（P0 已落地）
+Dispatcher 当前只负责选择执行器：
 
 | 条件 | 去向 |
 |------|------|
 | `engine_type=RAGFLOW` | RAGExecutor |
 | `engine_type=OPENCLAW` | OpenClawExecutor |
-| 无 `data_query` 能力 | GeneralChatExecutor |
-| `TurnType.META_ACTION` | GeneralChatExecutor |
-| `TurnType.K3_CONTEXT_ACTION` | GeneralChatExecutor |
-| `TurnType.SKILL_EXECUTION` | DataQueryExecutor（跳过意图 LLM） |
-| `TurnType.K2_REUSE_RESULT` + 有缓存 | DataQueryExecutor（跳过意图 LLM） |
-| `TurnType.K1` 复合句启发式 | DataQueryExecutor（跳过意图 LLM） |
-| 意图 LLM → DATA_QUERY | DataQueryExecutor |
-| 其余 | GeneralChatExecutor |
+| 具备 `data_query` 能力 | DataQueryExecutor（ChatBI 内部再分析请求类别） |
+| 无 `data_query` 能力 | GeneralChatExecutor（复用 `shared_turn` 通用分类） |
 
-AgentService 统一输出 **「轮次分类」** 日志（含 K3 / GENERAL / KNOWLEDGE 路径）。
+AgentService 统一输出「轮次分类」日志；ChatBI 场景外层显示「ChatBI 请求类别分析」，DataQueryExecutor 再输出「ChatBI 请求类别分析结果」。
 
 ---
 
 ## 4. DataQueryExecutor（ChatBI 核心）
 
-### 做得好的
+当前职责：
 
-- K1/K2/K3 护栏 + DB 提示词对齐（V69）
+- 进入执行器后第一步执行 `resolve_data_query_turn_classification`。
+- 新数据查询：检索经验库、加载数据集菜单、获取 Schema、生成并执行 SQL、汇总结果。
+- 复用上一轮结果：读取会话最近一次结构化查询结果，跳过 Schema/SQL，直接合成分析或可视化说明。
+- 上下文动作：注入上一轮结构化结果，放宽“必须查库”护栏，允许保存、导出、记忆、创建技能等动作。
+- 多轮新数据查询：对「那本月呢」这类上下文依赖短句改写为独立查数问题，用于经验库和 Schema 检索。
+
+做得好的：
+
+- 请求类别护栏 + DB 提示词对齐
 - 技能自动注入 + `MUST_LOAD_SKILL_FIRST`
 - `_analyze_result` 增强，避免 SQL 报错误走 fast-path
-- K2 纯加工 vs「查数+可视化」复合句区分
-- 非数据工具 / 元操作放行
+- 复用上一轮结果 vs「查数+可视化」复合句区分
 - 经验库、比率异常复核、SQL plan 等高风险保护
 
-### P0 已优化
-
-- **非 K1 跳过经验库检索**：通过 `turn_classification.requires_few_shot` / `_skip_few_shot` 控制，K2 在入口即合成返回，K3 已改走 GeneralChat。
-
-### 仍可优化（P1/P2）
+仍可优化：
 
 | 问题 | 建议 |
 |------|------|
-| ReAct 步数 + 多层护栏叠加 | 按 TurnClassification 进一步裁剪步骤上限 |
-| 与 GeneralChat 大量重复代码 | 抽到 `executors/common.py` |
-| 合成阶段与 ReAct 双 LLM | K1 简单结果允许最后一轮 thought 直出（可选） |
-| `_sql_plan_enforcement_added` 挂实例 | 每轮 `execute()` 内 reset |
+| ReAct 步数 + 多层护栏叠加 | 按 `DataQueryTurnClassification` 进一步裁剪步骤上限 |
+| 与 GeneralChat 大量重复代码 | 继续沉淀到 `executors/common.py` |
+| 合成阶段与 ReAct 双 LLM | 简单新数据查询结果允许最后一轮 thought 直出（可选） |
 
 ---
 
 ## 5. GeneralChatExecutor
 
-### 特点
-
-- 系统隐式工具（create_skills、memory_search、任务等）——**元操作、K3 保存、技能的正确归宿**
-- ReAct + 最终合成；Step 1 无工具时可直出
-- memory_search 强制拦截（跨会话回忆）
-
-### 问题与建议（P1）
-
-1. 未继承 `BaseExecutor`，trace 风格略异 → 继承并对齐。
-2. Step 1 直出可能跳过应先调的工具 → 对技能执行模式加强提示。
-3. 与 DataExecutor 重复的 history/附件转换 ~150 行 → 抽取 common。
+- 系统隐式工具（create_skills、memory_search、任务等）是元操作、上下文动作、技能的正确归宿。
+- KNOWLEDGE 请求在 Step 1 强制 `search_knowledge_base`，避免未检索直接回答。
+- 非 ChatBI 执行器可以复用 `shared_turn`，但它只包含通用分类，不包含 ChatBI 请求类别。
 
 ---
 
-## 6. RAGExecutor
-
-### P0 已修复
-
-- **`conversation_id=self.conversation_id or self.trace_id`**：与 OpenClaw 一致，RAGFlow 多轮会话与平台 conversation 对齐。
-
-### 仍可优化（P2）
-
-- 去掉或缩短 `asyncio.sleep(0.5)` UX 延迟
-- 清理重复 import
-- 日志文案改为「连接 RAGFlow…」，避免假装本地 NLP
-
----
-
-## 7. OpenClawExecutor
-
-- 输入/输出安全审计（额外 LLM）
-- 正确使用 `conversation_id` 作 session
-- 注入用户可访问 RAG 数据集权限
-
-**可优化**：安全审计与主调用串行 → 轻量规则前置 + 仅高风险走 LLM（P2）。
-
----
-
-## 8. AgentService 编排层
-
-### 做得好的
-
-- 技能挂载 + 口头技能名自动解析
-- LTM / 跨会话记忆 / Active Memory 预加载
-- 多智能体并行（secondary_agents）
-- 权限校验、审计、会话摘要
-
-### P0/P1 优化
-
-| 点 | 状态 |
-|----|------|
-| 技能已加载时省略 discovery hint | ✓ 已做 |
-| 统一「轮次分类」日志 | ✓ 已做 |
-| 按 Turn 类型裁剪 prompt 注入块 | ✓ 已做（见 `turn_classifier` + `PROMPT_LAYERS.md`） |
-| 多智能体与 Turn 分类脱节 | P1 待做 |
-
----
-
-## 9. 跨 Executor 对比
+## 6. 跨 Executor 对比
 
 ```text
 ┌─────────────────┬──────────────┬──────────────┬─────────────┐
@@ -205,51 +159,38 @@ AgentService 统一输出 **「轮次分类」** 日志（含 K3 / GENERAL / KNO
 ├─────────────────┼──────────────┼──────────────┼─────────────┤
 │ BaseExecutor    │ ✓            │ ✗            │ ✓           │
 │ 系统隐式工具    │ ✓            │ ✓            │ N/A         │
-│ Turn 分类       │ ✓（Dispatcher│ ✓（Dispatcher│ ✗           │
-│                 │  注入）      │  注入）      │             │
+│ 请求分类        │ 内部专用     │ 通用分类     │ 远程/专用   │
 │ 工具错误分析    │ 强           │ 弱/分散      │ 远程        │
-│ 历史/附件转换   │ 重复实现     │ 重复实现     │ 简单        │
+│ 历史/附件转换   │ common       │ common       │ 简单        │
 │ MAX_STEPS 默认  │ 6            │ 5            │ -           │
 └─────────────────┴──────────────┴──────────────┴─────────────┘
 ```
 
 ---
 
-## 10. 优化优先级
+## 7. 优化优先级
 
-### P0（已落地）
+### 已落地
 
-1. 统一 `TurnClassification`，Dispatcher 一次判定  
-2. DataExecutor：非 K1 跳过经验库检索  
-3. Dispatcher：K3 / 技能 / meta 明确路由 + 统一 trace log  
-4. RAGExecutor：`conversation_id` 修复  
+1. 通用 `TurnClassification` 与 ChatBI `DataQueryTurnClassification` 拆分
+2. Dispatcher 只按执行器能力分发，ChatBI 请求类别由 DataQueryExecutor 内部决定
+3. DataQueryExecutor：非新数据查询跳过经验库检索
+4. KNOWLEDGE_BASE 强制 `search_knowledge_base`
+5. 多智能体共享 `session_turn`（仅通用分类）
+6. RAGExecutor：`conversation_id` 修复
 
-### P1（已全部落地）
+### 后续可选
 
-5. 抽取 `executors/common.py` — ✓  
-6. GeneralChat 继承 BaseExecutor — ✓  
-7. KNOWLEDGE_BASE 强制 `search_knowledge_base` — ✓  
-8. AgentService 按 Turn 裁剪 LTM / memory / active memory / **用户画像** — ✓  
-9. 多智能体共享 `session_turn`（避免 N 次意图 LLM） — ✓  
-10. KNOWLEDGE 启发式短路 — ✓  
-
-### P2（部分落地）
-
-- 前端按 Turn 类型折叠「深度思考」步骤 — ✓  
-- DataExecutor 简单成功结果减少双轮 LLM — 未做  
-- RAG 去掉 0.5s sleep — 未做  
-- OpenClaw 安全审计分层 — 未做  
+- DataExecutor 简单成功结果减少双轮 LLM
+- RAG 去掉 0.5s sleep
+- OpenClaw 安全审计分层
 
 ---
 
-## 11. 总结
+## 8. 总结
 
-**整体架构清晰**：AgentService 编排 → Dispatcher 分流 → 四类 Executor；ChatBI 主链已从「机械流水线」演进为「按轮次类型裁剪」。
+整体架构已收敛为：
 
-**主要短板（已部分收敛）**：
+`AgentService 编排 -> Dispatcher 选 Executor -> Executor 内部执行自己的请求类别/工具策略`
 
-1. 「这轮是什么类型」曾散落在 Dispatcher、Intent LLM、DataExecutor、DB 提示词四处 —— 现已集中到 `turn_classifier`。  
-2. DataQuery 与 GeneralChat 职责边界 —— K3 / meta 已明确走 GeneralChat。  
-3. RAG 会话 ID —— 已修复。
-
-**下一步建议（P1）**：抽取 Executor 公共模块 + KNOWLEDGE_BASE 专门路由。
+其中 ChatBI 不再把内部查数请求类别塞进通用 `shared_turn`，Knowledge/General 未来如果需要自己的细分类，也应在各自 executor 内部扩展，而不是复用 ChatBI 的分类模型。

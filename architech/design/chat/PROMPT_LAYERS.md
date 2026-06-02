@@ -69,11 +69,11 @@
 | `# Active User Profile`（称呼礼仪） | `should_inject_user_context`；安全规则已迁至全局块 |
 | `# Session Runtime Context` + 移动/桌面 UI | `debug_options.injected_context` |
 
-### 2.4 按轮次裁剪（`turn_classifier`）
+### 2.4 按请求类别裁剪（`turn_classifier`）
 
-| 轮次 | 常省略 |
+| 请求类别 | 常省略 |
 |------|--------|
-| K1/K2 查数、技能执行 | LTM、跨会话 hint、预加载、**用户画像 system** |
+| 数据查询请求、技能执行 | LTM、跨会话 hint、预加载、**用户画像 system** |
 | 知识库 KNOWLEDGE | 跨会话 hint |
 
 **平台全局守则不省略**（LOCAL 每轮都有）。
@@ -187,5 +187,6 @@ HumanMessage       ← 本轮用户（见 §4）
 | 编排注入顺序 | `app/services/ai/agent_service.py` |
 | ChatBI / GeneralChat 执行器 | `app/services/ai/executors/prompts.py` |
 | 跨会话 hint | `app/services/ai/memory_recall_policy.py` |
-| 轮次裁剪 | `app/services/ai/turn_classifier.py` |
+| 通用请求分类裁剪 | `app/services/ai/turn_classifier.py` |
+| ChatBI 请求类别分析 | `app/services/ai/data_query_turn_classifier.py` |
 | 运营草稿（ChatBI V7 等） | `architech/prompts/system_agents/` |

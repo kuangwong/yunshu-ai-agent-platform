@@ -96,12 +96,12 @@ async def test_knowledge_turn_forces_search_before_answer(chat_config):
 
 
 def test_injection_profile_for_data_turns():
-    assert should_inject_ltm(TurnType.K1_NEW_QUERY) is False
-    assert should_inject_memory_recall_hint(TurnType.K1_NEW_QUERY) is False
-    assert should_run_active_memory_preload(TurnType.K2_REUSE_RESULT) is False
-    assert should_inject_ltm(TurnType.K3_CONTEXT_ACTION) is True
+    assert should_inject_ltm(TurnType.DATA_QUERY_REQUEST) is False
+    assert should_inject_memory_recall_hint(TurnType.DATA_QUERY_REQUEST) is False
+    assert should_run_active_memory_preload(TurnType.DATA_QUERY_REQUEST) is False
+    assert should_inject_ltm(TurnType.CONTEXT_ACTION) is True
     assert should_inject_memory_recall_hint(TurnType.KNOWLEDGE) is False
-    assert should_inject_user_context(TurnType.K1_NEW_QUERY) is False
+    assert should_inject_user_context(TurnType.DATA_QUERY_REQUEST) is False
     assert should_inject_user_context(TurnType.GENERAL) is True
 
 
@@ -128,4 +128,3 @@ def test_prepend_platform_global_system_prompt_with_tool_config_items():
     # 验证全局守则和业务提示词均被正确合并拼装
     assert "[云枢智能体平台 · 全局守则]" in result
     assert "My custom prompt" in result
-

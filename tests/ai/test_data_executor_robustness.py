@@ -3,6 +3,9 @@ import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 from app.services.ai.executors.data_executor import DataQueryExecutor
 from app.services.ai.executors.prompts import DataQueryPrompts, GeneralChatPrompts
+from app.services.ai.intent_service import IntentType
+from app.services.ai.turn_classifier import TurnClassification, TurnType, attach_turn_classification
+from app.services.ai.data_query_turn_classifier import DataQueryTurnClassification, DataQueryTurnType
 from langchain_core.messages import AIMessage, SystemMessage
 
 @pytest.fixture(scope="function", autouse=True)
@@ -12,8 +15,25 @@ async def init_infrastructure():
          patch("app.core.database.close_db", new_callable=AsyncMock), \
          patch("app.core.redis.init_redis", new_callable=AsyncMock), \
          patch("app.core.redis.close_redis", new_callable=AsyncMock), \
-         patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock):
+        patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock):
         yield
+
+
+@pytest.fixture(scope="function", autouse=True)
+def default_data_query_turn_classification():
+    classification = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.NEW_DATA_QUERY,
+        reasoning="测试默认：新数据查询",
+        requires_fresh_data=True,
+        requires_few_shot=True,
+        skip_intent_llm=False,
+        intent=IntentType.DATA_QUERY,
+    )
+    with patch(
+        "app.services.ai.executors.data_executor.resolve_data_query_turn_classification",
+        AsyncMock(return_value=(classification, None, 0.0)),
+    ) as mock_resolve:
+        yield mock_resolve
 
 
 @pytest.mark.asyncio
@@ -201,6 +221,132 @@ async def test_data_executor_auto_fetches_schema_when_model_returns_no_tool_call
     assert "当前阶段: NEED_SQL" in second_thought_logs[0].get("details", "")
     assert any(e.get("title") == "兜底检索数据集定义" for e in events if e.get("type") == "log")
     assert not any(e.get("title") == "🧭 触发空转熔断保护" for e in events if e.get("type") == "log")
+
+
+@pytest.mark.asyncio
+async def test_data_executor_rewrites_contextual_new_data_query_for_schema_fallback():
+    """多轮新数据查询兜底查 Schema 时，应使用上下文化后的完整问题。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-standalone-schema", [], {"dry_run": False})
+    executor._resolve_standalone_query_for_new_data_query = AsyncMock(return_value="查询上海机房本月 PUE 趋势")
+
+    empty_response = MagicMock(spec=AIMessage)
+    empty_response.content = "我先看看有哪些数据可以用。"
+    empty_response.tool_calls = []
+
+    sql_response = MagicMock(spec=AIMessage)
+    sql_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    sql_response.tool_calls = [{
+        "name": "execute_sql_query",
+        "args": {"sql": "select 1", "data_source": "ds", "dataset_name": "pue"},
+        "id": "call_sql",
+    }]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield empty_response
+
+    async def gen_2(*args, **kwargs):
+        yield sql_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "完成"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    schema_tool = MagicMock(name="get_dataset_schema", spec=["name", "ainvoke"])
+    schema_tool.name = "get_dataset_schema"
+    sql_tool = MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])
+    sql_tool.name = "execute_sql_query"
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: pue")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[schema_tool, sql_tool])), \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", AsyncMock(return_value=[])) as mock_search_examples, \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        async def dispatch_side_effect(tool_call, tools):
+            if tool_call["name"] == "get_dataset_schema":
+                return tool_call, "schema yaml", 3.0
+            return tool_call, [{"ok": 1}], 5.0
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=dispatch_side_effect)
+        async for _ in executor.execute([
+            {"role": "user", "content": "查询上海机房上周 PUE 趋势"},
+            {"role": "assistant", "content": "上海机房上周 PUE 趋势如下。"},
+            {"role": "user", "content": "那本月呢"},
+        ]):
+            pass
+
+    first_tool_call = executor._dispatch_tool_safe.await_args_list[0].args[0]
+    assert first_tool_call["name"] == "get_dataset_schema"
+    assert first_tool_call["args"]["keywords"] == "查询上海机房本月 PUE 趋势"
+    assert mock_search_examples.await_args.args[0] == "查询上海机房本月 PUE 趋势"
+    executor._resolve_standalone_query_for_new_data_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_data_executor_resolves_standalone_query_with_recent_history():
+    """上下文依赖的新数据查询短句应改写成可独立检索的完整查数问题。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    executor = DataQueryExecutor(mock_config, "trace-standalone-direct", [])
+
+    langchain_messages = executor._convert_history([
+        {"role": "user", "content": "查询上海机房上周 PUE 趋势"},
+        {"role": "assistant", "content": "上海机房上周 PUE 趋势如下。"},
+        {"role": "user", "content": "那本月呢"},
+    ])
+    rewrite_response = MagicMock()
+    rewrite_response.content = "查询上海机房本月 PUE 趋势"
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=rewrite_response)
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=llm)):
+        result = await executor._resolve_standalone_query_for_new_data_query("那本月呢", langchain_messages)
+
+    assert result == "查询上海机房本月 PUE 趋势"
+    llm.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_data_executor_keeps_complete_new_data_query_without_rewrite_llm():
+    """当前问题已经完整时，不应额外调用 LLM 改写。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    executor = DataQueryExecutor(mock_config, "trace-standalone-complete", [])
+    langchain_messages = executor._convert_history([
+        {"role": "user", "content": "查询上海机房上周 PUE 趋势"},
+        {"role": "assistant", "content": "上海机房上周 PUE 趋势如下。"},
+        {"role": "user", "content": "查询北京机房本月能耗趋势"},
+    ])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock()) as mock_get_llm:
+        result = await executor._resolve_standalone_query_for_new_data_query("查询北京机房本月能耗趋势", langchain_messages)
+
+    assert result == "查询北京机房本月能耗趋势"
+    mock_get_llm.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -448,8 +594,17 @@ async def test_data_executor_followup_visualization_reuses_last_result_without_q
         "data_source": "mysql_oa",
         "rows": [{"status": "启用", "total_count": 8}, {"status": "停用", "total_count": 2}],
     }
+    reuse_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+        reasoning="测试：复用上一轮结果",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=False,
+        intent=IntentType.DATA_QUERY,
+    )
 
-    with patch("app.services.ai.memory_service.memory_service.get_last_data_result", AsyncMock(return_value=last_result)) as mock_get_last, \
+    with patch("app.services.ai.executors.data_executor.resolve_data_query_turn_classification", AsyncMock(return_value=(reuse_turn, None, 0.0))), \
+         patch("app.services.ai.memory_service.memory_service.get_last_data_result", AsyncMock(return_value=last_result)) as mock_get_last, \
          patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
          patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
          patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock()) as mock_get_tools, \
@@ -465,6 +620,84 @@ async def test_data_executor_followup_visualization_reuses_last_result_without_q
     assert mock_get_last.await_count == 1
     mock_get_tools.assert_not_called()
     mock_get_llm.assert_not_called()
+    assert any(chunk.get("content") == final_answer.content for chunk in events)
+
+
+@pytest.mark.asyncio
+async def test_data_executor_internal_turn_classifier_overrides_external_shared_turn():
+    """DataExecutor 内部分类应是最终执行依据，而不是外部 shared_turn。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(
+        mock_config,
+        "trace-internal-turn",
+        [],
+        user_info={"user_id": 1001},
+        conversation_id="conv-1",
+    )
+    attach_turn_classification(
+        executor,
+        TurnClassification(
+            turn_type=TurnType.DATA_QUERY_REQUEST,
+            reasoning="外部只知道是数据查询请求",
+            intent=IntentType.DATA_QUERY,
+        ),
+    )
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "已基于上一轮结果完成分析。"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+    last_result = {
+        "sql": "select status, count(*) as total_count from users group by status",
+        "dataset_name": "users",
+        "data_source": "mysql_oa",
+        "rows": [{"status": "启用", "total_count": 8}],
+    }
+    internal_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+        reasoning="内部识别为复用上一轮结果",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=True,
+        intent=IntentType.DATA_QUERY,
+    )
+
+    with patch("app.services.ai.executors.data_executor.resolve_data_query_turn_classification", AsyncMock(return_value=(internal_turn, None, 0.0))) as mock_resolve_turn, \
+         patch("app.services.ai.memory_service.memory_service.get_last_data_result", AsyncMock(return_value=last_result)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock()) as mock_get_tools, \
+         patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock()) as mock_get_llm:
+
+        events = []
+        async for chunk in executor.execute([
+            {"role": "user", "content": "查询用户状态分布"},
+            {"role": "assistant", "content": "上一轮返回了用户状态分布。"},
+            {"role": "user", "content": "分析一下"},
+        ]):
+            events.append(chunk)
+
+    mock_resolve_turn.assert_awaited_once()
+    mock_get_tools.assert_not_called()
+    mock_get_llm.assert_not_called()
+    assert executor.turn_classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+    assert executor._requires_fresh_data is False
+    turn_logs = [chunk for chunk in events if chunk.get("type") == "log" and chunk.get("title") == "ChatBI 请求类别分析结果"]
+    assert turn_logs
+    assert "复用上一轮结果" in turn_logs[0]["details"]
+    assert "内部识别为复用上一轮结果" in turn_logs[0]["details"]
     assert any(chunk.get("content") == final_answer.content for chunk in events)
 
 
@@ -786,8 +1019,17 @@ async def test_data_executor_followup_without_last_result_does_not_query_schema(
         user_info={"user_id": 1001},
         conversation_id="conv-1",
     )
+    reuse_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+        reasoning="测试：结果追问但缺少可复用结果",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=False,
+        intent=IntentType.DATA_QUERY,
+    )
 
-    with patch("app.services.ai.memory_service.memory_service.get_last_data_result", AsyncMock(return_value=None)), \
+    with patch("app.services.ai.executors.data_executor.resolve_data_query_turn_classification", AsyncMock(return_value=(reuse_turn, None, 0.0))), \
+         patch("app.services.ai.memory_service.memory_service.get_last_data_result", AsyncMock(return_value=None)), \
          patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock()) as mock_get_tools, \
          patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock()) as mock_get_llm:
 

@@ -4,6 +4,8 @@ import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, HumanMessage
 from app.services.ai.executors.data_executor import DataQueryExecutor
+from app.services.ai.intent_service import IntentType
+from app.services.ai.data_query_turn_classifier import DataQueryTurnClassification, DataQueryTurnType
 from app.schemas.agent import ChatConfig
 
 # --- Mocks ---
@@ -17,6 +19,23 @@ async def init_infrastructure():
          patch("app.core.redis.close_redis", new_callable=AsyncMock), \
          patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock):
         yield
+
+
+@pytest.fixture(scope="function", autouse=True)
+def default_data_query_turn_classification():
+    classification = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.NEW_DATA_QUERY,
+        reasoning="测试默认：新数据查询",
+        requires_fresh_data=True,
+        requires_few_shot=True,
+        skip_intent_llm=False,
+        intent=IntentType.DATA_QUERY,
+    )
+    with patch(
+        "app.services.ai.executors.data_executor.resolve_data_query_turn_classification",
+        AsyncMock(return_value=(classification, None, 0.0)),
+    ) as mock_resolve:
+        yield mock_resolve
 
 class MockLLM:
     def __init__(self, responses):
@@ -544,5 +563,4 @@ def test_analyze_result_common_sql_and_tool_errors(data_config, err_text):
     executor = DataQueryExecutor(config=data_config, trace_id="test-analyze-errors", trace_buffer=[])
     status, _, _ = executor._analyze_result(err_text)
     assert status == "error", err_text
-
 

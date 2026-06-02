@@ -3,6 +3,10 @@ import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 from app.services.ai.router_service import RouterService, RouteResult
 
+
+pytestmark = pytest.mark.no_infrastructure
+
+
 @pytest.mark.asyncio
 async def test_router_context_awareness():
     """

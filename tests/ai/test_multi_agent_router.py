@@ -3,6 +3,10 @@ import json
 from unittest.mock import AsyncMock, patch
 from app.services.ai.router_service import RouterService, RouteResult
 
+
+pytestmark = pytest.mark.no_infrastructure
+
+
 @pytest.mark.asyncio
 async def test_router_single_intent():
     router = RouterService()

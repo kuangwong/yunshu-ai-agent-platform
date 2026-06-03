@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
+from app.schemas.agent import AgentExecutionStep
 from app.services.ai.executors.data_executor import DataQueryExecutor
 from app.services.ai.executors.prompts import DataQueryPrompts, GeneralChatPrompts
 from app.services.ai.intent_service import IntentType
@@ -139,6 +140,46 @@ def test_synthesis_prompts_require_valid_markdown_tables():
         assert "表头、分隔行、每一条数据行必须各占独立一行" in message
         assert "禁止把整张表压成一行" in message
         assert "禁止使用 `||`" in message
+
+
+def test_data_executor_synthesis_trace_hides_internal_sql_plan_and_tool_xml():
+    """最终合成上下文不应携带 ChatBI 内部计划/工具调用标记，避免被模型复述给用户。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant."
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-clean", [])
+    review = executor._format_trace_for_synthesis([
+        AgentExecutionStep(
+            step_number=1,
+            event_type="thought",
+            agent_name="ChatBI",
+            raw_log=(
+                "<thought><sql_plan>{\"dataset_name\":\"meta\"}</sql_plan></thought>"
+                "<function_calls><invoke name=\"execute_sql_query\"></invoke></function_calls>"
+            ),
+        ),
+        AgentExecutionStep(
+            step_number=1,
+            event_type="tool_call",
+            agent_name="ChatBI",
+            tool_name="execute_sql_query",
+            tool_input={"sql": "select 1"},
+            tool_output=[{"ok": 1}],
+        ),
+    ])
+
+    assert "<sql_plan" not in review
+    assert "</sql_plan>" not in review
+    assert "<thought" not in review
+    assert "</thought>" not in review
+    assert "<function_calls" not in review
+    assert "[操作] execute_sql_query" in review
+    assert "[结果] ✅" in review
 
 
 @pytest.mark.asyncio
@@ -905,6 +946,77 @@ async def test_data_executor_stops_react_loop_after_successful_sql():
 
     assert model_with_tools.astream.call_count == 1
     assert any(chunk.get("content") == final_answer.content for chunk in events)
+
+
+@pytest.mark.asyncio
+async def test_data_executor_filters_internal_markup_from_streamed_synthesis_output():
+    """最终回答流式输出前应过滤内部标签，避免前端展示 sql_plan 或隐藏工具调用提示。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-filter-output", [], {"dry_run": False})
+
+    acting_response = MagicMock(spec=AIMessage)
+    acting_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    acting_response.tool_calls = [{
+        "name": "execute_sql_query",
+        "args": {
+            "sql": "select status, count(*) as total_count from users group by status",
+            "data_source": "mysql_oa",
+            "dataset_name": "users",
+        },
+        "id": "call_sql",
+    }]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield acting_response
+
+    model_with_tools.astream.side_effect = [gen_1()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    leaked_chunk_1 = MagicMock(spec=AIMessage)
+    leaked_chunk_1.content = "<thought><sql_plan>{\"dataset"
+    leaked_chunk_2 = MagicMock(spec=AIMessage)
+    leaked_chunk_2.content = (
+        "_name\":\"meta\"}</sql_plan></thought>"
+        "<function_calls><invoke name=\"execute_sql_query\"></invoke></function_calls>"
+        "\n用户状态分布已汇总。"
+    )
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield leaked_chunk_1
+        yield leaked_chunk_2
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        executor._dispatch_tool_safe = AsyncMock(return_value=(acting_response.tool_calls[0], [{"status": "启用", "total_count": 8}], 12.0))
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查询用户状态分布"}]):
+            events.append(chunk)
+
+    streamed_content = "".join(chunk.get("content", "") for chunk in events)
+    assert "用户状态分布已汇总。" in streamed_content
+    assert "<sql_plan" not in streamed_content
+    assert "</sql_plan>" not in streamed_content
+    assert "<thought" not in streamed_content
+    assert "<function_calls" not in streamed_content
 
 
 @pytest.mark.asyncio

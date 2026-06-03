@@ -119,6 +119,18 @@ class DataQueryExecutor(BaseExecutor):
         # Require an explicit tag to avoid accidental matches.
         return re.search(r"<sql_plan>\s*\{[\s\S]*?\}\s*</sql_plan>", text, flags=re.IGNORECASE) is not None
 
+    def _strip_internal_markup(self, text: str) -> str:
+        """Remove ChatBI orchestration XML that must not reach final answers."""
+        if not text:
+            return ""
+        cleaned = str(text)
+        cleaned = re.sub(r"<(thought|think)\b[^>]*>[\s\S]*?</\1>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<function_calls>[\s\S]*?</function_calls>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<sql_plan>[\s\S]*?</sql_plan>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?thought>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
     def _should_require_sql_plan(self, user_question: str) -> bool:
         """
         Only enforce sql_plan for high-risk queries to avoid blocking simple list/detail queries.
@@ -531,7 +543,6 @@ class DataQueryExecutor(BaseExecutor):
                                 yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
                             content_emitted = True
                             full_synthesis_content += chunk.content
-                            yield {"content": chunk.content}
                     stream_succeeded = True
                     break
                 except Exception as syn_err:
@@ -549,6 +560,9 @@ class DataQueryExecutor(BaseExecutor):
                         continue
                     raise
             if stream_succeeded and generation_start:
+                full_synthesis_content = self._strip_internal_markup(full_synthesis_content)
+                if full_synthesis_content:
+                    yield {"content": full_synthesis_content}
                 yield {
                     "type": "log",
                     "id": gen_log_id,
@@ -583,9 +597,11 @@ class DataQueryExecutor(BaseExecutor):
 
     async def _emit_direct_answer(self, final_text: str, start_thought: float) -> AsyncGenerator[Dict[str, Any], None]:
         """非新查数轮：模型已直接基于上下文作答，将其内容作为最终回答输出并记录 trace。"""
+        visible_text = self._strip_internal_markup(final_text)
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
         yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(time.time() * 1000)}
-        yield {"content": final_text}
+        if visible_text:
+            yield {"content": visible_text}
         yield {
             "type": "log",
             "id": gen_log_id,
@@ -600,8 +616,8 @@ class DataQueryExecutor(BaseExecutor):
             agent_name=self.config.agent_name,
             model=str(self.config.model_name),
             temperature=float(self.config.temperature or 0),
-            tool_output={"content": final_text, "context_action_direct_answer": True},
-            raw_log=final_text,
+            tool_output={"content": visible_text, "context_action_direct_answer": True},
+            raw_log=visible_text,
             execution_time_ms=(time.time() - start_thought) * 1000,
             timestamp=datetime.fromtimestamp(start_thought),
         ))
@@ -1585,7 +1601,6 @@ class DataQueryExecutor(BaseExecutor):
                                  yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
                             content_emitted = True
                             full_synthesis_content += chunk.content
-                            yield {"content": chunk.content}
                     stream_succeeded = True
                     break
                 except Exception as syn_err:
@@ -1603,6 +1618,9 @@ class DataQueryExecutor(BaseExecutor):
                         continue
                     raise
             if stream_succeeded and generation_start:
+                full_synthesis_content = self._strip_internal_markup(full_synthesis_content)
+                if full_synthesis_content:
+                    yield {"content": full_synthesis_content}
                 yield {
                     "type": "log",
                     "id": gen_log_id,
@@ -1662,9 +1680,7 @@ class DataQueryExecutor(BaseExecutor):
             if trace.event_type == "thought":
                 # Extract a summary of thought if possible, or just raw
                 thought_content = trace.raw_log or ""
-                # Try to clean up XML tags if present
-                thought_content = re.sub(r'<function_calls>.*?</function_calls>', '', thought_content, flags=re.DOTALL)
-                thought_content = thought_content.strip()
+                thought_content = self._strip_internal_markup(thought_content)
                 if thought_content:
                     lines.append(f"  [思考] {thought_content}")
             

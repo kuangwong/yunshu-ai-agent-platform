@@ -28,7 +28,7 @@ def test_validate_sql_not_select():
     """测试非 SELECT 语句（禁止）"""
     sql = "UPDATE users SET age = 20"
     error = validate_sql(sql)
-    assert "Only SELECT queries are allowed" in error
+    assert "Only read-only queries (SELECT, EXPLAIN, SHOW, DESCRIBE) are allowed" in error
 
 def test_validate_sql_multi_statement():
     """测试多条语句（禁止）"""

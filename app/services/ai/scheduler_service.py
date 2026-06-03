@@ -110,6 +110,33 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
         except Exception as e:
             logger.error(f"❌ Task {task_id} execution failed: {e}", exc_info=True)
 
+
+async def _system_audit_log_maintenance_job():
+    """
+    System-level background job to auto-expand partitions and prune expired logs.
+    """
+    logger.info("⏰ Starting system audit log partition maintenance job...")
+    try:
+        from app.services.partition_service import PartitionService
+        from app.services.config_service import ConfigService
+        
+        async with AsyncSessionLocal() as db_session:
+            # 1. 自动扩容未来分区
+            await PartitionService.expand_partitions(db_session)
+            
+            # 2. 自动清理过期日志
+            retention_str = await ConfigService.get("audit_log_retention_days", default="90")
+            try:
+                retention_days = int(retention_str)
+            except (ValueError, TypeError):
+                retention_days = 90
+                
+            res = await PartitionService.prune_expired_logs(db_session, retention_days)
+            logger.info(f"✅ System audit log partition maintenance completed. Result: {res}")
+    except Exception as e:
+        logger.error(f"❌ Failed to run system audit log partition maintenance: {e}", exc_info=True)
+
+
 class TaskSchedulerService:
     _instance = None
     _scheduler: Optional[AsyncIOScheduler] = None
@@ -133,6 +160,15 @@ class TaskSchedulerService:
 
         self._scheduler = AsyncIOScheduler(jobstores=job_stores, timezone=tz)
         self._scheduler.start()
+
+        # 注册系统日志与分区清理常驻任务，每日凌晨 2:00 运行
+        self._scheduler.add_job(
+            _system_audit_log_maintenance_job,
+            CronTrigger(hour=2, minute=0, timezone=tz),
+            id="system_audit_log_maintenance",
+            replace_existing=True
+        )
+
         now = datetime.now(tz)
         logger.info(f"🚀 Agent Task Scheduler started (Fixed Serialization). Current Scheduler Time: {now}")
         await self.reload_tasks()

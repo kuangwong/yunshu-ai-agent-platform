@@ -27,10 +27,10 @@ import {
   PlayIcon
 } from '@heroicons/vue/24/outline'
 
-const { hasPermission } = useUser()
+const { hasPermission, userInfo } = useUser()
 const canSave = hasPermission('element:system:config_save')
 
-const activeTab = ref<'diagnostics' | 'configs' | 'models' | 'tools' | 'mcp'>('configs')
+const activeTab = ref<'diagnostics' | 'configs' | 'models' | 'tools' | 'mcp' | 'logs'>('configs')
 
 // --- Diagnostics Logic ---
 const logs = ref<string[]>([])
@@ -231,7 +231,7 @@ interface ConfigItem {
 const configGroups = ref<{ [category: string]: ConfigItem[] }>({})
 const orderedCategories = computed(() => {
   if (!configGroups.value) return []
-  const order = ['agent', 'data_api', 'metadata', 'general']
+  const order = ['agent', 'data_api', 'metadata', 'general', 'other']
   const keys = Object.keys(configGroups.value)
   return keys.sort((a, b) => {
     const idxA = order.indexOf(a)
@@ -361,7 +361,8 @@ const getCategoryTip = (key: string) => {
     'embedchat_watermark_enabled': '开启后，将在嵌入式对话界面（EmbedChat）背景中平铺渲染防止信息截屏泄露的安全审计水印。',
     'embedchat_watermark_style': '水印的文字样式方案。可以选择【用户名 + 时间戳】或【自定义文字 + 时间戳】（两者均会自动附加当前时间戳）。',
     'embedchat_watermark_text': '当水印样式为【自定义文字 + 时间戳】时，在对话背景中平铺显示的自定义文本，末尾会自动追加时间戳。',
-    'yovole_sso_enabled': '控制是否启用 Yovole SSO 统一登录。关闭后，登录页面的 SSO 登录将隐藏，且用户管理中的 SSO 同步按钮也将隐藏。'
+    'yovole_sso_enabled': '控制是否启用 Yovole SSO 统一登录。关闭后，登录页面的 SSO 登录将隐藏，且用户管理中的 SSO 同步按钮也将隐藏。',
+    'audit_log_retention_days': '系统操作审计日志与智能体步骤级追踪 Trace 记录的物理保留天数。超出期限的整月历史分区会被自动 Drop 秒级清理以回收空间。'
   }
   return tips[key] || ''
 }
@@ -452,9 +453,74 @@ const getVisibleItems = (items: ConfigItem[], category: string) => {
   return list
 }
 
+// --- Log Management Logic ---
+const retentionDays = ref(90)
+const partitions = ref<any[]>([])
+const loadingPartitions = ref(false)
+const savingLogConfig = ref(false)
+const clearingLogs = ref(false)
+const showCleanupConfirm = ref(false)
+
+const fetchLogConfig = async () => {
+  try {
+    const res = await axios.get('/api/portal/system/logs/config')
+    retentionDays.value = res.data.audit_log_retention_days
+  } catch (e: any) {
+    console.error('Failed to fetch log config:', e)
+  }
+}
+
+const saveLogConfig = async () => {
+  savingLogConfig.value = true
+  try {
+    await axios.post('/api/portal/system/logs/config', {
+      audit_log_retention_days: Number(retentionDays.value)
+    })
+    showToast('日志保留配置保存成功', 'success')
+  } catch (e: any) {
+    showToast(`保存失败: ${e.response?.data?.detail || e.message}`, 'error')
+  } finally {
+    savingLogConfig.value = false
+  }
+}
+
+const fetchPartitions = async () => {
+  loadingPartitions.value = true
+  try {
+    const res = await axios.get('/api/portal/system/logs/partitions')
+    partitions.value = res.data
+  } catch (e: any) {
+    showToast('获取日志分区信息失败', 'error')
+  } finally {
+    loadingPartitions.value = false
+  }
+}
+
+const triggerCleanup = async () => {
+  clearingLogs.value = true
+  showCleanupConfirm.value = false
+  try {
+    const res = await axios.post('/api/portal/system/logs/cleanup')
+    if (res.data.status === 'success') {
+      showToast('日志手动清理成功', 'success')
+      await fetchPartitions()
+    } else {
+      showToast(`清理跳过: ${res.data.message}`, 'info')
+    }
+  } catch (e: any) {
+    showToast(`清理失败: ${e.response?.data?.detail || e.message}`, 'error')
+  } finally {
+    clearingLogs.value = false
+  }
+}
+
 onMounted(() => {
   fetchConfigs()
   fetchModelsForConfigs()
+  if (userInfo.value?.role === 'admin') {
+    fetchLogConfig()
+    fetchPartitions()
+  }
 })
 </script>
 
@@ -504,6 +570,15 @@ onMounted(() => {
            <CpuChipIcon class="w-4 h-4 mr-2" />
            系统诊断
          </button>
+         <button
+            v-if="userInfo?.role === 'admin'"
+            @click="activeTab = 'logs'"
+            class="px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 flex items-center"
+            :class="activeTab === 'logs' ? 'bg-white shadow text-primary' : 'text-gray-500 hover:text-gray-700'"
+          >
+            <CircleStackIcon class="w-4 h-4 mr-2" />
+            日志管理
+          </button>
       </div>
     </div>
 
@@ -521,6 +596,116 @@ onMounted(() => {
       <div v-else-if="activeTab === 'mcp'" class="h-full">
           <McpServerRegistry />
       </div>
+
+       <!-- LOGS TAB -->
+       <div v-else-if="activeTab === 'logs' && userInfo?.role === 'admin'" class="space-y-6 h-full overflow-y-auto pb-12 custom-scrollbar">
+         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+           <!-- Left: Config -->
+           <div class="bg-white shadow rounded-lg p-6 space-y-6">
+             <div>
+               <h3 class="text-lg font-medium text-gray-900 flex items-center">
+                 <Cog6ToothIcon class="w-5 h-5 mr-2 text-primary" />
+                 日志保留策略
+               </h3>
+               <p class="text-sm text-gray-500 mt-1">控制系统操作审计日志与 Trace 步骤的物理留存时长</p>
+             </div>
+             
+             <div class="space-y-4">
+               <div>
+                 <label class="block text-sm font-medium text-gray-700">日志保留天数</label>
+                 <div class="mt-1 flex rounded-md shadow-sm">
+                   <input
+                     type="number"
+                     v-model.number="retentionDays"
+                     @keypress="e => { if (!/[0-9]/.test(e.key)) e.preventDefault(); }"
+                     @input="e => { if (retentionDays && typeof retentionDays === 'number') retentionDays = Math.floor(retentionDays) }"
+                     min="1"
+                     max="3650"
+                     :disabled="!canSave"
+                     class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-l-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                   />
+                   <span class="inline-flex items-center px-3 rounded-r-md border border-l-0 border-gray-300 bg-gray-50 text-gray-500 text-sm">
+                     天
+                   </span>
+                 </div>
+                 <p class="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                   * 日志超出天数后，后台定时任务（Scheduler）会在每日凌晨 2:00 自动物理 Drop 过期的整月分区进行无损回收。
+                 </p>
+               </div>
+               
+               <button
+                 @click="saveLogConfig"
+                 :disabled="savingLogConfig || !canSave"
+                 class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-indigo-700 disabled:opacity-50"
+               >
+                 {{ savingLogConfig ? '保存中...' : '保存配置' }}
+               </button>
+             </div>
+
+             <div class="border-t border-gray-100 pt-6">
+               <h4 class="text-sm font-semibold text-gray-900">手动清理</h4>
+               <p class="text-xs text-gray-500 mt-1">立即手动触发一次日志清理机制，系统会自动检查并释放超出配置天数的历史数据。</p>
+               <button
+                 @click="showCleanupConfirm = true"
+                 :disabled="clearingLogs || !canSave"
+                 class="mt-3 w-full flex justify-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50"
+               >
+                 <TrashIcon class="h-4 w-4 mr-2" />
+                 {{ clearingLogs ? '正在清理...' : '立即手动清理' }}
+               </button>
+             </div>
+           </div>
+
+           <!-- Right: Partitions -->
+           <div class="bg-white shadow rounded-lg p-6 lg:col-span-2 flex flex-col justify-between">
+             <div class="mb-4 flex items-center justify-between">
+               <div>
+                 <h3 class="text-lg font-medium text-gray-900 flex items-center">
+                   <CircleStackIcon class="w-5 h-5 mr-2 text-primary" />
+                   日志表分区状态
+                 </h3>
+                 <p class="text-sm text-gray-500 mt-1">显示目前已自动挂载的分区表（MySQL Range Partitions）</p>
+               </div>
+               <button
+                 @click="fetchPartitions"
+                 :disabled="loadingPartitions"
+                 class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+               >
+                 <span v-if="loadingPartitions" class="animate-spin h-3.5 w-3.5 mr-1 border-2 border-gray-400 border-t-transparent rounded-full"></span>
+                 刷新状态
+               </button>
+             </div>
+
+             <div class="overflow-x-auto flex-1 min-h-[300px]">
+               <table class="min-w-full divide-y divide-gray-100 text-sm">
+                 <thead>
+                   <tr class="text-left text-xs font-medium text-gray-500 whitespace-nowrap bg-gray-50">
+                     <th class="py-2.5 px-4">物理数据表</th>
+                     <th class="py-2.5 px-4">分区名称</th>
+                     <th class="py-2.5 px-4">数据承载范围</th>
+                     <th class="py-2.5 px-4 text-right">估算行数 (TABLE_ROWS)</th>
+                   </tr>
+                 </thead>
+                 <tbody class="divide-y divide-gray-50 text-gray-700">
+                   <tr v-if="partitions.length === 0 && !loadingPartitions">
+                     <td colspan="4" class="py-12 text-center text-gray-400 italic">暂无分区数据（或系统运行在未分区单表模式下）</td>
+                   </tr>
+                   <tr v-for="(p, index) in partitions" :key="index" class="hover:bg-gray-50/50 transition-colors">
+                     <td class="py-3 px-4 font-mono text-xs text-gray-900">{{ p.table_name }}</td>
+                     <td class="py-3 px-4">
+                       <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono">
+                         {{ p.partition_name }}
+                       </span>
+                     </td>
+                     <td class="py-3 px-4 text-gray-500 text-xs">{{ p.data_range }}</td>
+                     <td class="py-3 px-4 text-right font-mono text-gray-900 font-medium">{{ p.table_rows.toLocaleString() }}</td>
+                   </tr>
+                 </tbody>
+               </table>
+             </div>
+           </div>
+         </div>
+       </div>
 
        <!-- DIAGNOSTICS TAB -->
        <div v-else-if="activeTab === 'diagnostics'" class="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full overflow-y-auto pb-6">
@@ -788,6 +973,9 @@ onMounted(() => {
                           <div v-else-if="isLongText(item)">
                              <textarea v-model="item.value" :disabled="!canSave" rows="10" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md font-mono text-xs bg-gray-100 p-3 disabled:opacity-70 disabled:cursor-not-allowed"></textarea>
                           </div>
+                          <div v-else-if="['audit_log_retention_days', 'agent_max_iterations', 'agent_max_context_turns', 'data_api_timeout_seconds', 'schema_api_timeout_seconds', 'ragflow_metadata_top_k'].includes(item.key)">
+                             <input type="text" v-model="item.value" @keypress="e => { if (!/[0-9]/.test(e.key)) e.preventDefault(); }" @input="e => { item.value = item.value.replace(/\D/g, '') }" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
+                          </div>
                           <div v-else>
                              <input type="text" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                           </div>
@@ -959,6 +1147,16 @@ onMounted(() => {
         </div>
       </div>
     </div>
+    <ConfirmModal
+      v-if="showCleanupConfirm"
+      title="手动清理历史日志？"
+      message="此操作将秒级 DROP 所有满足过期条件的整月日志分区。未分区环境将使用微批量 DELETE 进行平滑删除，本操作不可逆，是否确定清理？"
+      confirm-text="确认清理"
+      cancel-text="取消"
+      type="danger"
+      @confirm="triggerCleanup"
+      @cancel="showCleanupConfirm = false"
+    />
   </div>
 </template>
 

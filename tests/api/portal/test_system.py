@@ -13,13 +13,13 @@ async def test_get_system_configs(client: AsyncClient, admin_api_key: str):
     data = response.json()
     # The API returns grouped configs directly, not wrapped in "configs"
     # Expected structure: {"llm": [...], "data_api": [...]}
-    assert "llm" in data
+    assert "agent" in data
     assert "data_api" in data
     
     # Verify masking logic (keys should be present but secrets might be masked)
-    llm_configs = data['llm']
-    assert len(llm_configs) > 0
-    llm_key = llm_configs[0]
+    agent_configs = data['agent']
+    assert len(agent_configs) > 0
+    llm_key = agent_configs[0]
     assert "key" in llm_key
     assert "value" in llm_key
     assert "is_secret" in llm_key

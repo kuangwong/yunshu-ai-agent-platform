@@ -107,5 +107,4 @@
 | 历史会话智能体显示增强 (History Agent Label Display) | `app/schemas/agent.py`, `app/api/v1/endpoints/chat.py`, `EmbedChat.vue`, `AgentDebug.vue` | **历史会话智能体标识显示**：验证接口无感映射补全 `agent_name` 及 `agent_display_name` 字段逻辑；验证前端加载会话详情与审计列表历史消息时正确解构该字段并唤醒服务胶囊展示；**修复调试页历史消息因 `isHistory` 条件误过滤屏蔽服务胶囊显示的问题，支持从智能体列表动态降级匹配**。 | ✅ 已完成 | 2026-06-02 |
 | 调试页面历史侧边栏显示修复 (Agent Debug Sidebar Fix) | `frontend/src/views/AgentDebug.vue` | **调试页会话历史侧边栏修复**：验证通过定义并传递 `groupedHistoryList` 日期分组计算属性，解决侧边栏组件数据格式不匹配导致列表渲染出空白删除胶囊的重大界面缺陷。 | ✅ 已完成 | 2026-06-02 |
 | 调试页面极客加号附件集成与全屏功能 (Agent Debug Geek Attachment & Fullscreen) | `frontend/src/views/AgentDebug.vue`, `frontend/src/views/EmbedChat.vue`, `frontend/src/components/embed/ChatInput.vue` | **调试页集成“+”号附件挂载与全屏调试**：替换原生输入框为 ChatInput；打通本地文件、知识库、生态技能选择器；支持发送附件 SSE 组装；增加一键网页全屏功能；**优化底部输入区域的空间挤占，并新增 `showPoweredBy` 控制以隐藏调试下的 Powered by 版权标**；**优化 Header 顶栏按钮布局，仅保留“运行逻辑”中文字符，其余按钮只保留图标及 Title 悬停提示，并同步修复了调试页与 EmbedChat 挂件中退出全屏按钮 SVG 相对路径异常导致被强行挤压变扁的视觉 Bug**。 | ✅ 已完成 | 2026-06-02 |
-
-
+| 日志管理与数据库分区 (Log Management & DB Partitioning) | tests/api/portal/test_logs_partitions.py | **日志管理与表分区维护**：验证日志保留期限配置获取/修改接口与非正整数输入校验；验证 Admin 专属权限过滤拦截；验证 PartitionService 物理分区状态 `information_schema` 抓取；验证自动/手动 Drop Partition 回收逻辑。已将参数划归为 other 分组，并在前端界面对 `audit_log_retention_days` 配置项等整数参数实行只允许输入数字的防非数字键入及粘贴拦截。 | ✅ 通过 | 2026-06-03 |

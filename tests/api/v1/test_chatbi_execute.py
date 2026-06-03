@@ -142,7 +142,7 @@ async def test_chatbi_execute_uses_session_user_for_openclaw_sql_execution(monke
 
 
 @pytest.mark.asyncio
-async def test_chatbi_execute_local_success(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+async def test_chatbi_execute_local_success(client: AsyncClient, admin_api_key: str, mock_infrastructure):
     """测试本地模式下执行只读 SQL 成功返回数据"""
     mock_adapter = AsyncMock()
     mock_adapter.execute_sql.return_value = {
@@ -150,7 +150,7 @@ async def test_chatbi_execute_local_success(client: AsyncClient, valid_api_key: 
         "items": [[1, "Alice"]]
     }
     
-    headers = {"X-API-Key": valid_api_key}
+    headers = {"X-API-Key": admin_api_key}
     
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
          patch("app.services.data_adapter.factory.get_adapter", return_value=mock_adapter) as mock_get_adapter, \
@@ -174,9 +174,9 @@ async def test_chatbi_execute_local_success(client: AsyncClient, valid_api_key: 
 
 
 @pytest.mark.asyncio
-async def test_chatbi_execute_local_safety_block(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+async def test_chatbi_execute_local_safety_block(client: AsyncClient, admin_api_key: str, mock_infrastructure):
     """测试本地模式下执行危险 SQL 被拦截，返回 403 权限拒绝"""
-    headers = {"X-API-Key": valid_api_key}
+    headers = {"X-API-Key": admin_api_key}
     
     # 模拟 SQLSafetyError 拦截
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
@@ -194,17 +194,17 @@ async def test_chatbi_execute_local_safety_block(client: AsyncClient, valid_api_
         
         # 被 validate_sql (AST 解析) 拦截返回 400 Bad Request
         assert response.status_code == 400
-        assert "Only SELECT queries are allowed" in response.json()["message"]
+        assert "Only read-only queries (SELECT, EXPLAIN, SHOW, DESCRIBE) are allowed" in response.json()["message"]
 
 
 @pytest.mark.asyncio
-async def test_chatbi_execute_local_timeout(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+async def test_chatbi_execute_local_timeout(client: AsyncClient, admin_api_key: str, mock_infrastructure):
     """测试本地模式下 SQL 执行超时，返回 502 Bad Gateway"""
     mock_adapter = AsyncMock()
     # 模拟超时异常
     mock_adapter.execute_sql.side_effect = asyncio.TimeoutError()
     
-    headers = {"X-API-Key": valid_api_key}
+    headers = {"X-API-Key": admin_api_key}
     
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
          patch("app.services.data_adapter.factory.get_adapter", return_value=mock_adapter), \
@@ -227,9 +227,9 @@ async def test_chatbi_execute_local_timeout(client: AsyncClient, valid_api_key: 
 
 
 @pytest.mark.asyncio
-async def test_chatbi_execute_local_source_not_found(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+async def test_chatbi_execute_local_source_not_found(client: AsyncClient, admin_api_key: str, mock_infrastructure):
     """测试数据源不存在时，本地模式返回 502 错误并且包含 TOOL_ERROR"""
-    headers = {"X-API-Key": valid_api_key}
+    headers = {"X-API-Key": admin_api_key}
     
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
          patch("app.services.data_adapter.factory.get_adapter", side_effect=ValueError("数据源不存在")), \
@@ -251,9 +251,9 @@ async def test_chatbi_execute_local_source_not_found(client: AsyncClient, valid_
 
 
 @pytest.mark.asyncio
-async def test_chatbi_execute_response_contains_execution_mode(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+async def test_chatbi_execute_response_contains_execution_mode(client: AsyncClient, admin_api_key: str, mock_infrastructure):
     """测试无论成功还是失败，响应 JSON 的 trace_id 后面都会带上 execution_mode 字段"""
-    headers = {"X-API-Key": valid_api_key}
+    headers = {"X-API-Key": admin_api_key}
     
     mock_adapter = AsyncMock()
     mock_adapter.execute_sql.return_value = {

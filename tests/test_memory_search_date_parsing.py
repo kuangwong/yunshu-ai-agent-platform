@@ -133,9 +133,9 @@ async def test_memory_search_with_relative_date_integration():
         assert f"## 目标日期 ({yesterday_str}) 的每日摘要" in result
         assert "昨日工作总结" in result
         assert "处理了机房断电故障，完成了数据平台的微服务部署。" in result
-        assert "讨论主题: 机房断电, 部署" in result
-        assert "达成决策: 迁移至2号机架" in result
-        assert "遗留待办: 监控报警配置" in result
+        assert "**讨论主题**: 机房断电, 部署" in result
+        assert "**达成决策**: 迁移至2号机架" in result
+        assert "**遗留待办**: 监控报警配置" in result
 
         assert f"## 目标日期 ({yesterday_str}) 的会话摘要列表" in result
         assert "机房故障排查会话" in result

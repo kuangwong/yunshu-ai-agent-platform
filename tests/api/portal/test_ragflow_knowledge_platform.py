@@ -17,6 +17,13 @@ async def test_require_dataset_access_rejects_invisible_dataset(monkeypatch):
                 permissions=SimpleNamespace(datasets=["allowed-ds"])
             )
 
+        async def get_knowledge_base_access(self, user_id, user_name=None):
+            return {
+                "is_admin": False,
+                "accessible_ids": {"allowed-ds"},
+                "writable_ids": {"allowed-ds"},
+            }
+
     monkeypatch.setattr(ragflow, "PermissionService", FakePermissionService)
 
     with pytest.raises(ragflow.HTTPException) as exc:
@@ -31,7 +38,20 @@ async def test_require_dataset_access_rejects_invisible_dataset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_require_dataset_access_allows_admin():
+async def test_require_dataset_access_allows_admin(monkeypatch):
+    class FakePermissionService:
+        def __init__(self, db):
+            pass
+
+        async def get_knowledge_base_access(self, user_id, user_name=None):
+            return {
+                "is_admin": True,
+                "accessible_ids": None,
+                "writable_ids": None,
+            }
+
+    monkeypatch.setattr(ragflow, "PermissionService", FakePermissionService)
+
     await ragflow.require_dataset_access(
         {"role": "admin", "user_id": "1"},
         db=None,

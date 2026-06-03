@@ -108,4 +108,6 @@ async def test_memory_service_clear_history(mock_redis):
         mock_get_redis.return_value = mock_redis
         
         await service.clear_history("u1", "c1")
-        mock_redis.delete.assert_called_once_with("conversation:u1:c1:history")
+        assert mock_redis.delete.call_count == 2
+        mock_redis.delete.assert_any_call("conversation:u1:c1:history")
+        mock_redis.delete.assert_any_call("conversation:u1:c1:last_data_result")

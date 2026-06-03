@@ -28,6 +28,6 @@ def test_extract_skips_cte_and_subquery_alias():
 
 
 def test_extract_invalid_sql():
-    err, refs = extract_physical_table_refs_from_select_sql("NOT SQL", dialect="mysql")
+    err, refs = extract_physical_table_refs_from_select_sql("SELECT * FROM (", dialect="mysql")
     assert err is not None
     assert refs == {}

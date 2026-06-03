@@ -241,3 +241,81 @@ async def update_system_configs(
     except Exception as e:
         logging.error(f"Failed to update configs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Log & Partition Management Endpoints (Admin Only) ---
+
+from app.core.orm import get_db_session
+from sqlalchemy.ext.asyncio import AsyncSession
+
+class LogConfigUpdateRequest(BaseModel):
+    audit_log_retention_days: int
+
+@router.get("/logs/config")
+async def get_logs_config(
+    user: Dict = Depends(require_admin)
+):
+    """
+    Get audit log retention configuration days.
+    """
+    retention = await ConfigService.get("audit_log_retention_days", default="90")
+    return {"audit_log_retention_days": int(retention) if retention.isdigit() else 90}
+
+@router.post("/logs/config")
+async def update_logs_config(
+    payload: LogConfigUpdateRequest,
+    user: Dict = Depends(require_admin)
+):
+    """
+    Update log retention days configuration.
+    """
+    days = payload.audit_log_retention_days
+    if days <= 0 or days > 3650:
+        raise HTTPException(status_code=400, detail="日志保留天数必须在 1 到 3650 之间")
+    
+    await ConfigService.update_config_value(
+        "audit_log_retention_days", 
+        str(days), 
+        changed_by=user.get("user_name", "admin"),
+        change_reason="Update via Log Management Tab"
+    )
+    return {"status": "success", "message": "配置更新成功"}
+
+@router.get("/logs/partitions")
+async def get_logs_partitions(
+    user: Dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Get MySQL physical partition lists for audit and trace logs.
+    """
+    from app.services.partition_service import PartitionService
+    try:
+        partitions = await PartitionService.get_partition_status(db)
+        return partitions
+    except Exception as e:
+        logging.error(f"Failed to fetch partitions: {e}")
+        raise HTTPException(status_code=500, detail=f"获取分区状态失败: {str(e)}")
+
+@router.post("/logs/cleanup")
+async def manual_cleanup_logs(
+    user: Dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Manually trigger cleanup of expired audit and trace logs.
+    """
+    from app.services.partition_service import PartitionService
+    retention_str = await ConfigService.get("audit_log_retention_days", default="90")
+    try:
+        retention_days = int(retention_str)
+    except (ValueError, TypeError):
+        retention_days = 90
+        
+    try:
+        res = await PartitionService.prune_expired_logs(db, retention_days)
+        return res
+    except Exception as e:
+        logging.error(f"Failed to cleanup logs: {e}")
+        raise HTTPException(status_code=500, detail=f"清理历史日志失败: {str(e)}")
+

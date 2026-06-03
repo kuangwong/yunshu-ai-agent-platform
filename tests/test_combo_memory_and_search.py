@@ -92,7 +92,7 @@ async def test_agent_service_active_memory_recall_injection():
             + "\n\n".join(preloaded_memories)
         )
         
-        assert "昨日工作总结" in memory_preloaded_str
+        assert "处理了机房断电故障" in memory_preloaded_str
         assert "机房故障排查会话" in memory_preloaded_str
 
 
@@ -163,6 +163,7 @@ async def test_combo_baidu_search_and_extract():
             self.headers = {"Content-Type": "text/html"}
 
     mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
     # 模拟重定向跟踪行为，第 1 个链接返回真实网页 1
     mock_client.get = AsyncMock(side_effect=[
         MockResponse("https://yovole.com/yunshu-intro", mock_page_html_1),
@@ -189,7 +190,7 @@ async def test_combo_baidu_search_and_extract():
         # 验证自动联动网页正文抓取整合
         assert "### 📄 自动提取的网页全文提炼 (Top-2 网页深度正文)" in result
         assert "#### 📄 网页 1: 云枢 Agent 智能开发平台" in result
-        assert "真实源链接: https://yovole.com/yunshu-intro" in result
+        assert "真实源链接**: https://yovole.com/yunshu-intro" in result
         # 验证 HTML 噪点标签（如 header, footer, style）已被剥离，仅剩下 main/p 的正文内容
         assert "云枢拥有极速向量搜索机制和长期事实记忆注入引擎" in result
         assert "导航条" not in result

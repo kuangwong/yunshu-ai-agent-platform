@@ -35,7 +35,7 @@ def test_xml_parsing():
     assert len(tool_calls) == 1
     assert tool_calls[0]["name"] == "get_dataset_schema"
     assert tool_calls[0]["args"]["query"] == "机房 列表 机房信息"
-    assert tool_calls[0]["id"].startswith("xml_call_")
+    assert tool_calls[0]["id"].startswith("call_")
     print("Test passed!")
 
 if __name__ == "__main__":

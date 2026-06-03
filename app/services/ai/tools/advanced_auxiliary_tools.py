@@ -8,6 +8,7 @@ import uuid
 import ast
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
+from typing import Optional, Dict, List, Any, Tuple
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)

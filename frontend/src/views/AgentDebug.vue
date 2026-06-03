@@ -693,6 +693,7 @@ interface ChatFile {
   size: number;
   ext: string;
   skillMeta?: SkillMeta;
+  memoryMeta?: any[];
 }
 
 interface Message {
@@ -1052,6 +1053,14 @@ const skillSelectorSearchQuery = ref("");
 const allSkillsList = ref<any[]>([]);
 const isLoadingSkillsList = ref(false);
 
+const showMemorySelector = ref(false);
+const showMemoryDetailModal = ref(false);
+const selectedMemoryDetail = ref<any>(null);
+const memoryList = ref<any[]>([]);
+const isLoadingMemoryList = ref(false);
+const memorySearchQuery = ref("");
+const selectedMemoryIds = ref<Set<string>>(new Set());
+
 const windowWidth = ref(window.innerWidth);
 const handleResize = () => {
   windowWidth.value = window.innerWidth;
@@ -1211,6 +1220,15 @@ const appendAttachmentContext = (content: string, files: ChatFile[]) => {
       const datasetLine = `用户本轮已选择知识库，dataset_id：${file.url}。你必须在本轮回复前调用 search_knowledge_base 工具检索后再作答，不得跳过。dataset_ids 请传纯 ID 或单引号列表，例如 ['${file.url}']；禁止使用双引号 JSON 如 ["${file.url}"]。`;
       return buildKnowledgeBaseAttachmentHint(datasetLine);
     }
+    if (file.type === "memory") {
+      const meta = file.memoryMeta || [];
+      const memoryContextLines = meta.map((m: any, i: number) => {
+        const dateStr = m.last_active ? new Date(m.last_active * 1000).toLocaleDateString('zh-CN') : '';
+        const dateInfo = dateStr ? `【${dateStr}】` : '';
+        return `${i + 1}. ${dateInfo}${m.summary}`;
+      });
+      return `💡 以下引用的是历史记忆，供参考：\n\n${memoryContextLines.join('\n\n')}`;
+    }
     const path = getServerAttachmentPath(file);
     if (file.type === "skill") {
       return buildSkillAttachmentHint(file, path);
@@ -1283,6 +1301,95 @@ const handleSelectSkill = (skill: any) => {
     });
   }
   showSkillSelector.value = false;
+};
+
+const filteredMemoryList = computed(() => {
+  const query = memorySearchQuery.value.trim().toLowerCase();
+  if (!query) return memoryList.value;
+  return memoryList.value.filter(m =>
+    (m.summary || "").toLowerCase().includes(query) ||
+    (m.conversation_id || "").toLowerCase().includes(query)
+  );
+});
+
+const openMemorySelector = async () => {
+  showMemorySelector.value = true;
+  memorySearchQuery.value = "";
+  
+  // 从 chatInputRef 的 uploadedFiles 中恢复已选中的 memory ID
+  const existingMemoryIds = new Set<string>();
+  if (chatInputRef.value?.uploadedFiles) {
+    const memFile = chatInputRef.value.uploadedFiles.find((f: any) => f.type === 'memory');
+    if (memFile && memFile.url) {
+      memFile.url.split(',').forEach((id: string) => {
+        if (id) existingMemoryIds.add(id);
+      });
+    }
+  }
+  selectedMemoryIds.value = existingMemoryIds;
+  
+  memoryList.value = [];
+  isLoadingMemoryList.value = true;
+  try {
+    const res = await axios.get("/api/portal/memory/my/summaries", { params: { limit: 50 } });
+    if (res.data && res.data.status === "success") {
+      memoryList.value = (res.data.data || []).filter((m: any) => m.summary);
+    }
+  } catch (err) {
+    console.error("加载记忆列表失败:", err);
+  } finally {
+    isLoadingMemoryList.value = false;
+  }
+};
+
+const toggleMemorySelection = (id: string) => {
+  if (selectedMemoryIds.value.has(id)) {
+    selectedMemoryIds.value.delete(id);
+  } else {
+    selectedMemoryIds.value.add(id);
+  }
+  // Trigger reactivity
+  selectedMemoryIds.value = new Set(selectedMemoryIds.value);
+};
+
+const confirmMemorySelection = () => {
+  const selected = memoryList.value.filter(m => selectedMemoryIds.value.has(m.conversation_id));
+  if (chatInputRef.value) {
+    const files = chatInputRef.value.uploadedFiles || [];
+    chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
+    
+    if (selected.length > 0) {
+      chatInputRef.value.uploadedFiles.push({
+        type: "memory",
+        url: selected.map(m => m.conversation_id).join(","),
+        filename: `已选择 ${selected.length} 条记忆记录`,
+        size: 0,
+        ext: "memory",
+        memoryMeta: selected.map(m => ({
+          conversation_id: m.conversation_id,
+          summary: m.summary,
+          last_active: m.last_active
+        }))
+      });
+    }
+  }
+  showMemorySelector.value = false;
+};
+
+const openMemoryDetail = (memory: any) => {
+  selectedMemoryDetail.value = memory;
+  showMemoryDetailModal.value = true;
+};
+
+const toggleMemorySelectionFromDetail = (id: string) => {
+  toggleMemorySelection(id);
+};
+
+const copyMemoryDetailText = () => {
+  if (selectedMemoryDetail.value?.summary) {
+    navigator.clipboard.writeText(selectedMemoryDetail.value.summary);
+    showToast("复制成功", "success");
+  }
 };
 
 const handleSwitchMode = (agent: any) => {
@@ -2318,14 +2425,25 @@ onUnmounted(() => {
                         <div v-else-if="file.type === 'knowledge_base'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
                             📚
                         </div>
+                        <!-- Memory Icon -->
+                        <div v-else-if="file.type === 'memory'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            🧠
+                        </div>
                         <!-- File Icon -->
                         <div v-else class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
                             📄
                         </div>
                         <div class="flex-1 min-w-0 flex flex-col">
-                            <span v-if="file.type === 'skill' || file.type === 'knowledge_base'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
+                            <span v-if="file.type === 'skill' || file.type === 'knowledge_base' || file.type === 'memory'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
                             <a v-else :href="file.url" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
-                            <span class="text-[9px] text-white/70 font-mono">{{ file.type === 'skill' ? '生态技能' : file.type === 'knowledge_base' ? '知识库' : formatBytes(file.size) }}</span>
+                            <span class="text-[9px] text-white/70 font-mono">
+                                {{ 
+                                    file.type === 'skill' ? '生态技能' : 
+                                    file.type === 'knowledge_base' ? '知识库' : 
+                                    file.type === 'memory' ? '记忆记录' : 
+                                    formatBytes(file.size) 
+                                }}
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -2881,6 +2999,7 @@ onUnmounted(() => {
             @select-skill="openSkillSelector"
             @select-knowledge-base="showKnowledgeBaseSelector = true"
             @select-local-fs="showFileBrowserModal = true"
+            @select-memory="openMemorySelector"
           >
           </ChatInput>
         </div>
@@ -3655,6 +3774,177 @@ onUnmounted(() => {
 
       <div class="p-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 text-center flex-shrink-0">
         <span class="text-[9px] text-gray-400 font-bold uppercase tracking-widest">点击技能即可自动挂载至输入框</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 记忆记录选择弹窗 (Memory Selector Modal) -->
+  <div
+    v-if="showMemorySelector"
+    class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
+    @click.self="showMemorySelector = false"
+  >
+    <div 
+      class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden animate-fade-in-up"
+    >
+      <!-- Header -->
+      <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50 flex-shrink-0">
+        <div class="flex items-center space-x-2">
+          <span class="text-lg">🧠</span>
+          <h3 class="text-base font-bold text-gray-800 dark:text-gray-100">选择历史记忆</h3>
+          <span v-if="selectedMemoryIds.size > 0" class="px-2 py-0.5 bg-primary/10 text-primary text-xs font-bold rounded-full">已选 {{ selectedMemoryIds.size }}</span>
+        </div>
+        <button @click="showMemorySelector = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <!-- Search Bar -->
+      <div class="p-3 border-b border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
+        <div class="relative">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input 
+            v-model="memorySearchQuery"
+            type="text" 
+            placeholder="搜索记忆内容..." 
+            class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
+          />
+        </div>
+      </div>
+
+      <!-- Memory List -->
+      <div class="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar bg-gray-50/30 dark:bg-gray-900/30">
+        <!-- Loading State -->
+        <div v-if="isLoadingMemoryList" class="flex flex-col items-center justify-center py-10 opacity-50">
+          <div class="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+          <span class="text-[10px] font-bold text-gray-400 mt-2 uppercase tracking-widest">加载中...</span>
+        </div>
+
+        <!-- Empty State -->
+        <div v-else-if="filteredMemoryList.length === 0" class="text-center py-12">
+          <span class="text-2xl opacity-40">🧠</span>
+          <p class="text-xs text-gray-400 mt-2 font-bold">暂无可用的记忆记录</p>
+          <p class="text-[10px] text-gray-400/70 mt-1">与 AI 对话后系统会自动生成记忆摘要</p>
+        </div>
+
+        <!-- Memory Cards -->
+        <div 
+          v-for="memory in filteredMemoryList" 
+          :key="memory.conversation_id"
+          @click="toggleMemorySelection(memory.conversation_id)"
+          class="group p-3 border rounded-xl cursor-pointer transition-all flex items-start space-x-3"
+          :class="selectedMemoryIds.has(memory.conversation_id)
+            ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20 dark:bg-primary/10'
+            : 'bg-white dark:bg-gray-800 border-gray-150 dark:border-gray-700/60 hover:border-primary/30 hover:shadow-sm'"
+        >
+          <!-- Checkbox -->
+          <div 
+            class="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
+            :class="selectedMemoryIds.has(memory.conversation_id)
+              ? 'bg-primary border-primary'
+              : 'border-gray-300 dark:border-gray-600 group-hover:border-primary/50'"
+          >
+            <svg v-if="selectedMemoryIds.has(memory.conversation_id)" class="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+            </svg>
+          </div>
+          <!-- Content -->
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[10px] font-mono text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center">
+                {{ memory.last_active ? new Date(memory.last_active * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) : '未知日期' }}
+                <span v-if="memory.last_active" class="ml-2 text-gray-300 dark:text-gray-600 font-mono">
+                  {{ new Date(memory.last_active * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}
+                </span>
+              </span>
+              <button 
+                @click.stop="openMemoryDetail(memory)" 
+                class="text-[10px] text-primary hover:text-primary-dark hover:underline flex items-center space-x-0.5"
+                :style="{ color: 'var(--primary-color, #1677ff)' }"
+              >
+                <span>详情</span>
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </button>
+            </div>
+            <p class="text-xs text-gray-700 dark:text-gray-200 leading-relaxed line-clamp-3">{{ memory.summary }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="p-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between flex-shrink-0">
+        <span class="text-[10px] text-gray-400 font-bold">选择后内容将作为引用附加到消息中</span>
+        <div class="flex space-x-2">
+          <button @click="showMemorySelector = false" class="px-3 py-1.5 text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium">取消</button>
+          <button 
+            @click="confirmMemorySelection"
+            :disabled="selectedMemoryIds.size === 0"
+            class="px-4 py-1.5 text-xs text-white rounded-lg transition-all font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
+          >引用选中 ({{ selectedMemoryIds.size }})</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 记忆详情查看弹窗 (Memory Detail Modal) -->
+  <div
+    v-if="showMemoryDetailModal && selectedMemoryDetail"
+    class="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in"
+    @click.self="showMemoryDetailModal = false"
+  >
+    <div 
+      class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-fade-in-up"
+    >
+      <!-- Header -->
+      <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50 flex-shrink-0">
+        <div class="flex items-center space-x-2">
+          <span class="text-lg">🧠</span>
+          <h3 class="text-base font-bold text-gray-800 dark:text-gray-100">记忆详情</h3>
+        </div>
+        <button @click="showMemoryDetailModal = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <!-- Content -->
+      <div class="p-5 flex-1 overflow-y-auto max-h-[50vh] bg-white dark:bg-gray-800">
+        <div class="text-[10px] font-mono text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
+          生成时间：{{ selectedMemoryDetail.last_active ? new Date(selectedMemoryDetail.last_active * 1000).toLocaleString('zh-CN') : '未知时间' }}
+        </div>
+        <div class="text-xs text-gray-500 dark:text-gray-400 font-mono mb-4 truncate select-all">
+          会话ID：{{ selectedMemoryDetail.conversation_id }}
+        </div>
+        <div class="p-4 bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800 text-sm text-gray-700 dark:text-gray-200 leading-relaxed whitespace-pre-wrap select-text">
+          {{ selectedMemoryDetail.summary }}
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-5 py-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 flex justify-between items-center flex-shrink-0">
+        <button 
+          @click="copyMemoryDetailText"
+          class="px-3 py-1.5 text-xs text-gray-600 bg-white dark:bg-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors font-medium flex items-center space-x-1"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+          <span>复制内容</span>
+        </button>
+        
+        <div class="flex space-x-2">
+          <button 
+            @click="toggleMemorySelectionFromDetail(selectedMemoryDetail.conversation_id)"
+            class="px-3.5 py-1.5 text-xs text-white rounded-lg transition-all font-medium"
+            :class="selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary-dark'"
+            :style="!selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? { backgroundColor: 'var(--primary-color, #1677ff)' } : {}"
+          >
+            {{ selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? '取消勾选' : '勾选引用' }}
+          </button>
+          <button @click="showMemoryDetailModal = false" class="px-3.5 py-1.5 text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium">关闭</button>
+        </div>
       </div>
     </div>
   </div>

@@ -30,6 +30,7 @@ const emit = defineEmits<{
   (e: 'select-skill'): void;
   (e: 'select-knowledge-base'): void;
   (e: 'select-local-fs'): void;
+  (e: 'select-memory'): void;
 }>();
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
@@ -435,6 +436,10 @@ defineExpose({
                 <div v-else-if="file.type === 'skill'" class="w-8 h-8 rounded bg-amber-500/10 dark:bg-amber-500/20 flex items-center justify-center text-amber-500 text-sm flex-shrink-0 mr-2 font-mono">
                     ⚙️
                 </div>
+                <!-- Memory Icon -->
+                <div v-else-if="file.type === 'memory'" class="w-8 h-8 rounded bg-indigo-500/10 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-500 text-sm flex-shrink-0 mr-2">
+                    🧠
+                </div>
                 <!-- Server File Icon -->
                 <div v-else-if="file.type === 'local_file'" class="w-8 h-8 rounded bg-blue-500/10 dark:bg-blue-500/20 flex items-center justify-center text-blue-500 text-sm flex-shrink-0 mr-2">
                     💻
@@ -454,6 +459,7 @@ defineExpose({
                         {{ 
                           file.type === 'skill' ? '生态技能' : 
                           file.type === 'knowledge_base' ? '知识库' : 
+                          file.type === 'memory' ? '记忆记录' : 
                           file.type === 'local_file' ? (isImage(file) ? '服务器图片' : '服务器文件') :
                           file.type === 'local_dir' ? '服务器目录' :
                           formatSize(file.size) 
@@ -523,6 +529,12 @@ defineExpose({
                         <button @click="showPlusMenu = false; emit('select-skill');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
                             <span class="text-lg">⚙️</span>
                             <span class="font-medium text-left">调用技能工作流</span>
+                        </button>
+
+                        <!-- Memory Records -->
+                        <button @click="showPlusMenu = false; emit('select-memory');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                            <span class="text-lg">🧠</span>
+                            <span class="font-medium text-left">选择记忆记录</span>
                         </button>
                     </div>
                 </transition>

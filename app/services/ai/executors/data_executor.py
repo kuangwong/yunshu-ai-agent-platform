@@ -151,6 +151,7 @@ class DataQueryExecutor(BaseExecutor):
         self._needs_skill_prep = False
         self._sql_plan_block_used = False
         self._standalone_query = ""
+        self._schema_search_keywords = ""
 
     # 数据查询类工具：调用这些以外的工具（如 create_skills）视为“元操作/外部动作”，
     # 不应再被“必须先查库”的护栏阻断。
@@ -370,13 +371,25 @@ class DataQueryExecutor(BaseExecutor):
             or "未找到相关的元数据" in s
         )
 
+    def _has_relevant_schema_definition(self, tool_output: Any) -> bool:
+        """Recognize schema payloads even if descriptive text contains incidental error words."""
+        s = str(tool_output or "")
+        if not s or self._is_no_relevant_schema(s):
+            return False
+        return bool(
+            re.search(r"(?im)^\s*(table_name|columns|---\s*Source):", s)
+            or "relationships:" in s
+            or "synonyms:" in s
+        )
+
     def _build_schema_retry_keywords(self, original_keywords: Any = None) -> str:
         candidates = [
             str(original_keywords or "").strip(),
+            (self._schema_search_keywords or "").strip(),
             (self._standalone_query or "").strip(),
             (self._current_user_question or "").strip(),
         ]
-        suffix = "数据集 表 字段 指标 维度 物理表 业务口径 机房 机柜 机架 机位"
+        suffix = "数据集 表 字段 指标 维度 物理表 业务口径"
         seen = set()
         parts = []
         for item in candidates + [suffix]:
@@ -385,6 +398,96 @@ class DataQueryExecutor(BaseExecutor):
             seen.add(item)
             parts.append(item)
         return " ".join(parts)[:300]
+
+    @staticmethod
+    def _example_schema_keyword_context(examples: List[Dict[str, Any]], limit: int = 3) -> str:
+        if not examples:
+            return "无"
+
+        blocks = []
+        for idx, ex in enumerate(examples[:limit], 1):
+            sql = str(ex.get("sql") or "")
+            sql_meta = ex.get("sql_metadata") if isinstance(ex.get("sql_metadata"), dict) else {}
+            tables = list(sql_meta.get("tables") or [])
+            dimensions = list(sql_meta.get("dimensions") or [])
+            if not tables and sql:
+                table_matches = re.findall(r"\b(?:FROM|JOIN)\s+([`\w.]+)", sql, flags=re.IGNORECASE)
+                tables = [t.strip("`") for t in table_matches]
+            column_like_tokens = []
+            if sql:
+                for token in re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b", sql):
+                    if token.upper() in {
+                        "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
+                        "GROUP", "ORDER", "LIMIT", "SUM", "COUNT", "AVG", "MAX", "MIN", "AND", "OR",
+                        "ON", "BY", "AS", "DESC", "ASC", "WITH", "CASE", "WHEN", "THEN", "ELSE", "END",
+                    }:
+                        continue
+                    column_like_tokens.append(token)
+            deduped_tokens = list(dict.fromkeys(column_like_tokens))[:20]
+            blocks.append(
+                "\n".join([
+                    f"案例 {idx}:",
+                    f"- 历史问题: {ex.get('question') or ''}",
+                    f"- 数据集: {ex.get('dataset_name') or ''}",
+                    f"- 核心表: {', '.join(tables[:8]) if tables else ''}",
+                    f"- 核心维度: {', '.join(dimensions[:8]) if dimensions else ''}",
+                    f"- SQL 关键词: {', '.join(deduped_tokens)}",
+                ])
+            )
+        return "\n\n".join(blocks)
+
+    async def _plan_schema_search_keywords(
+        self,
+        user_question: str,
+        standalone_query: str,
+        examples: List[Dict[str, Any]],
+    ) -> str:
+        """Use the current question plus matched examples to plan metadata retrieval keywords."""
+        fallback_query = (standalone_query or user_question or "").strip()[:300]
+
+        prompt = (
+            "你是 ChatBI 的元数据检索词规划器。你的任务不是生成 SQL，而是为 get_dataset_schema(keywords) "
+            "生成最适合检索数据集/表/字段/指标定义的短关键词。\n\n"
+            "要求：\n"
+            "1. 结合用户原始问题、独立查数问题和命中的历史案例；若没有历史案例，也必须从用户需求中抽取关键词。\n"
+            "2. 优先保留业务对象/实体、指标、维度、时间字段含义，以及历史案例中出现过的物理表名/字段名。\n"
+            "3. 去掉无助于元数据检索的动作词、礼貌词、排序数量描述和 SQL 生成意图。\n"
+            "4. 不要生成 SQL，不要编造案例中没有出现的新物理表名。\n"
+            "5. keywords 必须是空格分隔的关键词短语，优先 3 到 10 个词；不要输出完整查询句子。\n"
+            "6. 只返回 JSON。示例：{\"keywords\":\"商品 销售额 省份 product_order_detail product_name sales_amount\"}。\n"
+            "7. keywords 不能为空，禁止输出 `...`、`关键词`、`N/A` 这类占位符。\n\n"
+            f"【用户原始问题】\n{user_question}\n\n"
+            f"【独立查数问题】\n{standalone_query}\n\n"
+            f"【命中的历史案例线索】\n{self._example_schema_keyword_context(examples)}"
+        )
+        try:
+            model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
+            response = await model.ainvoke([SystemMessage(content=prompt)])
+            content = (getattr(response, "content", "") or "").strip()
+            data = {}
+            try:
+                data = json.loads(content)
+            except Exception:
+                match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+                if match:
+                    data = json.loads(match.group())
+            keywords = str(data.get("keywords") or "").strip()
+            if self._is_invalid_schema_search_keywords(keywords):
+                return fallback_query
+            return keywords[:300]
+        except Exception as e:
+            logger.warning("[DataExecutor] Failed to plan schema search keywords: %s", e)
+            return fallback_query
+
+    @staticmethod
+    def _is_invalid_schema_search_keywords(keywords: str) -> bool:
+        normalized = re.sub(r"\s+", "", str(keywords or "")).strip().lower()
+        if not normalized:
+            return True
+        return normalized in {
+            "...", "…", "keyword", "keywords", "关键词", "问题关键词",
+            "n/a", "na", "none", "null", "无",
+        }
 
     def _convert_history(self, history: List[Dict[str, str]]) -> List[BaseMessage]:
         return convert_history_to_messages(history)
@@ -833,11 +936,13 @@ class DataQueryExecutor(BaseExecutor):
         self._no_tool_call_streak = 0
         self._non_data_tool_called = False
         self._sql_plan_block_used = False
+        self._schema_search_keywords = ""
         # 注：_requires_fresh_data / _skill_ready / _needs_skill_prep 在本轮入口或下方按最终 system_prompt 计算。
         
         # [经验库] Few-Shot 检索与注入（新数据查询 / 技能执行等需要新 SQL 的请求才检索）
         _few_shot_reminder = ""
         _schema_reminder_injected = False
+        fewshot_examples = []
         fewshot_start = time.time()
         fewshot_log_id = f"fewshot_search_{uuid.uuid4().hex[:8]}"
         if self._skip_few_shot:
@@ -868,6 +973,7 @@ class DataQueryExecutor(BaseExecutor):
                         top_k=5,
                         history=langchain_messages
                     )
+                    fewshot_examples = examples or []
                     if examples:
                         max_sim = max([ex.get('similarity', 0) for ex in examples])
                         hit_titles = [f"#{ex.get('id', '?')} 「{ex['question'][:15]}...」 (相似度: {ex.get('similarity', 0):.2f})" for ex in examples]
@@ -904,6 +1010,57 @@ class DataQueryExecutor(BaseExecutor):
                 "status": "success",
                 "execution_time_ms": (time.time() - fewshot_start) * 1000,
             }
+
+        if self._requires_fresh_data:
+            need_analysis_start = time.time()
+            need_analysis_log_id = f"need_analysis_{uuid.uuid4().hex[:8]}"
+            need_analysis_pending = (
+                "正在结合用户原始问题与经验库案例，生成用于元数据检索的问题关键词..."
+                if fewshot_examples
+                else "正在分析用户原始问题，生成用于元数据检索的问题关键词..."
+            )
+            yield {
+                "type": "log",
+                "id": need_analysis_log_id,
+                "title": "用户需求分析",
+                "details": need_analysis_pending,
+                "status": "pending",
+                "started_at": int(need_analysis_start * 1000),
+            }
+            self._schema_search_keywords = await self._plan_schema_search_keywords(
+                self._current_user_question,
+                self._standalone_query,
+                fewshot_examples,
+            )
+            need_analysis_done = (
+                "已完成用户需求分析，并生成问题关键词。"
+                if fewshot_examples
+                else "未命中可参考经验库案例，已基于用户需求生成问题关键词。"
+            )
+            yield {
+                "type": "log",
+                "id": need_analysis_log_id,
+                "title": "用户需求分析",
+                "details": (
+                    f"{need_analysis_done}"
+                    f"\n问题关键词: "
+                    f"{self._schema_search_keywords or self._standalone_query or self._current_user_question}"
+                ),
+                "status": "success",
+                "execution_time_ms": (time.time() - need_analysis_start) * 1000,
+            }
+            if self._schema_search_keywords:
+                schema_hint_source = (
+                    "用户原始问题和经验库案例"
+                    if fewshot_examples
+                    else "用户原始问题"
+                )
+                append_system_instruction(
+                    langchain_messages,
+                    f"【Schema 检索词规划】本轮已结合{schema_hint_source}规划出 "
+                    f"get_dataset_schema 的检索词：{self._schema_search_keywords}\n"
+                    "首次检索数据集定义时，请优先使用这些 keywords；这些词仅用于检索元数据，不代表最终 SQL 表字段已确认。",
+                )
 
         if "{dataset_menu}" in system_prompt:
             # 注入用户权限信息
@@ -1130,7 +1287,7 @@ class DataQueryExecutor(BaseExecutor):
                     current_stage == DataQueryStage.NEED_SCHEMA
                     and self._schema_miss_retry_pending
                 ):
-                    schema_keywords = self._schema_retry_keywords or (self._standalone_query or self._current_user_question or "").strip()
+                    schema_keywords = self._schema_retry_keywords or self._schema_search_keywords or (self._standalone_query or self._current_user_question or "").strip()
                     self._schema_miss_retry_pending = False
                     response = AIMessage(
                         content="",
@@ -1155,7 +1312,7 @@ class DataQueryExecutor(BaseExecutor):
                     current_stage == DataQueryStage.NEED_SCHEMA
                     and "get_dataset_schema" in tool_names
                 ):
-                    schema_keywords = (self._standalone_query or self._current_user_question or "").strip()
+                    schema_keywords = (self._schema_search_keywords or self._standalone_query or self._current_user_question or "").strip()
                     response = AIMessage(
                         content="",
                         tool_calls=[{
@@ -1296,6 +1453,14 @@ class DataQueryExecutor(BaseExecutor):
             parallel_tasks = []
             for tool_call in response.tool_calls:
                 if not tool_call.get("id"): tool_call["id"] = f"call_{uuid.uuid4().hex[:8]}"
+                if tool_call.get("name") == "get_dataset_schema" and self._schema_search_keywords:
+                    args = tool_call.setdefault("args", {})
+                    current_keywords = str(args.get("keywords") or args.get("query") or "").strip()
+                    if not current_keywords or current_keywords in {
+                        (self._current_user_question or "").strip(),
+                        (self._standalone_query or "").strip(),
+                    }:
+                        args["keywords"] = self._schema_search_keywords
                 tool_display = TOOL_LABEL_MAP.get(tool_call['name'], tool_call['name'])
                 
                 yield {
@@ -1447,6 +1612,9 @@ class DataQueryExecutor(BaseExecutor):
                     if "[元数据服务不可用]" in schema_out_str:
                         self._metadata_unavailable = True
                         tool_status = "error"
+                    if tool_status == "error" and self._has_relevant_schema_definition(schema_out_str):
+                        tool_status = "success"
+                        error_msg = None
                     if self._is_no_relevant_schema(schema_out_str):
                         tool_status = "error"
                         if self._schema_miss_retry_used:

@@ -2,11 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+from app.services.ai.runtime.agentscope.errors import RuntimeToolError, RuntimeTimeoutError
+
 
 ToolSourceType = Literal["static", "generic_api", "mcp", "class", "system"]
+RuntimeToolAuditStatus = Literal["start", "success", "error"]
+
+
+@dataclass(frozen=True)
+class RuntimeToolAuditEvent:
+    tool_name: str
+    status: RuntimeToolAuditStatus
+    source_type: ToolSourceType
+    permission_scope: str
+    arguments: dict[str, Any]
+    elapsed_ms: float | None = None
+    result_preview: str | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -18,6 +34,7 @@ class RuntimeToolSpec:
     callable: Callable[..., Any]
     permission_scope: str = "write"
     timeout_seconds: float | None = None
+    audit_callback: Callable[[RuntimeToolAuditEvent], Any] | None = None
 
     @property
     def is_read_only(self) -> bool:
@@ -25,12 +42,76 @@ class RuntimeToolSpec:
 
     async def invoke(self, arguments: dict[str, Any] | None = None) -> Any:
         arguments = arguments or {}
-        result = self.callable(**arguments)
+        start = time.perf_counter()
+        await self._emit_audit(
+            RuntimeToolAuditEvent(
+                tool_name=self.name,
+                status="start",
+                source_type=self.source_type,
+                permission_scope=self.permission_scope,
+                arguments=arguments,
+            )
+        )
+        try:
+            result = self.callable(**arguments)
+            if inspect.isawaitable(result):
+                if self.timeout_seconds:
+                    result = await asyncio.wait_for(result, timeout=self.timeout_seconds)
+                else:
+                    result = await result
+            await self._emit_audit(
+                RuntimeToolAuditEvent(
+                    tool_name=self.name,
+                    status="success",
+                    source_type=self.source_type,
+                    permission_scope=self.permission_scope,
+                    arguments=arguments,
+                    elapsed_ms=(time.perf_counter() - start) * 1000,
+                    result_preview=_preview_result(result),
+                )
+            )
+            return result
+        except TimeoutError as exc:
+            wrapped = RuntimeTimeoutError(
+                f"Tool '{self.name}' timed out",
+                cause=exc,
+                details={"tool_name": self.name, "timeout_seconds": self.timeout_seconds},
+            )
+            await self._emit_error_audit(arguments, start, wrapped)
+            raise wrapped from exc
+        except Exception as exc:
+            wrapped = RuntimeToolError(
+                f"Tool '{self.name}' failed: {exc}",
+                cause=exc,
+                details={"tool_name": self.name},
+            )
+            await self._emit_error_audit(arguments, start, wrapped)
+            raise wrapped from exc
+
+    async def _emit_error_audit(
+        self,
+        arguments: dict[str, Any],
+        start: float,
+        exc: Exception,
+    ) -> None:
+        await self._emit_audit(
+            RuntimeToolAuditEvent(
+                tool_name=self.name,
+                status="error",
+                source_type=self.source_type,
+                permission_scope=self.permission_scope,
+                arguments=arguments,
+                elapsed_ms=(time.perf_counter() - start) * 1000,
+                error=str(exc),
+            )
+        )
+
+    async def _emit_audit(self, event: RuntimeToolAuditEvent) -> None:
+        if not self.audit_callback:
+            return
+        result = self.audit_callback(event)
         if inspect.isawaitable(result):
-            if self.timeout_seconds:
-                return await asyncio.wait_for(result, timeout=self.timeout_seconds)
-            return await result
-        return result
+            await result
 
 
 class AgentScopeRuntimeTool:
@@ -71,6 +152,13 @@ def _load_agentscope_toolkit():
     from agentscope.tool import Toolkit
 
     return Toolkit
+
+
+def _preview_result(result: Any, max_length: int = 500) -> str:
+    text = str(result)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
 
 
 def build_toolkit(tool_specs: list[RuntimeToolSpec]):

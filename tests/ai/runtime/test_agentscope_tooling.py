@@ -6,10 +6,12 @@ pytestmark = pytest.mark.no_infrastructure
 
 @pytest.mark.asyncio
 async def test_runtime_tool_spec_executes_callable_and_records_metadata():
-    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolAuditEvent, RuntimeToolSpec
 
     async def echo_tool(query: str) -> str:
         return f"echo:{query}"
+
+    audit_events: list[RuntimeToolAuditEvent] = []
 
     spec = RuntimeToolSpec(
         name="echo_tool",
@@ -23,12 +25,68 @@ async def test_runtime_tool_spec_executes_callable_and_records_metadata():
         callable=echo_tool,
         permission_scope="read",
         timeout_seconds=3.0,
+        audit_callback=audit_events.append,
     )
 
     result = await spec.invoke({"query": "hello"})
 
     assert result == "echo:hello"
     assert spec.is_read_only is True
+    assert [event.status for event in audit_events] == ["start", "success"]
+    assert audit_events[0].arguments == {"query": "hello"}
+    assert audit_events[1].result_preview == "echo:hello"
+    assert audit_events[1].elapsed_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_runtime_tool_spec_wraps_timeout_and_emits_error_audit():
+    from app.services.ai.runtime.agentscope.errors import RuntimeTimeoutError
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolAuditEvent, RuntimeToolSpec
+
+    async def slow_tool() -> str:
+        import asyncio
+
+        await asyncio.sleep(0.05)
+        return "too late"
+
+    audit_events: list[RuntimeToolAuditEvent] = []
+    spec = RuntimeToolSpec(
+        name="slow_tool",
+        description="Slow tool",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=slow_tool,
+        timeout_seconds=0.001,
+        audit_callback=audit_events.append,
+    )
+
+    with pytest.raises(RuntimeTimeoutError, match="slow_tool"):
+        await spec.invoke({})
+
+    assert [event.status for event in audit_events] == ["start", "error"]
+    assert audit_events[-1].error
+
+
+@pytest.mark.asyncio
+async def test_runtime_tool_spec_wraps_tool_error():
+    from app.services.ai.runtime.agentscope.errors import RuntimeToolError
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    def broken_tool() -> str:
+        raise ValueError("bad input")
+
+    spec = RuntimeToolSpec(
+        name="broken_tool",
+        description="Broken tool",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=broken_tool,
+    )
+
+    with pytest.raises(RuntimeToolError, match="bad input") as exc_info:
+        await spec.invoke({})
+
+    assert exc_info.value.details["tool_name"] == "broken_tool"
 
 
 @pytest.mark.asyncio

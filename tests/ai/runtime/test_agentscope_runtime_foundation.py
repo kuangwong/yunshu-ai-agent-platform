@@ -113,6 +113,16 @@ def test_verify_agentscope_imports_reports_missing_modules(monkeypatch):
     assert result.missing_modules == ["missing.module"]
 
 
+def test_runtime_error_envelope_normalizes_unknown_errors():
+    from app.services.ai.runtime.agentscope.errors import error_to_envelope
+
+    envelope = error_to_envelope(ValueError("bad value"))
+
+    assert envelope.kind == "unknown"
+    assert envelope.message == "bad value"
+    assert envelope.details == {}
+
+
 @pytest.mark.asyncio
 async def test_model_factory_requires_api_key_for_openai_compatible_model(monkeypatch):
     from app.services.ai.runtime.agentscope.models import AgentScopeModelConfig, create_openai_chat_model

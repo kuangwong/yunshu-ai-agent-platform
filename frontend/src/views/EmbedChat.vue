@@ -4038,6 +4038,8 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     if (data.turn_type) msg.turnType = data.turn_type;
     if (data.prompt_tokens !== undefined) msg.prompt_tokens = data.prompt_tokens;
     if (data.completion_tokens !== undefined) msg.completion_tokens = data.completion_tokens;
+  } else if (data.type === "permission_required") {
+    handlePermissionRequired(msg, data);
   } else if (data.type === "permission_result") {
     if (msg.pendingPermission) {
       msg.pendingPermission.status = data.status === "rejected" ? "rejected" : "approved";
@@ -4135,7 +4137,7 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
     msg.content += `\n[工具确认失败: ${error.message || "Unknown error"}]`;
   } finally {
     pending.isSubmitting = false;
-    isProcessing.value = false;
+    isProcessing.value = msg.pendingPermission?.status === "pending";
     msg.isThinking = false;
     clearStallTimer();
     showStalledPrompt.value = false;

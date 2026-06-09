@@ -2027,6 +2027,8 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   } else if (data.type === "meta") {
     if (data.agent_name) msg.agentName = data.agent_name;
     if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
+  } else if (data.type === "permission_required") {
+    handlePermissionRequired(msg, data);
   } else if (data.type === "permission_result") {
     if (msg.pendingPermission) {
       msg.pendingPermission.status = data.status === "rejected" ? "rejected" : "approved";
@@ -2112,7 +2114,7 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
     msg.content += `\n[工具确认失败: ${error.message || "Unknown error"}]`;
   } finally {
     pending.isSubmitting = false;
-    isProcessing.value = false;
+    isProcessing.value = msg.pendingPermission?.status === "pending";
     msg.isThinking = false;
     if (thoughtTimer) {
       clearInterval(thoughtTimer);

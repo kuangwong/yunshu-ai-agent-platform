@@ -1533,6 +1533,58 @@ async def test_data_agent_runner_suppresses_duplicate_final_answer_text_blocks(d
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_allows_final_answer_after_tool_calls_following_partial_text(
+    data_config,
+):
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    async def fake_events():
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_schema", tool_call_name="get_dataset_schema")
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_schema", delta="table_name: demo\ncolumns: id")
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_schema")
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql_1", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql_1",
+            delta='{"sql": "SELECT role FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_sql_1", delta='[{"role": "admin"}]')
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql_1")
+        yield SimpleNamespace(type="TEXT_BLOCK_START", block_id="partial-1")
+        yield SimpleNamespace(type="TEXT_BLOCK_DELTA", block_id="partial-1", delta="让我再查询一下按日期分布的注册情况：")
+        yield SimpleNamespace(type="TEXT_BLOCK_END", block_id="partial-1")
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql_2", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql_2",
+            delta='{"sql": "SELECT DATE(created_at) AS day FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_sql_2", delta='[{"day": "2026-05-31"}]')
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql_2")
+        yield SimpleNamespace(type="TEXT_BLOCK_START", block_id="final-1")
+        yield SimpleNamespace(type="TEXT_BLOCK_DELTA", block_id="final-1", delta="按日期分布如下：")
+        yield SimpleNamespace(type="TEXT_BLOCK_END", block_id="final-1")
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-partial-then-final", trace_buffer=[])
+
+    events = []
+    async for chunk in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+    ):
+        events.append(chunk)
+
+    content = "".join(
+        event["content"] for event in events if "content" in event and "type" not in event
+    )
+    assert "让我再查询一下按日期分布的注册情况：" in content
+    assert "按日期分布如下：" in content
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_execute_repairs_sql_error_before_final_answer(
     data_config,
     monkeypatch,

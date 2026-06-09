@@ -87,10 +87,10 @@ class _DataRunState:
     requires_fresh_data: bool = True
     text_window: str = ""
     start_synthesis: float = field(default_factory=time.time)
-    final_answer_complete: bool = False
     ignore_text_block: bool = False
     active_text_block_id: str = ""
-    final_answer_block_id: str = ""
+    text_blocks_emitted_since_last_tool: int = 0
+    current_text_block_emitted: bool = False
 
     @property
     def ready_to_answer(self) -> bool:
@@ -591,10 +591,10 @@ class DataAgentRunner(BaseExecutor):
             state.blocked_content = ""
             state.full_content = ""
             state.content_emitted = False
-            state.final_answer_complete = False
             state.ignore_text_block = False
             state.active_text_block_id = ""
-            state.final_answer_block_id = ""
+            state.text_blocks_emitted_since_last_tool = 0
+            state.current_text_block_emitted = False
             state.sql_completed = False
             state.sql_error = False
             state.sql_error_message = ""
@@ -1137,11 +1137,6 @@ class DataAgentRunner(BaseExecutor):
         async def on_text_block_delta(event: Any) -> AsyncGenerator[Dict[str, Any], None]:
             block_id = str(getattr(event, "block_id", "") or "")
             if block_id:
-                if (
-                    state.final_answer_block_id
-                    and block_id != state.final_answer_block_id
-                ):
-                    return
                 state.active_text_block_id = block_id
             if state.ignore_text_block:
                 return
@@ -1163,23 +1158,31 @@ class DataAgentRunner(BaseExecutor):
                     "status": "success",
                 }
             state.full_content += delta
+            state.current_text_block_emitted = True
             yield {"content": delta}
 
         async for event in event_stream:
             event_type = str(getattr(event, "type", ""))
+            if event_type == "TOOL_CALL_START":
+                state.text_blocks_emitted_since_last_tool = 0
+                state.ignore_text_block = False
+                state.current_text_block_emitted = False
+
             if event_type == "TEXT_BLOCK_START":
                 block_id = str(getattr(event, "block_id", "") or "")
                 if block_id:
                     state.active_text_block_id = block_id
-                state.ignore_text_block = state.final_answer_complete
+                state.current_text_block_emitted = False
+                state.ignore_text_block = (
+                    state.ready_to_answer
+                    and state.text_blocks_emitted_since_last_tool >= 1
+                )
                 continue
 
             if event_type == "TEXT_BLOCK_END":
-                block_id = str(getattr(event, "block_id", "") or state.active_text_block_id)
-                if state.content_emitted and state.ready_to_answer and not state.final_answer_complete:
-                    state.final_answer_complete = True
-                    if block_id:
-                        state.final_answer_block_id = block_id
+                if state.current_text_block_emitted and state.ready_to_answer:
+                    state.text_blocks_emitted_since_last_tool += 1
+                state.current_text_block_emitted = False
                 continue
 
             async for chunk in map_standard_agentscope_event(

@@ -43,6 +43,7 @@ from app.services.ai.runtime.agentscope.event_stream import (
     is_interrupt_sse_chunk,
     map_standard_agentscope_event,
 )
+from app.services.ai.runtime.agentscope.stream_reconcile import truncate_for_context
 from app.services.ai.runtime.agentscope.session_lock import (
     SessionLockTimeout,
     agentscope_session_lock,
@@ -1321,7 +1322,7 @@ class DataAgentRunner(BaseExecutor):
         return re.search(r"按.{0,12}(组|类|类型|维度|机房|区域|部门|用户|状态)", question) is not None
 
     def _format_tool_details(self, tool_name: str, output: Any, state: _DataRunState) -> str:
-        details = str(output)[:5000]
+        details = truncate_for_context(str(output), max_len=1000)
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
             details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
@@ -1389,10 +1390,36 @@ class DataAgentRunner(BaseExecutor):
             or "未找到相关的元数据" in text
         )
 
+    def _is_structured_sql_result(self, parsed: Any) -> bool:
+        """可解析为 columns/items/rows 等形态时视为正常查数结果，不做关键词误判。"""
+        if isinstance(parsed, list):
+            return True
+        if not isinstance(parsed, dict):
+            return False
+        if any(key in parsed for key in ("columns", "items", "rows", "data", "records")):
+            return True
+        return bool(self._extract_result_row_lists(parsed))
+
     def _detect_sql_error(self, output: Any) -> tuple[bool, str]:
         text = str(output or "")
-        if not text:
+        if not text.strip():
             return False, ""
+
+        error_prefixes = (
+            "[TOOL_ERROR]",
+            "[Validation Failed]",
+            "[Permission Denied]",
+            "[Security Error]",
+            f"{SCHEMA_GATE_PREFIX}",
+            "Error: Dataset",
+        )
+        if any(text.startswith(prefix) for prefix in error_prefixes):
+            return True, text[:1000]
+
+        parsed = self._try_parse_json_output(output)
+        if self._is_structured_sql_result(parsed):
+            return False, ""
+
         error_patterns = [
             r"unknown column",
             r"unknown table",
@@ -1401,12 +1428,14 @@ class DataAgentRunner(BaseExecutor):
             r"access denied",
             r"permission denied",
             r"unauthorized",
-            r"报错",
-            r"错误",
-            r"异常",
-            r"失败",
+            r"^报错[:：]",
+            r"^错误[:：]",
+            r"^异常[:：]",
+            r"^失败[:：]",
+            r"SQL Syntax Error",
+            r"SQL Validation Failed",
         ]
-        if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in error_patterns):
+        if any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in error_patterns):
             return True, text[:1000]
         return False, ""
 

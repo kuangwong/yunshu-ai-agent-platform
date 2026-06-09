@@ -171,6 +171,21 @@ export function handleToolResultData(msg: AgentStreamMessage, data: Record<strin
   }
 }
 
+/** 取最近一条仍为 pending 的同类步骤 log（ReAct 多轮 model call 按栈闭合） */
+export function findLastPendingStreamLog(
+  msg: AgentStreamMessage,
+  category: string,
+): AgentStreamLog | undefined {
+  const logs = msg.logs || [];
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const log = logs[i];
+    if (log?.status === "pending" && log.category === category) {
+      return log;
+    }
+  }
+  return undefined;
+}
+
 export function handleModelCallEvent<T extends AgentStreamMessage>(
   msg: T,
   data: Record<string, unknown>,
@@ -179,8 +194,9 @@ export function handleModelCallEvent<T extends AgentStreamMessage>(
   const phase = String(data.phase || "");
   const replyId = String(data.reply_id || `model_${Date.now()}`);
   if (phase === "start") {
+    const seq = (msg.logs || []).filter((log) => log.category === "model").length;
     addLog(msg, {
-      id: `model_call_start_${replyId}`,
+      id: `model_call_${replyId}_${seq}`,
       title: `模型调用: ${data.model_name || "unknown"}`,
       details: "等待模型响应...",
       status: "pending",
@@ -194,9 +210,11 @@ export function handleModelCallEvent<T extends AgentStreamMessage>(
     if (inputTokens > 0) msg.prompt_tokens = (msg.prompt_tokens || 0) + inputTokens;
     if (outputTokens > 0) msg.completion_tokens = (msg.completion_tokens || 0) + outputTokens;
     const duration = Number(data.duration_ms || 0);
+    const pending = findLastPendingStreamLog(msg, "model");
+    const modelName = String(data.model_name || "").trim();
     addLog(msg, {
-      id: `model_call_end_${replyId}`,
-      title: "模型调用完成",
+      id: pending?.id ?? `model_call_${replyId}_orphan`,
+      title: pending?.title || (modelName ? `模型调用: ${modelName}` : "模型调用完成"),
       details: `输入 ${inputTokens} / 输出 ${outputTokens} tokens，耗时 ${duration.toFixed(0)} ms`,
       status: "success",
       category: "model",
@@ -214,7 +232,7 @@ export function handleAgentReplyEvent<T extends AgentStreamMessage>(
   const replyId = String(data.reply_id || `reply_${Date.now()}`);
   if (phase === "start") {
     addLog(msg, {
-      id: `agent_reply_start_${replyId}`,
+      id: `agent_reply_${replyId}`,
       title: "Agent 回复开始",
       details: data.agent_name ? `Agent: ${data.agent_name}` : "",
       status: "pending",
@@ -222,12 +240,15 @@ export function handleAgentReplyEvent<T extends AgentStreamMessage>(
     });
     return;
   }
+  const pending = findLastPendingStreamLog(msg, "agent");
+  const duration = Number(data.duration_ms || 0);
   addLog(msg, {
-    id: `agent_reply_end_${replyId}`,
+    id: pending?.id ?? `agent_reply_${replyId}`,
     title: "Agent 回复结束",
-    details: "",
+    details: pending?.details || "",
     status: "success",
     category: "agent",
+    execution_time_ms: duration > 0 ? duration : undefined,
   });
 }
 

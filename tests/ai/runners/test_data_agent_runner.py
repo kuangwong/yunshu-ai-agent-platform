@@ -1,3 +1,4 @@
+import json
 import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -1372,6 +1373,50 @@ async def test_data_agent_runner_marks_no_authorized_schema_and_sql_error(data_c
     assert runner._last_run_state.no_authorized_schema is True
     assert runner._last_run_state.sql_error is True
     assert "Unknown column" in runner._last_run_state.sql_error_message
+
+
+def test_format_tool_details_truncates_long_output(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-trunc", trace_buffer=[])
+    details = runner._format_tool_details("execute_sql_query", "x" * 2000, _DataRunState())
+    assert details == "x" * 1000 + "\n… [输出已截断]"
+
+
+def test_format_tool_details_appends_detection_after_truncation(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-trunc-detect", trace_buffer=[])
+    state = _DataRunState(empty_sql_reason="SQL 返回的行容器为空，未命中任何数据行")
+    details = runner._format_tool_details("execute_sql_query", "y" * 2000, state)
+    assert details.startswith("y" * 1000 + "\n… [输出已截断]")
+    assert details.endswith("\n\n[系统检测] SQL 返回的行容器为空，未命中任何数据行")
+
+
+def test_detect_sql_error_ignores_failure_keyword_in_result_rows(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-false-positive", trace_buffer=[])
+    payload = json.dumps(
+        {
+            "columns": [{"name": "metric_name", "type": "String"}],
+            "items": [["2G12-机组 GB 合闸失败", "2026-06-09T15:35:00", 300, 1752]],
+        },
+        ensure_ascii=False,
+    )
+    is_error, message = runner._detect_sql_error(payload)
+    assert is_error is False
+    assert message == ""
+
+
+def test_detect_sql_error_still_flags_tool_error_prefix(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-tool-error", trace_buffer=[])
+    text = "[TOOL_ERROR] 本地执行 SQL 失败，错误信息: timeout\n\n[Executed SQL]:\nSELECT 1"
+    is_error, message = runner._detect_sql_error(text)
+    assert is_error is True
+    assert message.startswith("[TOOL_ERROR]")
 
 
 @pytest.mark.asyncio

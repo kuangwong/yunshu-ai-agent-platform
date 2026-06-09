@@ -20,6 +20,9 @@ from app.core.orm import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
+AWAITING_RESUME_STATUSES = frozenset({"awaiting_permission", "awaiting_external_execution"})
+
+
 class AgentService:
     """
     Unified Orchestrator for AI Agent interactions.
@@ -620,6 +623,8 @@ class AgentService:
                         full_response_content += chunk["content"]
                     if chunk.get("type") == "permission_required":
                         execution_status = "awaiting_permission"
+                    elif chunk.get("type") == "external_execution_required":
+                        execution_status = "awaiting_external_execution"
                     elif chunk.get("type") == "error" or chunk.get("status") == "error":
                         execution_status = "error"
                     yield chunk
@@ -672,7 +677,7 @@ class AgentService:
             duration = (end_time - start_time) * 1000
             
             # 6. Async Audit Logging & History
-            if execution_status != "awaiting_permission":
+            if execution_status not in AWAITING_RESUME_STATUSES:
                 asyncio.create_task(AuditManager.log_transaction(
                      trace_id, agent_config, user_query, full_response_content,
                      user_info, execution_status, duration, trace_buffer,

@@ -42,7 +42,7 @@ export interface ToolResultDataBlock {
 }
 
 export interface AgentStreamLog {
-  id: string;
+  id: string | number;
   title: string;
   details: string;
   status: "pending" | "success" | "error" | "warning";
@@ -71,7 +71,10 @@ export interface AgentStreamMessage {
   toolResultData?: Record<string, ToolResultDataBlock[]>;
 }
 
-export type AddStreamLogFn = (msg: AgentStreamMessage, data: Record<string, unknown>) => void;
+export type AddStreamLogFn<T extends AgentStreamMessage = AgentStreamMessage> = (
+  msg: T,
+  data: Record<string, unknown>,
+) => void;
 
 export const formatPermissionStatus = (status: PendingToolPermission["status"]) => {
   const labels: Record<PendingToolPermission["status"], string> = {
@@ -93,7 +96,11 @@ export const formatExternalExecutionStatus = (status: PendingExternalExecution["
   return labels[status] || status;
 };
 
-export function handlePermissionRequired(msg: AgentStreamMessage, data: Record<string, unknown>, addLog: AddStreamLogFn) {
+export function handlePermissionRequired<T extends AgentStreamMessage>(
+  msg: T,
+  data: Record<string, unknown>,
+  addLog: AddStreamLogFn<T>,
+) {
   const requestId = String(data.permission_request_id || "");
   msg.pendingPermission = {
     permission_request_id: requestId,
@@ -114,10 +121,10 @@ export function handlePermissionRequired(msg: AgentStreamMessage, data: Record<s
   });
 }
 
-export function handleExternalExecutionRequired(
-  msg: AgentStreamMessage,
+export function handleExternalExecutionRequired<T extends AgentStreamMessage>(
+  msg: T,
   data: Record<string, unknown>,
-  addLog: AddStreamLogFn,
+  addLog: AddStreamLogFn<T>,
 ) {
   const requestId = String(
     data.external_execution_request_id || data.permission_request_id || "",
@@ -164,7 +171,11 @@ export function handleToolResultData(msg: AgentStreamMessage, data: Record<strin
   }
 }
 
-export function handleModelCallEvent(msg: AgentStreamMessage, data: Record<string, unknown>, addLog: AddStreamLogFn) {
+export function handleModelCallEvent<T extends AgentStreamMessage>(
+  msg: T,
+  data: Record<string, unknown>,
+  addLog: AddStreamLogFn<T>,
+) {
   const phase = String(data.phase || "");
   const replyId = String(data.reply_id || `model_${Date.now()}`);
   if (phase === "start") {
@@ -194,7 +205,11 @@ export function handleModelCallEvent(msg: AgentStreamMessage, data: Record<strin
   }
 }
 
-export function handleAgentReplyEvent(msg: AgentStreamMessage, data: Record<string, unknown>, addLog: AddStreamLogFn) {
+export function handleAgentReplyEvent<T extends AgentStreamMessage>(
+  msg: T,
+  data: Record<string, unknown>,
+  addLog: AddStreamLogFn<T>,
+) {
   const phase = String(data.phase || "");
   const replyId = String(data.reply_id || `reply_${Date.now()}`);
   if (phase === "start") {
@@ -216,7 +231,11 @@ export function handleAgentReplyEvent(msg: AgentStreamMessage, data: Record<stri
   });
 }
 
-export function handleContextCompression(msg: AgentStreamMessage, data: Record<string, unknown>, addLog: AddStreamLogFn) {
+export function handleContextCompression<T extends AgentStreamMessage>(
+  msg: T,
+  data: Record<string, unknown>,
+  addLog: AddStreamLogFn<T>,
+) {
   addLog(msg, {
     id: `context_compression_${Date.now()}`,
     title: String(data.title || "上下文已压缩"),
@@ -226,7 +245,11 @@ export function handleContextCompression(msg: AgentStreamMessage, data: Record<s
   });
 }
 
-export function handleContextUpdate(msg: AgentStreamMessage, data: Record<string, unknown>, addLog: AddStreamLogFn) {
+export function handleContextUpdate<T extends AgentStreamMessage>(
+  msg: T,
+  data: Record<string, unknown>,
+  addLog: AddStreamLogFn<T>,
+) {
   addLog(msg, {
     id: `context_update_${Date.now()}`,
     title: String(data.title || "Agent 状态已更新"),
@@ -237,10 +260,10 @@ export function handleContextUpdate(msg: AgentStreamMessage, data: Record<string
 }
 
 /** 主聊天流与 resume 流共用的 AgentScope 扩展事件分发 */
-export function dispatchAgentscopeStreamEvent(
-  msg: AgentStreamMessage,
+export function dispatchAgentscopeStreamEvent<T extends AgentStreamMessage>(
+  msg: T,
   data: Record<string, unknown>,
-  addLog: AddStreamLogFn,
+  addLog: AddStreamLogFn<T>,
 ): boolean {
   switch (data.type) {
     case "permission_required":

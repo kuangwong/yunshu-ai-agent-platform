@@ -1166,6 +1166,146 @@ async def test_data_agent_runner_rejects_sql_before_schema(data_config):
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_schema_gate_blocks_sql_tool(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return [{"ok": 1}]
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    state = _DataRunState(requires_fresh_data=True, schema_completed=False)
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-gate", trace_buffer=[])
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    result = await wrapped.invoke(
+        {"sql": "SELECT 1", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+    )
+
+    assert invoked is False
+    assert "[SCHEMA_GATE]" in str(result)
+    state.schema_completed = True
+    result2 = await wrapped.invoke(
+        {"sql": "SELECT 1", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+    )
+    assert invoked is True
+    assert result2 == [{"ok": 1}]
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_syncs_data_run_state_before_interrupt(data_config, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    captured_states: list[dict] = []
+
+    async def fake_interrupt(**kwargs):
+        captured_states.append(dict(kwargs.get("state") or {}))
+        yield {
+            "type": kwargs.get("sse_type"),
+            "status": "pending",
+            "id": "call_perm",
+            "permission_request_id": "perm_test",
+        }
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.stream_pending_tool_interrupt",
+        fake_interrupt,
+    )
+
+    class FakeAgent:
+        class State:
+            def model_dump(self, mode="json"):
+                return {"context": []}
+
+        state = State()
+
+    async def fake_events():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_schema",
+            tool_call_name="get_dataset_schema",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_schema",
+            delta='{"dataset": "demo", "columns": ["id"]}',
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_schema")
+        yield SimpleNamespace(
+            type="REQUIRE_USER_CONFIRM",
+            reply_id="reply-1",
+            tool_calls=[SimpleNamespace(id="call_perm", name="danger_tool", input="{}")],
+        )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-pending-sync", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True)
+
+    async for _ in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        agent=FakeAgent(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+        state=state,
+    ):
+        pass
+
+    assert state.schema_completed is True
+    assert captured_states
+    assert captured_states[0]["data_run_state"]["schema_completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_repair_after_sql_before_schema(data_config):
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    async def fake_events():
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql",
+            delta='{"sql": "SELECT 1", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_sql",
+            delta="[SCHEMA_GATE] 必须先调用 get_dataset_schema",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql")
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-repair", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True)
+
+    async for chunk in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+        state=state,
+    ):
+        pass
+
+    repair = runner._build_repair_message(state)
+    assert state.sql_before_schema is True
+    assert state.sql_completed is False
+    assert "Schema 顺序要求" in repair
+    assert runner._build_repair_title(state) == "必须先检索数据集定义"
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_marks_schema_miss_and_empty_sql_result(data_config):
     from types import SimpleNamespace
 

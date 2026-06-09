@@ -4496,11 +4496,6 @@ onUnmounted(() => {
   border-color: #10b981;
 }
 
-/* 强行隐藏 ChatInput 内部的 Powered by 标识 */
-.debug-chat-input-wrapper :deep(.mt-1.text-center) {
-  display: none !important;
-}
-
 /* 强行剥离 ChatInput 外部的多余边框和背景 */
 .debug-chat-input-wrapper :deep(.flex-shrink-0.border-t) {
   border-top-width: 0px !important;

@@ -6,7 +6,8 @@ import re
 import time
 import uuid
 import ast
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import inspect
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -60,6 +61,8 @@ from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
+
+SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
 
 
 @dataclass
@@ -237,6 +240,40 @@ class DataAgentRunner(BaseExecutor):
     async def _resolve_runtime_tools_from_config(self) -> list[RuntimeToolSpec]:
         _, specs = await build_chatbi_toolkit(self.config.tools)
         return specs
+
+    @staticmethod
+    def _is_schema_gate_block(output: Any) -> bool:
+        return str(output or "").startswith(SCHEMA_GATE_PREFIX)
+
+    def _wrap_tools_with_schema_gate(
+        self,
+        tools: list[RuntimeToolSpec],
+        state: _DataRunState,
+    ) -> list[RuntimeToolSpec]:
+        if not state.requires_fresh_data:
+            return tools
+
+        wrapped: list[RuntimeToolSpec] = []
+        for spec in tools:
+            if spec.name != "execute_sql_query":
+                wrapped.append(spec)
+                continue
+
+            original_callable = spec.callable
+
+            async def invoke_sql_gated(*, _original=original_callable, **kwargs: Any) -> Any:
+                if not state.schema_completed:
+                    return (
+                        f"{SCHEMA_GATE_PREFIX} 为保证数据准确性，必须先调用 get_dataset_schema "
+                        "获取数据集定义，再执行 execute_sql_query。"
+                    )
+                result = _original(**kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+            wrapped.append(replace(spec, callable=invoke_sql_gated))
+        return wrapped
 
     async def _build_native_agent(
         self,
@@ -484,9 +521,14 @@ class DataAgentRunner(BaseExecutor):
             except Exception as exc:
                 logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
 
+        state = _DataRunState()
+        state.requires_fresh_data = turn_cls.requires_fresh_data
+        state.requires_sql_plan = self._should_require_sql_plan(user_question)
+        guarded_tools = self._wrap_tools_with_schema_gate(tools, state)
+
         agent = await self._build_native_agent(
             native_model=native_model,
-            tools=tools,
+            tools=guarded_tools,
             system_content=system_content,
             max_steps=max_steps,
             restored_state=restored_state,
@@ -503,9 +545,6 @@ class DataAgentRunner(BaseExecutor):
             )
         else:
             inputs = to_agentscope_messages(compat_to_runtime_messages(runtime_messages))
-        state = _DataRunState()
-        state.requires_fresh_data = turn_cls.requires_fresh_data
-        state.requires_sql_plan = self._should_require_sql_plan(user_question)
         stream_meta = {
             "system_content": system_content,
             "max_steps": max_steps,
@@ -515,7 +554,7 @@ class DataAgentRunner(BaseExecutor):
         async for chunk in self._stream_agentscope_events(
             event_stream=agent.reply_stream(inputs),
             agent=agent,
-            tools=tools,
+            tools=guarded_tools,
             native_model=native_model,
             state=state,
             stream_meta=stream_meta,
@@ -561,11 +600,12 @@ class DataAgentRunner(BaseExecutor):
             state.empty_sql_result = False
             state.empty_sql_reason = ""
             state.sql_plan_missing = False
+            state.sql_before_schema = False
             repair_inputs = to_agentscope_messages(compat_to_runtime_messages(repair_message))
             async for chunk in self._stream_agentscope_events(
                 event_stream=agent.reply_stream(repair_inputs),
                 agent=agent,
-                tools=tools,
+                tools=guarded_tools,
                 native_model=native_model,
                 state=state,
                 stream_meta=stream_meta,
@@ -984,6 +1024,15 @@ class DataAgentRunner(BaseExecutor):
         }
 
     @staticmethod
+    def _sync_pending_data_run_state(
+        state: _DataRunState,
+        pending_state: Dict[str, Any],
+    ) -> None:
+        from dataclasses import asdict
+
+        pending_state["data_run_state"] = asdict(state)
+
+    @staticmethod
     def _pending_state_to_data_run_state(pending_state: Dict[str, Any]) -> tuple[_DataRunState, Dict[str, Any]]:
         from dataclasses import fields
 
@@ -1030,6 +1079,7 @@ class DataAgentRunner(BaseExecutor):
 
             if event_type == "REQUIRE_EXTERNAL_EXECUTION":
                 if agent is not None:
+                    self._sync_pending_data_run_state(state, pending_state)
                     async for pending_chunk in stream_pending_tool_interrupt(
                         event=event,
                         agent=agent,
@@ -1045,6 +1095,7 @@ class DataAgentRunner(BaseExecutor):
 
             if event_type == "REQUIRE_USER_CONFIRM":
                 if agent is not None:
+                    self._sync_pending_data_run_state(state, pending_state)
                     async for pending_chunk in stream_pending_tool_interrupt(
                         event=event,
                         agent=agent,
@@ -1095,20 +1146,23 @@ class DataAgentRunner(BaseExecutor):
                 duration_ms = (time.time() - state.tool_started_at.get(tool_id, time.time())) * 1000
                 if tool_name == "get_dataset_schema":
                     state.schema_completed = True
+                    state.sql_before_schema = False
                     state.no_authorized_schema = self._is_no_authorized_schema(output)
                     state.schema_miss = self._is_no_relevant_schema(output)
                 elif tool_name == "execute_sql_query":
-                    if not state.schema_completed:
+                    if self._is_schema_gate_block(output) or not state.schema_completed:
                         state.sql_before_schema = True
-                    if state.requires_sql_plan and not state.sql_plan_seen:
-                        state.sql_plan_missing = True
-                    state.sql_completed = True
-                    parsed_output = self._try_parse_json_output(output)
-                    state.empty_sql_reason = self._detect_empty_result(parsed_output) or ""
-                    state.empty_sql_result = bool(state.empty_sql_reason)
-                    state.sql_error, state.sql_error_message = self._detect_sql_error(output)
-                    if not state.sql_error:
-                        await self._save_last_data_result_for_followups(tool_args, parsed_output)
+                    else:
+                        if state.requires_sql_plan and not state.sql_plan_seen:
+                            state.sql_plan_missing = True
+                        state.sql_completed = True
+                        parsed_output = self._try_parse_json_output(output)
+                        state.empty_sql_reason = self._detect_empty_result(parsed_output) or ""
+                        state.empty_sql_result = bool(state.empty_sql_reason)
+                        state.sql_error, state.sql_error_message = self._detect_sql_error(output)
+                        if not state.sql_error:
+                            await self._save_last_data_result_for_followups(tool_args, parsed_output)
+                self._sync_pending_data_run_state(state, pending_state)
                 self._increment_step()
                 self.trace_buffer.append(
                     AgentExecutionStep(
@@ -1164,7 +1218,9 @@ class DataAgentRunner(BaseExecutor):
                 delta = str(getattr(event, "delta", ""))
                 state.text_window = (state.text_window + delta)[-4000:]
                 if self._has_sql_plan(state.text_window):
-                    state.sql_plan_seen = True
+                    if not state.sql_plan_seen:
+                        state.sql_plan_seen = True
+                        self._sync_pending_data_run_state(state, pending_state)
                 if not state.ready_to_answer:
                     state.blocked_content += delta
                     continue
@@ -1237,6 +1293,13 @@ class DataAgentRunner(BaseExecutor):
         }
 
     def _build_repair_message(self, state: _DataRunState) -> str:
+        if state.requires_fresh_data and state.sql_before_schema and not state.schema_completed:
+            return (
+                "【Schema 顺序要求】本轮新数据查询必须先调用 get_dataset_schema 获取数据集定义，"
+                "再调用 execute_sql_query。\n"
+                f"{DataQueryPrompts.MUST_FETCH_SCHEMA}\n"
+                "在获得有效 schema 前禁止生成或执行 SQL，也禁止直接回答用户。"
+            )
         if state.schema_miss and not state.no_authorized_schema:
             return (
                 "【Schema 重试要求】上一轮 get_dataset_schema 未命中相关数据集定义。"
@@ -1269,6 +1332,8 @@ class DataAgentRunner(BaseExecutor):
         return ""
 
     def _build_repair_title(self, state: _DataRunState) -> str:
+        if state.requires_fresh_data and state.sql_before_schema and not state.schema_completed:
+            return "必须先检索数据集定义"
         if state.schema_miss and not state.no_authorized_schema:
             return "重试检索数据集定义"
         if state.sql_plan_missing:
@@ -1296,6 +1361,8 @@ class DataAgentRunner(BaseExecutor):
 
     def _format_tool_details(self, tool_name: str, output: Any, state: _DataRunState) -> str:
         details = str(output)[:5000]
+        if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
+            details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
             details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
         if tool_name == "execute_sql_query" and state.sql_error_message:
@@ -1388,7 +1455,8 @@ class DataAgentRunner(BaseExecutor):
     ) -> tuple[Any, list[RuntimeToolSpec], Any, _DataRunState, Dict[str, Any]]:
         if pending.agent is not None and pending.tools and pending.native_model is not None:
             data_state, stream_meta = self._pending_state_to_data_run_state(pending.state or {})
-            return pending.agent, pending.tools, pending.native_model, data_state, stream_meta
+            guarded_tools = self._wrap_tools_with_schema_gate(pending.tools, data_state)
+            return pending.agent, guarded_tools, pending.native_model, data_state, stream_meta
 
         ctx = pending.snapshot.runner_context
         tools = await self._resolve_runtime_tools_from_config()
@@ -1403,18 +1471,19 @@ class DataAgentRunner(BaseExecutor):
         from agentscope.state import AgentState
 
         restored_state = AgentState.model_validate(pending.snapshot.agent_state)
+        data_state, stream_meta = self._pending_state_to_data_run_state(
+            pending.state or dict(pending.snapshot.stream_state or {})
+        )
+        guarded_tools = self._wrap_tools_with_schema_gate(tools, data_state)
         agent = await self._build_native_agent(
             native_model=native_model,
-            tools=tools,
+            tools=guarded_tools,
             system_content=str(ctx.get("system_content", "")),
             max_steps=int(ctx.get("max_steps", 5)),
             restored_state=restored_state,
             primary_model_name=str(getattr(native_model, "model", self.config.model_name) or ""),
         )
-        data_state, stream_meta = self._pending_state_to_data_run_state(
-            pending.state or dict(pending.snapshot.stream_state or {})
-        )
-        return agent, tools, native_model, data_state, stream_meta
+        return agent, guarded_tools, native_model, data_state, stream_meta
 
     async def _resume_agentscope_native_stream(
         self,

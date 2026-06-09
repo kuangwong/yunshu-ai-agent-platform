@@ -334,6 +334,140 @@ async def test_general_runner_uses_agentscope_native_agent_for_runtime_tools(cha
 
 
 @pytest.mark.asyncio
+async def test_general_runner_recovers_reply_when_text_block_delta_missing(chat_config):
+    """工具执行后若 AgentScope 未发 TEXT_BLOCK_DELTA，应从 AgentState 兜底输出正文。"""
+    from agentscope.message import Msg, TextBlock
+    from agentscope.state import AgentState
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.event_stream import new_native_stream_state
+
+    class FakeAgent:
+        def __init__(self):
+            self.state = AgentState(
+                session_id="s1",
+                reply_id="r1",
+                context=[
+                    Msg(
+                        name="assistant",
+                        role="assistant",
+                        content=[TextBlock(text="recovered after bash")],
+                    ),
+                ],
+            )
+
+    async def fake_event_stream():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_bash",
+            tool_call_name="Bash",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_bash",
+            delta="command ok",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_bash")
+        yield SimpleNamespace(
+            type="MODEL_CALL_END",
+            reply_id="r1",
+            input_tokens=100,
+            output_tokens=223,
+        )
+        yield SimpleNamespace(type="REPLY_END", reply_id="r1", session_id="s1")
+
+    runner = GeneralAgentRunner(
+        config=chat_config,
+        trace_id="test-missed-text-delta",
+        trace_buffer=[],
+    )
+    state = new_native_stream_state()
+    state["used_tools"] = True
+    state["tool_names"] = {"call_bash": "Bash"}
+    state["tool_outputs"] = {"call_bash": "command ok"}
+    state["tool_started_at"] = {"call_bash": 0.0}
+
+    chunks = []
+    async for chunk in runner._stream_agentscope_native_events(
+        event_stream=fake_event_stream(),
+        agent=FakeAgent(),
+        tools=[],
+        native_model=SimpleNamespace(model="qwen-test"),
+        state=state,
+    ):
+        chunks.append(chunk)
+
+    content = "".join(
+        c["content"] for c in chunks if "content" in c and "type" not in c
+    )
+    assert "recovered after bash" in content
+
+
+@pytest.mark.asyncio
+async def test_general_runner_synthesis_fallback_when_no_text_and_no_context(chat_config):
+    """工具执行后既无 TEXT_BLOCK_DELTA 也无 context 文本时，应走 synthesis 兜底。"""
+    from agentscope.state import AgentState
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.compat import AIMessage
+    from app.services.ai.runtime.agentscope.event_stream import new_native_stream_state
+
+    class FakeAgent:
+        def __init__(self):
+            self.state = AgentState(session_id="s1", reply_id="r1", context=[])
+
+    async def fake_event_stream():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_bash",
+            tool_call_name="Bash",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_bash",
+            delta="42",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_bash")
+        yield SimpleNamespace(type="REPLY_END", reply_id="r1", session_id="s1")
+
+    class SynthesisLLM:
+        async def astream(self, messages):
+            yield AIMessage(content="synthesis fallback answer")
+
+    runner = GeneralAgentRunner(
+        config=chat_config,
+        trace_id="test-synthesis-fallback",
+        trace_buffer=[],
+    )
+    state = new_native_stream_state(user_query="count files")
+    state["used_tools"] = True
+    state["tool_names"] = {"call_bash": "Bash"}
+    state["tool_outputs"] = {"call_bash": "42"}
+    state["tool_started_at"] = {"call_bash": 0.0}
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_synthesis_llm",
+        AsyncMock(return_value=SynthesisLLM()),
+    ):
+        chunks = []
+        async for chunk in runner._stream_agentscope_native_events(
+            event_stream=fake_event_stream(),
+            agent=FakeAgent(),
+            tools=[],
+            native_model=SimpleNamespace(model="qwen-test"),
+            state=state,
+        ):
+            chunks.append(chunk)
+
+    content = "".join(
+        c["content"] for c in chunks if "content" in c and "type" not in c
+    )
+    assert "synthesis fallback answer" in content
+
+
+@pytest.mark.asyncio
 async def test_general_runner_restored_state_only_sends_latest_user_message(chat_config):
     """恢复 AgentState 后，只应向 AgentScope 追加本轮最新用户消息，避免重复灌入历史。"""
     from agentscope.message import Msg, TextBlock

@@ -44,6 +44,35 @@ def new_native_stream_state(
     }
 
 
+def extract_latest_assistant_text(agent: Any) -> str:
+    """从 AgentState.context 提取最近一条 assistant 可展示文本（流式未发 TEXT_BLOCK_DELTA 时兜底）。"""
+    from app.services.ai.runtime.agentscope.text_sanitize import sanitize_assistant_stream_text
+
+    agent_state = getattr(agent, "state", None)
+    context = getattr(agent_state, "context", None) or []
+    for msg in reversed(context):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        get_blocks = getattr(msg, "get_content_blocks", None)
+        if not callable(get_blocks):
+            continue
+        parts: list[str] = []
+        for block_type in ("text", "thinking"):
+            try:
+                blocks = get_blocks(block_type)
+            except Exception:
+                blocks = []
+            for block in blocks or []:
+                text = str(getattr(block, "text", "") or "")
+                if text.strip():
+                    parts.append(text)
+        if parts:
+            cleaned = sanitize_assistant_stream_text("".join(parts))
+            if cleaned.strip():
+                return cleaned
+    return ""
+
+
 def is_interrupt_sse_chunk(chunk: Dict[str, Any]) -> bool:
     return chunk.get("type") in {
         "permission_required",

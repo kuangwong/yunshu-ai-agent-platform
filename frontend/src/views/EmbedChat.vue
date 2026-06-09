@@ -2057,6 +2057,7 @@ import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
+import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
 import { createSseLineParser } from "@/utils/chartRenderer";
 import { modelApi, type AIModel } from "@/api/model";
 import {
@@ -2675,7 +2676,7 @@ const resetStallTimer = () => {
 const showCommandMenu = ref(false);
 const slashCommands = ref<any[]>([
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-  { id: "sys_clear", command: "/clear", label: "💬 新会话", sort_order: -18 },
+  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ]);
 // History Sidebar State
@@ -3509,7 +3510,7 @@ const fetchSlashCommands = async () => {
       // 定义系统命令
       const systemCommands = [
         { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-        { id: "sys_clear", command: "/clear", label: "💬 新会话", sort_order: -18 },
+        { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -18 },
         { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 }
       ];
       // 合并系统命令和用户命令，并按 sort_order 排序
@@ -3521,7 +3522,7 @@ const fetchSlashCommands = async () => {
       // 如果API没有返回数据，至少确保系统命令存在
       const systemCommands = [
         { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-        { id: "sys_clear", command: "/clear", label: "💬 新会话", sort_order: -18 },
+        { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -18 },
         { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 }
       ];
       slashCommands.value = systemCommands;
@@ -3532,7 +3533,7 @@ const fetchSlashCommands = async () => {
     const systemCommands = [
       { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
       { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
-      { id: "sys_clear", command: "/clear", label: "💬 新会话", sort_order: -10 }
+      { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -10 }
     ];
     slashCommands.value = systemCommands;
   }
@@ -3809,7 +3810,8 @@ const handleSystemCommand = (cmd: string): boolean => {
     case "/settings":
       showSettings.value = true;
       return true;
-    case "/clear":
+    case "/new":
+    case "/clear": // legacy alias
       showConfirmModal.value = true;
       return true;
   }
@@ -4057,11 +4059,10 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
       msg.isThinking = false;
       msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
     } else if (data.content) {
-      const content = data.content || "";
-      const isRealContent = !content.includes("<function_calls") && !content.includes("<think");
-      if (isRealContent) {
+      const piece = sanitizeStreamContent(String(data.content || ""));
+      if (piece) {
         if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
-        msg.content += content;
+        msg.content += piece;
         if (msg.isThinking) msg.isThinking = false;
         resetStallTimer();
       }
@@ -4102,11 +4103,10 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     msg.isThinking = false;
     msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
   } else if (data.content) {
-    const content = data.content || "";
-    const isRealContent = !content.includes("<function_calls") && !content.includes("<think");
-    if (isRealContent) {
+    const piece = sanitizeStreamContent(String(data.content || ""));
+    if (piece) {
       if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
-      msg.content += content;
+      msg.content += piece;
       if (msg.isThinking) msg.isThinking = false;
       resetStallTimer();
     }
@@ -4488,28 +4488,18 @@ const sendMessage = async () => {
             (agentMsg.value as any).status = "error";
             agentMsg.value.content += "\n\n> ❌ **服务异常**: " + (data.content || "未知错误");
           } else if (data.type === "answer" || data.content) {
-            // Handle both direct data.content (legacy) and data.type === "answer"
-            const content = data.content || "";
-            if (content) {
-              // --- [SMART TIMER STOP] ---
-              // Only stop thinking UI if we actually started receiving the final answer content.
-              // We check if it is NOT an XML tag (which might be leaked Orchestrator content)
-              const isRealContent = !content.includes('<function_calls') && !content.includes('<think');
-              if (isRealContent) {
-                if (agentMsg.value.isThinking && agentMsg.value.isThoughtExpanded) {
-                   // Always auto-collapse thought process when content starts
-                   agentMsg.value.isThoughtExpanded = false;
-                }
-                agentMsg.value.content += content;
-                resetStallTimer();
-                // Stop the timer and hidden thinking status once real content flows
-                if (agentMsg.value.isThinking) {
-                  agentMsg.value.isThinking = false;
-                  // Stop the interval timer as well to freeze the number
-                  if (thoughtTimer) {
-                    clearInterval(thoughtTimer);
-                    thoughtTimer = null;
-                  }
+            const piece = sanitizeStreamContent(String(data.content || ""));
+            if (piece) {
+              if (agentMsg.value.isThinking && agentMsg.value.isThoughtExpanded) {
+                agentMsg.value.isThoughtExpanded = false;
+              }
+              agentMsg.value.content += piece;
+              resetStallTimer();
+              if (agentMsg.value.isThinking) {
+                agentMsg.value.isThinking = false;
+                if (thoughtTimer) {
+                  clearInterval(thoughtTimer);
+                  thoughtTimer = null;
                 }
               }
             }

@@ -125,8 +125,8 @@ const handleInput = (e: Event) => {
     inputRef.value.style.height = "auto";
     inputRef.value.style.height = Math.min(inputRef.value.scrollHeight, 120) + "px";
   }
-  // Don't show command menu during composition
-  if (val.startsWith("/") && props.windowWidth < 640 && !isComposing.value) {
+  // Don't show command menu during IME composition
+  if (val.startsWith("/") && !isComposing.value) {
     showCommandMenu.value = true;
     activeCommandIndex.value = 0;
   } else {
@@ -503,7 +503,40 @@ defineExpose({
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-primary/20 to-transparent w-[200%] animate-scan"></div>
             </div>
 
-            <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full min-h-[46px] bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed disabled:opacity-60" :placeholder="isProcessing ? 'AI 正在生成回复...' : (windowWidth < 640 ? '输入消息，或 \'/\' 使用快捷指令...' : '输入消息...')"></textarea>
+            <div
+              v-if="showCommandMenu && filteredCommands.length > 0 && !isProcessing"
+              class="absolute bottom-full left-0 right-0 z-[100] mb-2 flex max-h-72 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl animate-fade-in-up dark:border-gray-700 dark:bg-gray-800 sm:max-w-sm"
+            >
+              <div class="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-3 py-2 dark:border-gray-600 dark:bg-gray-700">
+                <div class="flex items-center space-x-2">
+                  <span class="text-[10px] font-black uppercase tracking-widest text-gray-400">快捷指令库</span>
+                  <span class="rounded-md bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold text-primary">{{ filteredCommands.length }} 匹配</span>
+                </div>
+              </div>
+              <div class="overflow-y-auto p-1 custom-scrollbar">
+                <div
+                  v-for="(cmd, index) in filteredCommands"
+                  :key="cmd.id"
+                  @click="selectCommand(cmd)"
+                  class="flex cursor-pointer items-center space-x-3 rounded-lg px-3 py-2 transition-all"
+                  :class="index === activeCommandIndex ? 'bg-primary/10 ring-1 ring-primary/20 dark:bg-primary/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700'"
+                >
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center space-x-2">
+                      <span class="truncate text-sm font-bold text-gray-900 dark:text-gray-100" :class="index === activeCommandIndex ? 'text-primary' : ''">
+                        {{ cmd.label }}
+                      </span>
+                      <span v-if="String(cmd.id).startsWith('sys_')" class="rounded border border-gray-200 bg-gray-100 px-1 py-0.5 text-[8px] font-black uppercase tracking-tighter text-gray-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-400">SYS</span>
+                    </div>
+                    <div class="truncate font-mono text-[10px] text-gray-400 opacity-70">
+                      {{ cmd.command }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full min-h-[46px] bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed disabled:opacity-60" :placeholder="isProcessing ? 'AI 正在生成回复...' : '输入消息，或 \'/\' 使用快捷指令...'"></textarea>
 
             <div class="relative z-20 mt-1 flex min-h-9 items-center gap-2">
                 <!-- Plus Button & Menu (Premium Glassmorphism Style) -->
@@ -606,49 +639,6 @@ defineExpose({
                     <svg v-else class="w-4 h-4 -rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" d="M5 12h14M13 6l6 6-6 6" /></svg>
                 </button>
             </div>
-        </div>
-      </div>
-
-      <div
-        v-if="showCommandMenu && filteredCommands.length > 0 && !isProcessing"
-        class="fixed z-[100] bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col animate-fade-in-up"
-        :class="[
-          'w-[calc(100vw-2rem)] sm:w-64'
-        ]"
-        :style="{ 
-          bottom: '80px',
-          left: windowWidth < 640 ? '1rem' : 'auto',
-          right: windowWidth < 640 ? 'auto' : '1rem',
-          maxHeight: windowWidth < 640 ? '40vh' : '18rem' 
-        }"
-      >
-        <div class="px-3 py-2 bg-gray-50 dark:bg-gray-700 border-b border-gray-100 dark:border-gray-600 flex justify-between items-center">
-          <div class="flex items-center space-x-2">
-            <span class="text-[10px] font-black text-gray-400 dark:text-gray-400 uppercase tracking-widest">快捷指令库</span>
-            <span class="px-1.5 py-0.5 bg-primary/10 text-primary text-[9px] font-bold rounded-md">{{ filteredCommands.length }} 匹配</span>
-          </div>
-        </div>
-        
-        <div class="overflow-y-auto custom-scrollbar p-1">
-          <div
-            v-for="(cmd, index) in filteredCommands"
-            :key="cmd.id"
-            @click="selectCommand(cmd)"
-            class="flex items-center space-x-3 px-3 py-2 rounded-lg cursor-pointer transition-all"
-            :class="index === activeCommandIndex ? 'bg-primary/10 dark:bg-primary/20 ring-1 ring-primary/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700'"
-          >
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center space-x-2">
-                <span class="text-sm font-bold text-gray-900 dark:text-gray-100 truncate" :class="index === activeCommandIndex ? 'text-primary' : ''">
-                  {{ cmd.label }}
-                </span>
-                <span v-if="String(cmd.id).startsWith('sys_')" class="px-1 py-0.5 rounded text-[8px] bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-400 font-black uppercase tracking-tighter">SYS</span>
-              </div>
-              <div class="text-[10px] text-gray-400 truncate font-mono opacity-70">
-                {{ cmd.command }}
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 

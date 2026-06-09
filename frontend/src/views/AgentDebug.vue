@@ -26,6 +26,7 @@ import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
+import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
 
 const route = useRoute();
 const { showToast } = useToast();
@@ -1809,18 +1810,12 @@ const sendMessage = async () => {
             }
             // Handle Content Stream
             else if (data.content) {
-              // --- [SMART TIMER STOP] ---
-              // Only stop thinking if we actually started receiving the final answer content.
-              const isRealContent = !data.content.includes('<function_calls') && !data.content.includes('<think');
-              
-              if (isRealContent) {
-                // Auto-collapse thought process on first content token
+              const piece = sanitizeStreamContent(String(data.content));
+              if (piece) {
                 if (agentMsg.value.isThinking && agentMsg.value.isThoughtExpanded) {
-                   agentMsg.value.isThoughtExpanded = false;
+                  agentMsg.value.isThoughtExpanded = false;
                 }
-                
-                agentMsg.value.content += data.content;
-                
+                agentMsg.value.content += piece;
                 if (agentMsg.value.isThinking) {
                   agentMsg.value.isThinking = false;
                   if (thoughtTimer) {
@@ -2013,10 +2008,10 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
       msg.isThinking = false;
       msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
     } else if (data.content) {
-      const isRealContent = !data.content.includes("<function_calls") && !data.content.includes("<think");
-      if (isRealContent) {
+      const piece = sanitizeStreamContent(String(data.content));
+      if (piece) {
         if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
-        msg.content += data.content;
+        msg.content += piece;
         if (msg.isThinking) {
           msg.isThinking = false;
           if (thoughtTimer) {
@@ -2078,12 +2073,12 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     msg.isThinking = false;
     msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
   } else if (data.content) {
-    const isRealContent = !data.content.includes("<function_calls") && !data.content.includes("<think");
-    if (isRealContent) {
+    const piece = sanitizeStreamContent(String(data.content));
+    if (piece) {
       if (msg.isThinking && msg.isThoughtExpanded) {
         msg.isThoughtExpanded = false;
       }
-      msg.content += data.content;
+      msg.content += piece;
       if (msg.isThinking) {
         msg.isThinking = false;
         if (thoughtTimer) {

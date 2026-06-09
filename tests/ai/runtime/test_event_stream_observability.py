@@ -2,6 +2,7 @@ import pytest
 from types import SimpleNamespace
 
 from app.services.ai.runtime.agentscope.event_stream import (
+    extract_latest_assistant_text,
     is_interrupt_sse_chunk,
     map_standard_agentscope_event,
     new_native_stream_state,
@@ -188,3 +189,26 @@ async def test_map_standard_agentscope_event_interrupts_on_external_execution():
         chunks.append(chunk)
 
     assert any(c.get("type") == "external_execution_required" for c in chunks)
+
+
+def test_extract_latest_assistant_text_reads_last_assistant_msg():
+    from agentscope.message import Msg, TextBlock
+    from agentscope.state import AgentState
+
+    agent = type(
+        "FakeAgent",
+        (),
+        {
+            "state": AgentState(
+                session_id="s1",
+                reply_id="r1",
+                context=[
+                    Msg(name="user", role="user", content=[TextBlock(text="hi")]),
+                    Msg(name="assistant", role="assistant", content=[TextBlock(text="first")]),
+                    Msg(name="assistant", role="assistant", content=[TextBlock(text="final answer")]),
+                ],
+            )
+        },
+    )()
+
+    assert extract_latest_assistant_text(agent) == "final answer"

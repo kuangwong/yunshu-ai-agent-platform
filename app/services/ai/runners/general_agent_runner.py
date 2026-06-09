@@ -34,10 +34,12 @@ from app.services.ai.runtime.agentscope.agent_runtime import (
 from app.services.ai.runtime.agentscope.chat import compat_to_runtime_messages, to_agentscope_messages
 from app.services.ai.runtime.agentscope.state_store import agent_state_store
 from app.services.ai.runtime.agentscope.event_stream import (
+    extract_latest_assistant_text,
     is_interrupt_sse_chunk,
     map_standard_agentscope_event,
     new_native_stream_state,
 )
+from app.services.ai.runtime.agentscope.text_sanitize import sanitize_assistant_stream_text
 from app.services.ai.runtime.agentscope.session_lock import (
     SessionLockTimeout,
     agentscope_session_lock,
@@ -507,6 +509,9 @@ class GeneralAgentRunner(BaseExecutor):
                     "status": "success",
                 }
                 yield {"type": "thinking", "status": "continuing"}
+            delta = sanitize_assistant_stream_text(str(getattr(event, "delta", "")))
+            if not delta:
+                return
             if not state["content_emitted"]:
                 state["content_emitted"] = True
                 yield {
@@ -515,7 +520,6 @@ class GeneralAgentRunner(BaseExecutor):
                     "title": "✨ 开始生成回复",
                     "status": "success",
                 }
-            delta = str(getattr(event, "delta", ""))
             state["full_content"] += delta
             yield {"content": delta}
 
@@ -535,6 +539,13 @@ class GeneralAgentRunner(BaseExecutor):
                 if is_interrupt_sse_chunk(chunk):
                     return
 
+        async for chunk in self._emit_missed_reply_content(
+            agent=agent,
+            state=state,
+            native_model=native_model,
+        ):
+            yield chunk
+
         if state["full_content"] and not state["synthesis_recorded"]:
             state["synthesis_recorded"] = True
             self._increment_step()
@@ -549,6 +560,119 @@ class GeneralAgentRunner(BaseExecutor):
                 execution_time_ms=(time.time() - state["start_synthesis"]) * 1000,
                 timestamp=datetime.fromtimestamp(state["start_synthesis"]),
             ))
+
+    async def _emit_reply_text_chunks(
+        self,
+        state: Dict[str, Any],
+        text: str,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        if state.get("used_tools") and not state.get("synthesis_log_emitted"):
+            state["synthesis_log_emitted"] = True
+            yield {
+                "type": "log",
+                "id": f"synthesis_native_{uuid.uuid4().hex[:8]}",
+                "title": "📝 汇总工具结果",
+                "details": "已获取所需数据，正在组织语言...",
+                "status": "success",
+            }
+            yield {"type": "thinking", "status": "continuing"}
+        if not state.get("content_emitted"):
+            state["content_emitted"] = True
+            yield {
+                "type": "log",
+                "id": f"gen_start_{uuid.uuid4().hex[:8]}",
+                "title": "✨ 开始生成回复",
+                "status": "success",
+            }
+        state["full_content"] = (state.get("full_content") or "") + text
+        yield {"content": text}
+
+    async def _emit_missed_reply_content(
+        self,
+        *,
+        agent: Any,
+        state: Dict[str, Any],
+        native_model: Any,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        if (state.get("full_content") or "").strip():
+            return
+
+        recovered = extract_latest_assistant_text(agent)
+        if recovered:
+            logger.warning(
+                "[GeneralAgentRunner] Recovered reply from AgentState after missed TEXT_BLOCK_DELTA chars=%d",
+                len(recovered),
+            )
+            async for chunk in self._emit_reply_text_chunks(state, recovered):
+                yield chunk
+            return
+
+        if not state.get("used_tools"):
+            logger.warning(
+                "[GeneralAgentRunner] Reply ended without streamed text and no assistant context to recover"
+            )
+            return
+
+        async for chunk in self._stream_general_synthesis_fallback(
+            state=state,
+            native_model=native_model,
+        ):
+            yield chunk
+
+    async def _stream_general_synthesis_fallback(
+        self,
+        *,
+        state: Dict[str, Any],
+        native_model: Any,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        tool_names: Dict[str, str] = state.get("tool_names", {})
+        tool_outputs: Dict[str, str] = state.get("tool_outputs", {})
+        review_lines = [
+            f"- {tool_names[tool_id]}: {str(tool_outputs.get(tool_id, ''))[:4000]}"
+            for tool_id in tool_names
+        ]
+        if not review_lines:
+            return
+
+        user_query = str(state.get("user_query") or "")
+        execution_review = "【执行过程回顾】\n" + "\n".join(review_lines)
+        logger.warning(
+            "[GeneralAgentRunner] Falling back to synthesis LLM after tools (no TEXT_BLOCK_DELTA) tools=%d",
+            len(review_lines),
+        )
+
+        if not state.get("synthesis_log_emitted"):
+            state["synthesis_log_emitted"] = True
+            yield {
+                "type": "log",
+                "id": f"synthesis_fb_{uuid.uuid4().hex[:8]}",
+                "title": "📝 汇总工具结果",
+                "details": "模型未流式输出正文，正在基于工具结果生成回答...",
+                "status": "success",
+            }
+
+        llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+        messages = normalize_messages_for_llm([
+            SystemMessage(content=str(state.get("system_content") or self.config.system_prompt or "")),
+            HumanMessage(
+                content=GeneralChatPrompts.synthesis_user_message(user_query, execution_review)
+            ),
+        ])
+
+        async for chunk in llm.astream(messages):
+            content = sanitize_assistant_stream_text(str(getattr(chunk, "content", None) or ""))
+            if not content:
+                continue
+            if not state.get("content_emitted"):
+                state["content_emitted"] = True
+                yield {
+                    "type": "log",
+                    "id": f"gen_fb_{uuid.uuid4().hex[:8]}",
+                    "title": "✨ 开始生成回复",
+                    "status": "success",
+                }
+            state["full_content"] = (state.get("full_content") or "") + content
+            yield {"content": content}
 
     async def _resolve_pending_runtime(
         self,

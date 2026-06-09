@@ -166,6 +166,49 @@ async def test_tool_registry_exposes_data_tools_as_read_only_runtime_specs():
 
 
 @pytest.mark.asyncio
+async def test_chatbi_runtime_tool_specs_invoke_function_tool_wrappers(monkeypatch):
+    from app.services.ai.tools.registry import ToolRegistry
+    from app.services.ai.tools.tool_compat import tool
+
+    schema_captured: dict[str, str | None] = {}
+
+    @tool
+    async def get_dataset_schema(keywords: str | None = None) -> str:
+        schema_captured["keywords"] = keywords
+        return "schema-result"
+
+    sql_captured: dict[str, str] = {}
+
+    @tool
+    async def execute_sql_query(sql: str, data_source: str, dataset_name: str) -> str:
+        sql_captured.update(
+            {"sql": sql, "data_source": data_source, "dataset_name": dataset_name}
+        )
+        return "sql-result"
+
+    monkeypatch.setitem(ToolRegistry._registry, "get_dataset_schema", get_dataset_schema)
+    monkeypatch.setitem(ToolRegistry._registry, "execute_sql_query", execute_sql_query)
+
+    schema_spec = await ToolRegistry.get_runtime_tool("get_dataset_schema")
+    sql_spec = await ToolRegistry.get_runtime_tool("execute_sql_query")
+
+    assert await schema_spec.invoke({"keywords": "sales"}) == "schema-result"
+    assert schema_captured == {"keywords": "sales"}
+    assert await sql_spec.invoke(
+        {
+            "sql": "SELECT 1",
+            "data_source": "mysql_aiagent",
+            "dataset_name": "demo",
+        }
+    ) == "sql-result"
+    assert sql_captured == {
+        "sql": "SELECT 1",
+        "data_source": "mysql_aiagent",
+        "dataset_name": "demo",
+    }
+
+
+@pytest.mark.asyncio
 async def test_execute_sql_runtime_tool_accepts_legacy_query_alias(monkeypatch):
     from app.services.ai.tools.registry import ToolRegistry
 

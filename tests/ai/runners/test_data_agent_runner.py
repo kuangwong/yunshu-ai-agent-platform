@@ -1322,6 +1322,48 @@ async def test_data_agent_runner_detects_split_sql_plan_before_sql(data_config):
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_suppresses_duplicate_final_answer_text_blocks(data_config):
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    async def fake_events():
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_schema", tool_call_name="get_dataset_schema")
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_schema", delta="table_name: demo\ncolumns: id")
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_schema")
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql",
+            delta='{"sql": "SELECT id FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_sql", delta='[{"id": 1}]')
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql")
+        yield SimpleNamespace(type="TEXT_BLOCK_START", block_id="answer-1")
+        yield SimpleNamespace(type="TEXT_BLOCK_DELTA", block_id="answer-1", delta="最终回答")
+        yield SimpleNamespace(type="TEXT_BLOCK_END", block_id="answer-1")
+        yield SimpleNamespace(type="TEXT_BLOCK_START", block_id="answer-2")
+        yield SimpleNamespace(type="TEXT_BLOCK_DELTA", block_id="answer-2", delta="重复最终回答")
+        yield SimpleNamespace(type="TEXT_BLOCK_END", block_id="answer-2")
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-dup-answer", trace_buffer=[])
+
+    events = []
+    async for chunk in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+    ):
+        events.append(chunk)
+
+    content = "".join(
+        event["content"] for event in events if "content" in event and "type" not in event
+    )
+    assert content == "最终回答"
+    assert "重复最终回答" not in content
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_execute_repairs_sql_error_before_final_answer(
     data_config,
     monkeypatch,

@@ -78,6 +78,10 @@ class _DataRunState:
     requires_fresh_data: bool = True
     text_window: str = ""
     start_synthesis: float = field(default_factory=time.time)
+    final_answer_complete: bool = False
+    ignore_text_block: bool = False
+    active_text_block_id: str = ""
+    final_answer_block_id: str = ""
 
     @property
     def ready_to_answer(self) -> bool:
@@ -494,6 +498,10 @@ class DataAgentRunner(BaseExecutor):
             state.blocked_content = ""
             state.full_content = ""
             state.content_emitted = False
+            state.final_answer_complete = False
+            state.ignore_text_block = False
+            state.active_text_block_id = ""
+            state.final_answer_block_id = ""
             state.sql_completed = False
             state.sql_error = False
             state.sql_error_message = ""
@@ -1055,7 +1063,32 @@ class DataAgentRunner(BaseExecutor):
                 }
                 continue
 
+            if event_type == "TEXT_BLOCK_START":
+                block_id = str(getattr(event, "block_id", "") or "")
+                if block_id:
+                    state.active_text_block_id = block_id
+                state.ignore_text_block = state.final_answer_complete
+                continue
+
+            if event_type == "TEXT_BLOCK_END":
+                block_id = str(getattr(event, "block_id", "") or state.active_text_block_id)
+                if state.content_emitted and state.ready_to_answer and not state.final_answer_complete:
+                    state.final_answer_complete = True
+                    if block_id:
+                        state.final_answer_block_id = block_id
+                continue
+
             if event_type == "TEXT_BLOCK_DELTA":
+                block_id = str(getattr(event, "block_id", "") or "")
+                if block_id:
+                    if (
+                        state.final_answer_block_id
+                        and block_id != state.final_answer_block_id
+                    ):
+                        continue
+                    state.active_text_block_id = block_id
+                if state.ignore_text_block:
+                    continue
                 delta = str(getattr(event, "delta", ""))
                 state.text_window = (state.text_window + delta)[-4000:]
                 if self._has_sql_plan(state.text_window):

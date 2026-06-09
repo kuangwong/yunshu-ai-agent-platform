@@ -309,7 +309,7 @@ class ToolRegistry:
 
         if name == "get_dataset_schema":
             async def invoke_schema(**kwargs):
-                return await tool(keywords=kwargs.get("keywords"))
+                return await tool.ainvoke({"keywords": kwargs.get("keywords")})
 
             return RuntimeToolSpec(
                 name="get_dataset_schema",
@@ -339,10 +339,12 @@ class ToolRegistry:
                     sql = kwargs.get("query")
                 if isinstance(sql, str):
                     sql = sql.strip()
-                return await tool(
-                    sql=sql,
-                    data_source=kwargs.get("data_source"),
-                    dataset_name=kwargs.get("dataset_name"),
+                return await tool.ainvoke(
+                    {
+                        "sql": sql,
+                        "data_source": kwargs.get("data_source"),
+                        "dataset_name": kwargs.get("dataset_name"),
+                    }
                 )
 
             return RuntimeToolSpec(
@@ -375,12 +377,13 @@ class ToolRegistry:
             )
 
         async def invoke_dashboard_context(**kwargs):
-            result = tool(
-                room_name=kwargs.get("room_name"),
-                metric_name=kwargs.get("metric_name"),
-                time_range=kwargs.get("time_range"),
+            return await tool.ainvoke(
+                {
+                    "room_name": kwargs.get("room_name"),
+                    "metric_name": kwargs.get("metric_name"),
+                    "time_range": kwargs.get("time_range"),
+                }
             )
-            return result
 
         return RuntimeToolSpec(
             name="update_dashboard_context",

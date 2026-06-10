@@ -2419,7 +2419,7 @@ const resolveReqContent = (msg: Message) => {
   return reqContent;
 };
 
-/** 收集本轮结构化知识库 dataset ID（输入框附件 + 当前 user 消息 files） */
+/** 收集会话内知识库 dataset ID（输入框附件 + 历史 user 消息附件，追问时继承首轮选择） */
 const collectKnowledgeDatasetIds = (): string[] => {
   const ids: string[] = [];
   const pushId = (raw: string) => {
@@ -2431,9 +2431,11 @@ const collectKnowledgeDatasetIds = (): string[] => {
     if (file.type === "knowledge_base") pushId(file.url);
   });
   const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files));
-  const lastUser = [...sendable].reverse().find((m) => m.role === "user");
-  lastUser?.files?.forEach((file: any) => {
-    if (file.type === "knowledge_base") pushId(file.url);
+  sendable.forEach((m) => {
+    if (m.role !== "user") return;
+    m.files?.forEach((file: any) => {
+      if (file.type === "knowledge_base") pushId(file.url);
+    });
   });
   return ids;
 };

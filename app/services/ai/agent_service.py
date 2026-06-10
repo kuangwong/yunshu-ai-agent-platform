@@ -377,22 +377,30 @@ class AgentService:
             )
 
             can_do_data = "data_query" in (agent_config.capabilities or [])
+            agent_engine_config = agent_config.engine_config or {}
+            agent_bound_dataset_ids = agent_engine_config.get("dataset_ids") or []
+            agent_has_knowledge_binding = (
+                "knowledge_base" in (agent_config.capabilities or [])
+                and bool(agent_bound_dataset_ids)
+            )
+            turn_kwargs = {
+                "user_query": user_query,
+                "messages": messages,
+                "user_info": user_info,
+                "conversation_id": conversation_id,
+                "knowledge_dataset_ids": request_knowledge_dataset_ids or None,
+                "agent_has_knowledge_binding": agent_has_knowledge_binding,
+            }
             if can_do_data:
                 turn_classification, turn_intent_info, turn_intent_elapsed_ms = await resolve_turn_for_session(
-                    user_query,
-                    messages,
+                    **turn_kwargs,
                     can_do_data=True,
-                    user_info=user_info,
-                    conversation_id=conversation_id,
                 )
                 session_turn = (turn_classification, turn_intent_info, turn_intent_elapsed_ms)
             else:
                 turn_classification, turn_intent_info, turn_intent_elapsed_ms = await resolve_turn_for_session(
-                    user_query,
-                    messages,
+                    **turn_kwargs,
                     can_do_data=False,
-                    user_info=user_info,
-                    conversation_id=conversation_id,
                 )
                 session_turn = (turn_classification, turn_intent_info, turn_intent_elapsed_ms)
             early_turn_type = turn_classification.turn_type

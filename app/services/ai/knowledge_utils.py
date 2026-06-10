@@ -269,23 +269,19 @@ NO_KNOWLEDGE_DATASET_MESSAGE = (
 
 
 def collect_knowledge_dataset_ids_from_messages(messages: List[Dict[str, Any]]) -> List[str]:
-    """从最后一条 user 消息的 knowledge_base 附件提取 dataset ID。"""
+    """从会话内全部 user 消息的 knowledge_base 附件提取 dataset ID（支持多轮追问继承）。"""
     if not messages:
         return []
-    last_user: Optional[Dict[str, Any]] = None
-    for message in reversed(messages):
-        if message.get("role") == "user":
-            last_user = message
-            break
-    if not last_user:
-        return []
     ids: List[str] = []
-    for file_obj in last_user.get("files") or []:
-        if file_obj.get("type") != "knowledge_base":
+    for message in messages:
+        if message.get("role") != "user":
             continue
-        url = str(file_obj.get("url") or "").strip()
-        if url and url not in ids:
-            ids.append(url)
+        for file_obj in message.get("files") or []:
+            if file_obj.get("type") != "knowledge_base":
+                continue
+            url = str(file_obj.get("url") or "").strip()
+            if url and url not in ids:
+                ids.append(url)
     return normalize_dataset_ids(ids)
 
 

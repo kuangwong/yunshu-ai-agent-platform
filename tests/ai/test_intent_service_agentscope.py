@@ -55,6 +55,24 @@ async def test_intent_service_parses_json_inside_text():
 
 
 @pytest.mark.asyncio
+async def test_intent_service_parses_tool_call_as_knowledge_base():
+    service = IntentService()
+    llm = object()
+    chat_client = _mock_chat_client(
+        '{"tool": "search_knowledge_base", "query": "换电", "dataset_ids": "4525d66cec7111f0a3d00242ac120006"}'
+    )
+
+    with patch(
+        "app.services.ai.intent_service.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        result = await service.identify_intent("换电过程中可以开门吗？", llm=llm)
+
+    assert result.intent == IntentType.KNOWLEDGE_BASE
+    assert result.confidence == 0.9
+
+
+@pytest.mark.asyncio
 async def test_intent_service_returns_unknown_when_llm_missing():
     service = IntentService()
 

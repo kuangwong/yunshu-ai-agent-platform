@@ -99,6 +99,21 @@ def test_collect_knowledge_dataset_ids_from_messages():
     assert merge_request_knowledge_dataset_ids([rid], messages) == [rid]
 
 
+def test_collect_knowledge_dataset_ids_inherits_from_earlier_turn():
+    rid = "4525d66cec7111f0a3d00242ac120006"
+    messages = [
+        {
+            "role": "user",
+            "content": "换电流程",
+            "files": [{"type": "knowledge_base", "url": rid}],
+        },
+        {"role": "assistant", "content": "换电预计 3-5 分钟"},
+        {"role": "user", "content": "换电过程中可以开门吗？"},
+    ]
+    assert collect_knowledge_dataset_ids_from_messages(messages) == [rid]
+    assert merge_request_knowledge_dataset_ids(None, messages) == [rid]
+
+
 @pytest.mark.asyncio
 async def test_resolve_knowledge_dataset_ids_blocks_without_explicit_dataset():
     from unittest.mock import AsyncMock, patch

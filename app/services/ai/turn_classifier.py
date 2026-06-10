@@ -106,6 +106,8 @@ def classify_turn_heuristic(
     *,
     can_do_data: bool,
     has_last_data_result: bool = False,
+    knowledge_dataset_ids: Optional[List[str]] = None,
+    agent_has_knowledge_binding: bool = False,
 ) -> Optional[TurnClassification]:
     """启发式分类；若无法确定则返回 None，需再调用意图 LLM。"""
     q = (user_query or "").strip()
@@ -142,6 +144,17 @@ def classify_turn_heuristic(
             reasoning="检测到对上一轮数据结果的追问（启发式短路，跳过意图识别）",
             skip_intent_llm=True,
             intent=IntentType.DATA_QUERY,
+        )
+
+    if knowledge_dataset_ids or agent_has_knowledge_binding:
+        return TurnClassification(
+            turn_type=TurnType.KNOWLEDGE,
+            reasoning=(
+                "会话已绑定知识库（dataset_ids 或智能体知识库配置），按知识库问答处理"
+            ),
+            requires_knowledge_search=True,
+            skip_intent_llm=True,
+            intent=IntentType.KNOWLEDGE_BASE,
         )
 
     if looks_like_knowledge_query(q):
@@ -207,14 +220,20 @@ def classify_turn_from_intent(
             intent=IntentType.DATA_QUERY,
         )
 
-    if intent_info.intent == IntentType.KNOWLEDGE_BASE:
-        return TurnClassification(
-            turn_type=TurnType.KNOWLEDGE,
-            reasoning=intent_info.reasoning,
-            requires_knowledge_search=True,
-            skip_intent_llm=False,
-            intent=IntentType.KNOWLEDGE_BASE,
-        )
+    if intent_info.intent in (IntentType.KNOWLEDGE_BASE, IntentType.UNKNOWN):
+        reasoning = intent_info.reasoning or ""
+        if (
+            intent_info.intent == IntentType.KNOWLEDGE_BASE
+            or "search_knowledge" in reasoning
+            or "知识库" in reasoning
+        ):
+            return TurnClassification(
+                turn_type=TurnType.KNOWLEDGE,
+                reasoning=reasoning or "识别为知识库问答",
+                requires_knowledge_search=True,
+                skip_intent_llm=False,
+                intent=IntentType.KNOWLEDGE_BASE,
+            )
 
     if not can_do_data and intent_info.intent == IntentType.DATA_QUERY:
         return TurnClassification(
@@ -288,6 +307,8 @@ async def resolve_turn_classification(
     can_do_data: bool,
     user_info: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
+    knowledge_dataset_ids: Optional[List[str]] = None,
+    agent_has_knowledge_binding: bool = False,
 ) -> Tuple[TurnClassification, Optional[IntentResponse], float]:
     """启发式 + 意图 LLM 的统一分类入口（Dispatcher 使用）。"""
     has_last_data_result = False
@@ -298,6 +319,8 @@ async def resolve_turn_classification(
         user_query,
         can_do_data=can_do_data,
         has_last_data_result=has_last_data_result,
+        knowledge_dataset_ids=knowledge_dataset_ids,
+        agent_has_knowledge_binding=agent_has_knowledge_binding,
     )
 
     intent_info = None
@@ -343,6 +366,8 @@ async def resolve_turn_for_session(
     can_do_data: bool,
     user_info: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
+    knowledge_dataset_ids: Optional[List[str]] = None,
+    agent_has_knowledge_binding: bool = False,
 ) -> SharedTurn:
     """AgentService 统一入口：启发式优先，判不准则调用意图 LLM。"""
     return await resolve_turn_classification(
@@ -351,4 +376,6 @@ async def resolve_turn_for_session(
         can_do_data=can_do_data,
         user_info=user_info,
         conversation_id=conversation_id,
+        knowledge_dataset_ids=knowledge_dataset_ids,
+        agent_has_knowledge_binding=agent_has_knowledge_binding,
     )

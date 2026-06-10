@@ -84,6 +84,37 @@ def test_classify_turn_from_intent_knowledge():
     assert result.requires_knowledge_search is True
 
 
+def test_classify_turn_heuristic_with_bound_knowledge_dataset_ids():
+    rid = "4525d66cec7111f0a3d00242ac120006"
+    result = classify_turn_heuristic(
+        "换电过程中可以开门吗？",
+        can_do_data=False,
+        knowledge_dataset_ids=[rid],
+    )
+    assert result is not None
+    assert result.turn_type == TurnType.KNOWLEDGE
+    assert result.skip_intent_llm is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_turn_for_session_skips_intent_llm_when_dataset_ids_bound():
+    with patch(
+        "app.services.ai.turn_classifier.intent_service.identify_intent",
+        AsyncMock(),
+    ) as mock_identify:
+        classification, intent_info, elapsed_ms = await resolve_turn_for_session(
+            "换电过程中可以开门吗？",
+            [{"role": "user", "content": "换电过程中可以开门吗？"}],
+            can_do_data=False,
+            knowledge_dataset_ids=["4525d66cec7111f0a3d00242ac120006"],
+        )
+
+    mock_identify.assert_not_awaited()
+    assert classification.turn_type == TurnType.KNOWLEDGE
+    assert intent_info is None
+    assert elapsed_ms == 0.0
+
+
 def test_classify_turn_from_intent_data_query_on_non_data_agent():
     intent = IntentResponse(
         intent=IntentType.DATA_QUERY,

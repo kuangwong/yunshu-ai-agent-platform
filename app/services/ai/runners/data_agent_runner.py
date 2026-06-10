@@ -1145,9 +1145,14 @@ class DataAgentRunner(BaseExecutor):
             "{dataset_menu}",
             DataQueryPrompts.REUSE_DATASET_MENU_PLACEHOLDER,
         )
-        result_json = json.dumps(last_result, ensure_ascii=False, indent=2)
-        if len(result_json) > 30000:
-            result_json = result_json[:30000] + "\n... [上一轮结果过长已截断]"
+        safe_result = dict(last_result)
+        for r_key in ("rows", "items", "data", "records"):
+            val = safe_result.get(r_key)
+            if isinstance(val, list) and len(val) > 50:
+                safe_result[r_key] = val[:50]
+                safe_result["_display_note"] = "部分明细数据由于上下文长度限制已在此处被省略..."
+                break
+        result_json = json.dumps(safe_result, ensure_ascii=False, indent=2)
 
         from app.services.ai.runtime.agentscope.compat import HumanMessage
 

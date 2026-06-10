@@ -27,6 +27,7 @@ from app.services.ai.executors.common import (
     normalize_messages_for_llm,
 )
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.time_anchor import build_data_query_time_anchor_block
 from app.services.ai.multimodal_support import (
     ensure_multimodal_compatible,
     resolve_runtime_model_name,
@@ -57,7 +58,12 @@ from app.services.ai.runtime.agentscope.workspace import get_local_workspace
 from app.services.ai.runtime.agentscope.compat import AIMessage, HumanMessage, SystemMessage
 from app.services.ai.runtime.agentscope.data_runtime import DATA_QUERY_MAX_STEPS_CAP
 from app.services.ai.runtime.agentscope.data_tools import build_chatbi_toolkit
-from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+from app.services.ai.runtime.agentscope.tools import (
+    RuntimeToolSpec,
+    build_toolkit,
+    runtime_tool_spec_from_legacy_tool,
+)
+from app.services.ai.tools.registry import ToolRegistry
 from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
@@ -283,7 +289,18 @@ class DataAgentRunner(BaseExecutor):
 
     async def _resolve_runtime_tools_from_config(self) -> list[RuntimeToolSpec]:
         _, specs = await build_chatbi_toolkit(self.config.tools)
-        return specs
+        tools = list(specs)
+        seen = {spec.name for spec in tools}
+
+        system_tools = ToolRegistry.get_system_implicit_tools()
+        if system_tools:
+            for tool in system_tools:
+                spec = runtime_tool_spec_from_legacy_tool(tool, source_type="system")
+                if spec.name in seen:
+                    continue
+                tools.append(spec)
+                seen.add(spec.name)
+        return tools
 
     @staticmethod
     def _is_schema_gate_block(output: Any) -> bool:
@@ -338,8 +355,11 @@ class DataAgentRunner(BaseExecutor):
         primary_model_name: str,
         restored_state: Any = None,
     ) -> Any:
-        # ChatBI 仅挂载查数相关工具；不合并 workspace 的 Grep/Read/Bash，避免模型跳过 get_dataset_schema。
-        toolkit, _ = await build_chatbi_toolkit([tool.name for tool in tools])
+        # ChatBI 挂载查数相关工具与系统隐式工具；不合并 workspace 的 Grep/Read/Bash，避免模型跳过 get_dataset_schema。
+        toolkit = build_toolkit(
+            tools,
+            approval_mode=self.permission_options.get("approval_mode"),
+        )
         workspace = await get_local_workspace(
             user_id=self._current_user_id(),
             conversation_id=self.conversation_id,
@@ -1049,11 +1069,13 @@ class DataAgentRunner(BaseExecutor):
             instructions.append("5. 结合【用户个性化偏好与记忆】，将最新提问中的俗称、别名、旧称转换为对应的标准名称。")
             ltm_section = f"\n\n【用户个性化偏好与记忆】\n{ltm_context}"
 
+        time_anchor = build_data_query_time_anchor_block()
         prompt = (
             "你是 ChatBI 查询改写器。请根据最近对话和用户偏好，把【最新提问】改写成一句独立、完整、适合检索元数据和历史 SQL 案例的查数问题。\n"
             "要求：\n"
             + "\n".join(instructions)
             + ltm_section
+            + f"\n\n{time_anchor}"
         )
         if recent_history:
             prompt += "\n\n【最近对话】\n" + "\n".join(recent_history)
@@ -1211,8 +1233,10 @@ class DataAgentRunner(BaseExecutor):
                 if len(result_json) > 20000:
                     result_json = result_json[:20000] + "\n... [上一轮结果过长已截断]"
             context_action_prompt = f"\n\n{DataQueryPrompts.context_action_guide(result_json)}"
+        time_anchor = build_data_query_time_anchor_block()
         return (
             f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n"
+            f"{time_anchor}\n\n"
             f"{DataQueryPrompts.SQL_PLAN_ENFORCEMENT}\n\n"
             f"{DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT}\n\n"
             f"{system_prompt}"

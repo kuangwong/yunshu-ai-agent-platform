@@ -77,17 +77,22 @@ def default_data_agent_turn_classification(monkeypatch):
 @pytest.mark.asyncio
 async def test_data_agent_runner_resolves_chatbi_runtime_tools(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
+    from app.services.ai.tools.registry import ToolRegistry
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-data", trace_buffer=[])
 
     tools = await runner._resolve_runtime_tools_from_config()
+    tool_names = [tool.name for tool in tools]
 
-    assert [tool.name for tool in tools] == [
+    assert tool_names[:3] == [
         "update_dashboard_context",
         "get_dataset_schema",
         "execute_sql_query",
     ]
-    assert [tool.permission_scope for tool in tools] == ["read", "read", "read"]
+    assert [tool.permission_scope for tool in tools[:3]] == ["read", "read", "read"]
+    system_tool_names = {tool.name for tool in ToolRegistry.get_system_implicit_tools()}
+    assert system_tool_names.issubset(set(tool_names))
+    assert "get_current_time" in tool_names
 
 
 @pytest.mark.asyncio
@@ -292,12 +297,15 @@ async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_to
 
     fake_workspace = MagicMock()
     fake_toolkit = MagicMock()
-    build_chatbi = AsyncMock(return_value=(fake_toolkit, []))
+    build_chatbi = AsyncMock(return_value=(MagicMock(), []))
+    build_toolkit = MagicMock(return_value=fake_toolkit)
     captured_agent_kwargs: dict = {}
 
     def fake_agent(**kwargs):
         captured_agent_kwargs.update(kwargs)
-        return MagicMock(name="AgentInstance")
+        instance = MagicMock()
+        instance.name = "AgentInstance"
+        return instance
 
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.get_local_workspace",
@@ -306,6 +314,10 @@ async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_to
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.build_chatbi_toolkit",
         build_chatbi,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.build_toolkit",
+        build_toolkit,
     )
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.Agent",
@@ -331,6 +343,10 @@ async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_to
     )
 
     build_chatbi.assert_awaited_once()
+    build_toolkit.assert_called_once_with(
+        tools,
+        approval_mode=runner.permission_options.get("approval_mode"),
+    )
     assert captured_agent_kwargs["toolkit"] is fake_toolkit
     assert captured_agent_kwargs["offloader"] is fake_workspace
     assert agent.name == "AgentInstance"
@@ -346,6 +362,8 @@ async def test_data_agent_runner_system_content_includes_data_guardrails(data_co
     system_content = await runner._build_system_content()
 
     assert DataQueryPrompts.GLOBAL_GUARDRAILS in system_content
+    assert "[当前时间锚点]" in system_content
+    assert "【相对时间 SQL 规则】" in system_content
     assert DataQueryPrompts.SQL_PLAN_ENFORCEMENT in system_content
     assert DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT in system_content
     assert data_config.system_prompt in system_content
@@ -758,11 +776,13 @@ async def test_data_agent_runner_builds_native_agent_with_chatbi_toolkit(
     assert captured["system_prompt"] == "system"
     assert captured["react_config"].max_iters == 7
     schemas = await captured["toolkit"].get_tool_schemas()
-    assert [item["function"]["name"] for item in schemas] == [
+    schema_names = [item["function"]["name"] for item in schemas]
+    assert schema_names[:3] == [
         "update_dashboard_context",
         "get_dataset_schema",
         "execute_sql_query",
     ]
+    assert "get_current_time" in schema_names
 
 
 @pytest.mark.asyncio

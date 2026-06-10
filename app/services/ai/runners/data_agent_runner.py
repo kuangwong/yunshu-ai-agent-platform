@@ -398,7 +398,7 @@ class DataAgentRunner(BaseExecutor):
 
         runtime_messages = [
             message
-            for message in normalize_messages_for_llm(convert_history_to_messages(history))
+            for message in normalize_messages_for_llm(convert_history_to_messages(history, strip_thought=True))
             if not isinstance(message, SystemMessage)
         ]
         user_question = next(
@@ -663,8 +663,10 @@ class DataAgentRunner(BaseExecutor):
             primary_model_name=str(getattr(llm_handle, "model_name", self.config.model_name) or ""),
         )
         if self._standalone_query and self._standalone_query != user_question:
+            # 限制发送给大模型的历史，仅保留最近 2 轮历史对话（即最多 4 条消息）加本轮提问
+            last_history = runtime_messages[:-1][-4:]
             runtime_messages = [
-                *runtime_messages[:-1],
+                *last_history,
                 HumanMessage(content=self._standalone_query),
             ]
         if restored_state and restored_state.context:

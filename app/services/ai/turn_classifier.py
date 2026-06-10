@@ -183,6 +183,7 @@ def classify_turn_from_intent(
     can_do_data: bool,
     user_query: str = "",
     has_last_data_result: bool = False,
+    has_knowledge_binding: bool = False,
 ) -> TurnClassification:
     """将意图 LLM 结果映射为统一轮次分类。"""
     if can_do_data and intent_info.intent == IntentType.DATA_QUERY:
@@ -227,6 +228,17 @@ def classify_turn_from_intent(
             or "search_knowledge" in reasoning
             or "知识库" in reasoning
         ):
+            # Agent 未绑定任何知识库时降级为通用对话，避免进入知识库链路后报"未指定知识库"错误
+            if not has_knowledge_binding:
+                return TurnClassification(
+                    turn_type=TurnType.GENERAL,
+                    reasoning=(
+                        f"{reasoning}（Agent 未绑定知识库，降级为通用对话处理）"
+                    ),
+                    requires_knowledge_search=False,
+                    skip_intent_llm=False,
+                    intent=IntentType.GENERAL,
+                )
             return TurnClassification(
                 turn_type=TurnType.KNOWLEDGE,
                 reasoning=reasoning or "识别为知识库问答",
@@ -330,11 +342,13 @@ async def resolve_turn_classification(
         prior_messages = messages[:-1] if messages else None
         intent_info = await intent_service.identify_intent(user_query, history=prior_messages)
         intent_elapsed_ms = (time.time() - intent_start) * 1000
+        has_knowledge_binding = bool(knowledge_dataset_ids or agent_has_knowledge_binding)
         classification = classify_turn_from_intent(
             intent_info,
             can_do_data=can_do_data,
             user_query=user_query,
             has_last_data_result=has_last_data_result,
+            has_knowledge_binding=has_knowledge_binding,
         )
 
     return classification, intent_info, intent_elapsed_ms

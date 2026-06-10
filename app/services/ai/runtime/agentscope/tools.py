@@ -34,6 +34,7 @@ READ_ONLY_TOOL_NAMES = {
     "code_syntax_linter",
     "fetch_static_web_url",
     "web_search_baidu",
+    "system_http_request",
 }
 
 @dataclass(frozen=True)

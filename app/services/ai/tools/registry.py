@@ -496,4 +496,6 @@ class ToolRegistry:
             create_skills,
             list_available_skills,
             read_skill_instruction,
+            web_search_baidu,
+            fetch_static_web_url,
         ]

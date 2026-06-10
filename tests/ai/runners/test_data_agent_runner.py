@@ -127,6 +127,112 @@ async def test_data_agent_runner_auto_invokes_schema_before_react(data_config, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "output,flag_name",
+    [
+        (
+            __import__(
+                "app.services.metadata_rag_service",
+                fromlist=["MetadataRagService"],
+            ).MetadataRagService.unavailable_hint("RAGFlow HTTP Error 502: "),
+            "schema_service_unavailable",
+        ),
+        (
+            "No authorized datasets found. You do not have permission to view any data.",
+            "no_authorized_schema",
+        ),
+        (
+            "Authorized datasets found, but none are synced to RAG knowledge base.",
+            "rag_not_synced",
+        ),
+    ],
+)
+async def test_apply_schema_tool_result_does_not_mark_completed_on_fatal_errors(
+    data_config,
+    output,
+    flag_name,
+):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    state = _DataRunState()
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-apply-schema",
+        trace_buffer=[],
+    )
+    runner._apply_schema_tool_result(state, output)
+
+    assert getattr(state, flag_name) is True
+    assert state.schema_completed is False
+    assert runner._is_schema_fatal(state) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "schema_output,expected_title,content_snippet",
+    [
+        (
+            __import__(
+                "app.services.metadata_rag_service",
+                fromlist=["MetadataRagService"],
+            ).MetadataRagService.unavailable_hint("RAGFlow HTTP Error 502: "),
+            "元数据服务不可用",
+            "元数据检索服务当前不可用",
+        ),
+        (
+            "No authorized datasets found. You do not have permission to view any data.",
+            "无授权数据集",
+            "没有可访问的数据集权限",
+        ),
+        (
+            "Authorized datasets found, but none are synced to RAG knowledge base.",
+            "元数据未同步知识库",
+            "尚未同步到元数据知识库",
+        ),
+    ],
+)
+async def test_data_agent_runner_stops_on_fatal_schema_errors(
+    data_config,
+    monkeypatch,
+    schema_output,
+    expected_title,
+    content_snippet,
+):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    async def fake_schema(**kwargs):
+        return schema_output
+
+    react_called = False
+
+    async def fake_agent_turn(*args, **kwargs):
+        nonlocal react_called
+        react_called = True
+        if False:
+            yield {}
+
+    monkeypatch.setitem(
+        __import__("app.services.ai.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry._registry,
+        "get_dataset_schema",
+        fake_schema,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.DataAgentRunner._run_native_agent_turn",
+        fake_agent_turn,
+    )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-fatal", trace_buffer=[])
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "查一下智能体用户表"}]):
+        events.append(chunk)
+
+    assert react_called is False
+    assert any(event.get("title") == expected_title for event in events)
+    assert any(content_snippet in str(event.get("content", "")) for event in events if event.get("content"))
+    assert not any("必须先执行 SQL 查数" in str(event.get("title", "")) for event in events)
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_skips_schema_prefetch_for_context_action(data_config, monkeypatch):
     from app.services.ai.data_query_turn_classifier import (
         DataQueryTurnClassification,
@@ -1797,6 +1903,8 @@ async def test_data_agent_runner_marks_no_authorized_schema_and_sql_error(data_c
         pass
 
     assert runner._last_run_state.no_authorized_schema is True
+    assert runner._last_run_state.schema_completed is False
+    assert runner._is_schema_fatal(runner._last_run_state) is True
     assert runner._last_run_state.sql_error is True
     assert "Unknown column" in runner._last_run_state.sql_error_message
 

@@ -106,6 +106,21 @@ class DataQueryPrompts:
         "或联系管理员同步/完善元数据后重试。"
     )
 
+    SCHEMA_SERVICE_UNAVAILABLE_CONTENT = (
+        "⚠️ 元数据检索服务当前不可用，无法获取数据集结构，本次查数已终止。\n"
+        "请检查元数据服务（如 RAGFlow）运行状态与网络连通性，稍后重试；若问题持续，请联系管理员。"
+    )
+
+    NO_AUTHORIZED_SCHEMA_CONTENT = (
+        "⚠️ 当前账号没有可访问的数据集权限，无法继续查数，本次请求已终止。\n"
+        "请确认您已被授予相关数据集权限，或联系管理员开通后重试。"
+    )
+
+    RAG_NOT_SYNCED_CONTENT = (
+        "⚠️ 虽有数据集授权，但尚未同步到元数据知识库（RAGFlow），无法检索表结构，本次查数已终止。\n"
+        "请联系管理员完成元数据同步后重试。"
+    )
+
     # 用户要求使用技能但尚未加载技能指令时，提醒模型读取技能；不得阻断 DataExecutor 查数主线
     MUST_LOAD_SKILL_FIRST = (
         "用户明确要求使用某个技能，或 System Prompt 中已有 [Active Skills Loaded] 摘要块。"

@@ -102,6 +102,8 @@ class _DataRunState:
     blocked_content: str = ""
     content_emitted: bool = False
     schema_completed: bool = False
+    schema_service_unavailable: bool = False
+    rag_not_synced: bool = False
     sql_completed: bool = False
     sql_before_schema: bool = False
     schema_miss: bool = False
@@ -512,6 +514,15 @@ class DataAgentRunner(BaseExecutor):
                     continue
                 yield chunk
             if prefetched_schema_output:
+                prefetch_state = _DataRunState()
+                self._apply_schema_tool_result(prefetch_state, prefetched_schema_output)
+                if self._is_schema_fatal(prefetch_state):
+                    async for chunk in self._yield_schema_fatal_abort(
+                        prefetch_state,
+                        prefetched_schema_output,
+                    ):
+                        yield chunk
+                    return
                 system_content += (
                     "\n\n"
                     + DataQueryPrompts.prefetched_schema_context(
@@ -601,9 +612,11 @@ class DataAgentRunner(BaseExecutor):
         state.requires_fresh_data = turn_cls.requires_fresh_data
         state.requires_sql_plan = self._should_require_sql_plan(user_question)
         if prefetched_schema_output is not None:
-            state.schema_completed = True
-            state.no_authorized_schema = self._is_no_authorized_schema(prefetched_schema_output)
-            state.schema_miss = self._is_no_relevant_schema(prefetched_schema_output)
+            self._apply_schema_tool_result(state, prefetched_schema_output)
+            if self._is_schema_fatal(state):
+                async for chunk in self._yield_schema_fatal_abort(state, prefetched_schema_output):
+                    yield chunk
+                return
         guarded_tools = self._wrap_tools_with_schema_gate(tools, state)
 
         agent = await self._build_native_agent(
@@ -644,6 +657,10 @@ class DataAgentRunner(BaseExecutor):
                 interrupted = True
             yield chunk
         if interrupted:
+            return
+        if self._is_schema_fatal(state):
+            async for chunk in self._yield_schema_fatal_abort(state):
+                yield chunk
             return
         if state.full_content:
             if self.conversation_id:
@@ -691,6 +708,10 @@ class DataAgentRunner(BaseExecutor):
             finally:
                 agent.model = original_model
             if interrupted:
+                return
+            if self._is_schema_fatal(state):
+                async for chunk in self._yield_schema_fatal_abort(state):
+                    yield chunk
                 return
             if state.full_content:
                 if self.conversation_id:
@@ -916,8 +937,7 @@ class DataAgentRunner(BaseExecutor):
             output = f"[TOOL_ERROR] 自动获取数据集定义失败: {exc}"
 
         preview_state = _DataRunState()
-        preview_state.schema_miss = self._is_no_relevant_schema(output)
-        preview_state.no_authorized_schema = self._is_no_authorized_schema(output)
+        self._apply_schema_tool_result(preview_state, output)
         yield {
             "type": "log",
             "id": tool_id,
@@ -928,7 +948,7 @@ class DataAgentRunner(BaseExecutor):
                 preview_state,
                 {"keywords": keywords},
             ),
-            "status": "success",
+            "status": "error" if self._is_schema_fatal(preview_state) else "success",
             "category": "tool",
             "execution_time_ms": (time.time() - started_at) * 1000,
         }
@@ -1272,10 +1292,7 @@ class DataAgentRunner(BaseExecutor):
             output = state.tool_outputs.get(tool_id, "")
             duration_ms = (time.time() - state.tool_started_at.get(tool_id, time.time())) * 1000
             if tool_name == "get_dataset_schema":
-                state.schema_completed = True
-                state.sql_before_schema = False
-                state.no_authorized_schema = self._is_no_authorized_schema(output)
-                state.schema_miss = self._is_no_relevant_schema(output)
+                self._apply_schema_tool_result(state, output)
             elif tool_name == "execute_sql_query":
                 if self._is_sql_repeat_gate_block(output):
                     pass
@@ -1414,13 +1431,62 @@ class DataAgentRunner(BaseExecutor):
                 )
             )
 
+    @staticmethod
+    def _is_schema_fatal(state: _DataRunState) -> bool:
+        return (
+            state.schema_service_unavailable
+            or state.no_authorized_schema
+            or state.rag_not_synced
+        )
+
+    def _schema_fatal_response(self, state: _DataRunState) -> tuple[str, str]:
+        if state.schema_service_unavailable:
+            return (
+                "元数据服务不可用",
+                DataQueryPrompts.SCHEMA_SERVICE_UNAVAILABLE_CONTENT,
+            )
+        if state.no_authorized_schema:
+            return (
+                "无授权数据集",
+                DataQueryPrompts.NO_AUTHORIZED_SCHEMA_CONTENT,
+            )
+        if state.rag_not_synced:
+            return (
+                "元数据未同步知识库",
+                DataQueryPrompts.RAG_NOT_SYNCED_CONTENT,
+            )
+        return (
+            "Schema 获取失败",
+            DataQueryPrompts.SCHEMA_SERVICE_UNAVAILABLE_CONTENT,
+        )
+
+    async def _yield_schema_fatal_abort(
+        self,
+        state: _DataRunState,
+        details: Any = "",
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        title, content = self._schema_fatal_response(state)
+        yield {
+            "type": "log",
+            "id": f"schema_fatal_{uuid.uuid4().hex[:8]}",
+            "title": title,
+            "details": truncate_for_context(str(details or ""), max_len=1000) or title,
+            "status": "error",
+        }
+        yield {
+            "content": content,
+            "status": "error",
+        }
+
     async def _emit_final_guard(
         self,
         state: _DataRunState,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         if state.full_content or not state.blocked_content or state.ready_to_answer:
             return
-        if state.sql_before_schema:
+        if self._is_schema_fatal(state):
+            _, content = self._schema_fatal_response(state)
+        elif state.sql_before_schema:
             content = "为保证数据准确性，必须先调用 get_dataset_schema 获取数据集定义，再执行 SQL 查询。"
         elif state.sql_error:
             content = "SQL 执行失败，必须根据错误信息修正 SQL 并重新执行成功后才能回答。"
@@ -1443,6 +1509,8 @@ class DataAgentRunner(BaseExecutor):
         }
 
     def _build_repair_message(self, state: _DataRunState) -> str:
+        if self._is_schema_fatal(state):
+            return ""
         if state.requires_fresh_data and state.sql_before_schema and not state.schema_completed:
             return (
                 "【Schema 顺序要求】本轮新数据查询必须先调用 get_dataset_schema 获取数据集定义，"
@@ -1660,8 +1728,37 @@ class DataAgentRunner(BaseExecutor):
         if tool_name == "get_dataset_schema" and state.schema_miss:
             details = f"{details}\n\n[系统检测] 未命中相关数据集定义。"
         if tool_name == "get_dataset_schema" and state.no_authorized_schema:
-            details = f"{details}\n\n[系统检测] 当前用户没有可用授权数据集。"
+            details = f"{details}\n\n[系统检测] 当前用户没有可用授权数据集，已终止查数流程。"
+        if tool_name == "get_dataset_schema" and state.schema_service_unavailable:
+            details = f"{details}\n\n[系统检测] 元数据服务不可用，已终止查数流程。"
+        if tool_name == "get_dataset_schema" and state.rag_not_synced:
+            details = f"{details}\n\n[系统检测] 元数据未同步到知识库，已终止查数流程。"
         return details
+
+    @staticmethod
+    def _is_schema_service_unavailable(tool_output: Any) -> bool:
+        text = str(tool_output or "")
+        if "[元数据服务不可用]" in text:
+            return True
+        normalized = text.lstrip()
+        return normalized.startswith("[Tool Error]") or normalized.startswith("[TOOL_ERROR]")
+
+    def _apply_schema_tool_result(self, state: _DataRunState, output: Any) -> None:
+        state.schema_service_unavailable = self._is_schema_service_unavailable(output)
+        state.no_authorized_schema = self._is_no_authorized_schema(output)
+        state.rag_not_synced = self._is_rag_not_synced(output)
+        state.schema_miss = self._is_no_relevant_schema(output)
+        if self._is_schema_fatal(state) or not str(output or "").strip():
+            state.schema_completed = False
+            state.sql_before_schema = False
+            return
+        state.schema_completed = True
+        state.sql_before_schema = False
+
+    @staticmethod
+    def _is_rag_not_synced(tool_output: Any) -> bool:
+        text = str(tool_output or "")
+        return "none are synced to RAG knowledge base" in text
 
     def _try_parse_json_output(self, tool_output: Any) -> Any:
         if isinstance(tool_output, (list, dict)):

@@ -14,6 +14,8 @@ from app.services.ai.executors.common import (
 )
 from app.services.ai.executors.prompts import KnowledgeChatPrompts
 from app.services.ai.runners.assistant_agent_runner import AssistantAgentRunner
+from app.services.ai.runtime.agentscope.stream_reconcile import truncate_for_context
+from app.services.metadata_rag_service import MetadataRagService
 from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, runtime_tool_spec_from_legacy_tool
 from app.services.ai.tools.registry import ToolRegistry
@@ -78,7 +80,11 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             output = str(result or "")
         except Exception as exc:
             logger.error("[KnowledgeAgentRunner] Auto search_knowledge_base failed: %s", exc)
-            output = f"[TOOL_ERROR] 自动检索知识库失败: {exc}"
+            err_msg = str(exc)
+            if MetadataRagService._is_service_unavailable(err_msg):
+                output = MetadataRagService.knowledge_unavailable_hint(err_msg)
+            else:
+                output = f"[TOOL_ERROR] 自动检索知识库失败: {exc}"
 
         duration_ms = (time.time() - started_at) * 1000
         self._increment_step()
@@ -93,12 +99,13 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         )
         if observation.get("trace"):
             self.trace_buffer.append(observation["trace"])
+        service_unavailable = self._is_knowledge_service_unavailable(output)
         yield {
             "type": "log",
             "id": tool_id,
             "title": "工具完成: search_knowledge_base",
             "details": observation.get("log", {}).get("details", output[:500]),
-            "status": "success",
+            "status": "error" if service_unavailable else "success",
             "category": "tool",
             "execution_time_ms": duration_ms,
         }
@@ -106,6 +113,30 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             yield observation["citation"]
         yield {
             "__knowledge_output__": observation.get("final_tool_message_content") or output,
+            "__knowledge_service_unavailable__": service_unavailable,
+        }
+
+    @staticmethod
+    def _is_knowledge_service_unavailable(tool_output: Any) -> bool:
+        text = str(tool_output or "")
+        if "[知识库服务不可用]" in text:
+            return True
+        return MetadataRagService._is_service_unavailable(text)
+
+    async def _yield_knowledge_fatal_abort(
+        self,
+        details: Any = "",
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        yield {
+            "type": "log",
+            "id": f"kb_fatal_{uuid.uuid4().hex[:8]}",
+            "title": "知识库服务不可用",
+            "details": truncate_for_context(str(details or ""), max_len=1000) or "知识库服务不可用",
+            "status": "error",
+        }
+        yield {
+            "content": KnowledgeChatPrompts.KNOWLEDGE_SERVICE_UNAVAILABLE_CONTENT,
+            "status": "error",
         }
 
     async def execute(
@@ -142,14 +173,24 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         system_content = f"{KnowledgeChatPrompts.TURN_SYSTEM_HINT}\n\n{system_content}"
 
         prefetched_knowledge_output: str | None = None
+        knowledge_service_unavailable = False
         async for chunk in self._auto_invoke_search_knowledge_base(
             query=user_question,
             tools=tools,
         ):
+            if chunk.get("__knowledge_service_unavailable__"):
+                knowledge_service_unavailable = True
             if chunk.get("__knowledge_output__") is not None:
                 prefetched_knowledge_output = str(chunk["__knowledge_output__"])
                 continue
             yield chunk
+
+        if knowledge_service_unavailable or self._is_knowledge_service_unavailable(
+            prefetched_knowledge_output,
+        ):
+            async for chunk in self._yield_knowledge_fatal_abort(prefetched_knowledge_output):
+                yield chunk
+            return
 
         if prefetched_knowledge_output:
             system_content += (

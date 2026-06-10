@@ -1173,6 +1173,62 @@ async def test_knowledge_runner_uses_agentscope_native_agent(chat_config):
 
 
 @pytest.mark.asyncio
+async def test_knowledge_runner_stops_on_service_unavailable(chat_config):
+    """知识库服务不可用时，应终止问答并返回明确提示，不进入 ReAct。"""
+    from app.services.ai.runners.knowledge_agent_runner import KnowledgeAgentRunner
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+    from app.services.metadata_rag_service import MetadataRagService
+
+    react_called = False
+
+    async def fake_agent_turn(*args, **kwargs):
+        nonlocal react_called
+        react_called = True
+        if False:
+            yield {}
+
+    async def search_knowledge_base(query: str, dataset_ids: str | None = None):
+        return MetadataRagService.knowledge_unavailable_hint("RAGFlow HTTP Error 502: ")
+
+    runtime_spec = RuntimeToolSpec(
+        name="search_knowledge_base",
+        description="Search knowledge base",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "dataset_ids": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+        source_type="static",
+        callable=search_knowledge_base,
+        permission_scope="read",
+    )
+    runner = KnowledgeAgentRunner(config=chat_config, trace_id="trace-kb-fatal", trace_buffer=[])
+
+    with patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.ai.runners.assistant_agent_runner.get_local_workspace", AsyncMock(return_value=None)), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")), \
+         patch(
+             "app.services.ai.runners.knowledge_agent_runner.KnowledgeAgentRunner._execute_with_agentscope_native_agent",
+             fake_agent_turn,
+         ):
+        events = []
+        async for chunk in runner.execute([{"role": "user", "content": "换电流程是什么"}]):
+            events.append(chunk)
+
+    assert react_called is False
+    assert any(event.get("title") == "知识库服务不可用" for event in events)
+    assert any(
+        "知识库检索服务当前不可用" in str(event.get("content", ""))
+        for event in events
+        if event.get("content")
+    )
+
+
+@pytest.mark.asyncio
 async def test_general_runner_memory_guard_uses_agentscope_native_agent(chat_config):
     """跨会话记忆召回轮次也应走 AgentScope 原生 Agent，不再回落手写 ReAct。"""
     from agentscope.credential import CredentialBase

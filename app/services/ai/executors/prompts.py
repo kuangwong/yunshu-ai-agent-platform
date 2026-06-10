@@ -418,6 +418,11 @@ class KnowledgeChatPrompts:
         "在未获得工具返回前，禁止凭记忆编造流程或制度内容。"
     )
 
+    KNOWLEDGE_SERVICE_UNAVAILABLE_CONTENT = (
+        "⚠️ 知识库检索服务当前不可用，无法检索文档内容，本次问答已终止。\n"
+        "请检查知识库服务（如 RAGFlow）运行状态与网络连通性，稍后重试；若问题持续，请联系管理员。"
+    )
+
     @staticmethod
     def prefetched_knowledge_context(query: str, knowledge_text: str) -> str:
         """平台在 ReAct 开始前自动执行 search_knowledge_base 后注入的上下文。"""

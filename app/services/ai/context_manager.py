@@ -9,6 +9,23 @@ from app.services.ai.agent_prompts import ContextManagerPrompts
 
 logger = logging.getLogger(__name__)
 
+KNOWLEDGE_AGENT_FALLBACK_NAMES = ("knowledge-base",)
+
+
+def _normalize_rag_params(engine_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """将 engine_config 中的扁平 RAG 字段归一化到 rag_params。"""
+    if not engine_config:
+        return None
+    rag_params = dict(engine_config.get("rag_params") or {})
+    if engine_config.get("ragflow_similarity_threshold") not in (None, ""):
+        rag_params.setdefault("similarity_threshold", engine_config["ragflow_similarity_threshold"])
+    if engine_config.get("ragflow_vector_weight") not in (None, ""):
+        rag_params.setdefault("vector_similarity_weight", engine_config["ragflow_vector_weight"])
+    if engine_config.get("top_k") not in (None, ""):
+        rag_params.setdefault("top_k", engine_config["top_k"])
+    return rag_params or None
+
+
 class AgentContextManager:
     """
     Manages the resolution of Agent Configuration and Context Setup.
@@ -110,12 +127,84 @@ class AgentContextManager:
         return agent_config, route_details
 
     @staticmethod
+    async def enrich_for_knowledge_turn(
+        config: ChatConfig,
+        user_query: str = "",
+    ) -> ChatConfig:
+        """
+        KNOWLEDGE 轮次：补齐 dataset_ids / RAG 参数 / 知识库工具。
+        当前智能体未绑定知识库时，回退到 knowledge-base 系统智能体配置。
+        """
+        from app.services.ai.knowledge_utils import (
+            extract_dataset_ids_from_message,
+            merge_dataset_id_sources,
+        )
+
+        engine_config = dict(config.engine_config or {})
+        dataset_ids = merge_dataset_id_sources(
+            engine_config.get("dataset_ids"),
+            extract_dataset_ids_from_message(user_query),
+        )
+
+        capabilities = list(config.capabilities or [])
+        tools = list(config.tools or [])
+        has_kb_binding = bool(dataset_ids) or "knowledge_base" in capabilities
+
+        if not has_kb_binding:
+            async with AsyncSessionLocal() as session:
+                for fallback_name in KNOWLEDGE_AGENT_FALLBACK_NAMES:
+                    kb_config = await AgentManagerService.get_active_agent_config(
+                        session, agent_name=fallback_name
+                    )
+                    if kb_config:
+                        kb_ec = kb_config.engine_config or {}
+                        dataset_ids = merge_dataset_id_sources(
+                            dataset_ids,
+                            kb_ec.get("dataset_ids"),
+                        )
+                        for key in (
+                            "ragflow_similarity_threshold",
+                            "ragflow_vector_weight",
+                            "top_k",
+                            "rag_params",
+                        ):
+                            if kb_ec.get(key) not in (None, "") and key not in engine_config:
+                                engine_config[key] = kb_ec[key]
+                        if kb_config.system_prompt and not config.system_prompt:
+                            config = config.model_copy(
+                                update={"system_prompt": kb_config.system_prompt}
+                            )
+                        for cap in kb_config.capabilities or []:
+                            if cap not in capabilities:
+                                capabilities.append(cap)
+                        for tool_name in kb_config.tools or []:
+                            if tool_name not in tools:
+                                tools.append(tool_name)
+                        logger.info(
+                            "[AgentContextManager] KNOWLEDGE turn enriched from fallback agent: %s",
+                            fallback_name,
+                        )
+                        break
+
+        if dataset_ids:
+            engine_config["dataset_ids"] = dataset_ids
+
+        updates: Dict[str, Any] = {"engine_config": engine_config}
+        if capabilities != (config.capabilities or []):
+            updates["capabilities"] = capabilities
+        if tools != (config.tools or []):
+            updates["tools"] = tools
+        return config.model_copy(update=updates)
+
+    @staticmethod
     async def setup_context(
         config: ChatConfig, 
         debug_options: Dict[str, Any] = {},
         user_info: Optional[Dict[str, Any]] = None,
         api_key: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        knowledge_dataset_ids: Optional[List[str]] = None,
+        require_explicit_dataset: bool = False,
     ):
         """
         Setup the execution context (debug options + agent config).
@@ -170,13 +259,24 @@ class AgentContextManager:
             # Keep original extra_data for backward compatibility
             user_dims["extra_data"] = extra_data
 
+        from app.services.ai.knowledge_utils import merge_dataset_id_sources
+
+        engine_config = config.engine_config or {}
+        request_dataset_ids = merge_dataset_id_sources(knowledge_dataset_ids)
+        agent_dataset_ids = merge_dataset_id_sources(engine_config.get("dataset_ids"))
+        effective_dataset_ids = merge_dataset_id_sources(
+            agent_dataset_ids,
+            request_dataset_ids,
+        )
         set_agent_context(AgentContext(
             agent_id=config.agent_id,
             agent_name=config.agent_name,
-            dataset_ids=config.engine_config.get("dataset_ids", []) if config.engine_config else [],
+            dataset_ids=effective_dataset_ids,
+            knowledge_dataset_ids=request_dataset_ids,
+            require_explicit_dataset=require_explicit_dataset,
             engine_type=config.engine_type,
-            engine_config=config.engine_config,
-            rag_params=config.engine_config.get("rag_params") if config.engine_config else None,
+            engine_config=engine_config,
+            rag_params=_normalize_rag_params(engine_config),
             user_id=u_id_val,
             conversation_id=conversation_id,
             is_admin=is_admin_val,

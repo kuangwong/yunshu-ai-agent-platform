@@ -426,9 +426,20 @@ class KnowledgeChatPrompts:
         "在未获得工具返回前，禁止凭记忆编造流程或制度内容。"
     )
 
+    PREFETCH_DONE_CORRECTION_MSG = (
+        "【平台已预检索】系统已在推理前自动完成 search_knowledge_base，"
+        "请直接基于【知识库检索结果】组织回答，无需重复调用同一检索。"
+        "仅当用户问题与预检索词明显不同、或预检索结果明确不足时，才可补充调用 search_knowledge_base。"
+    )
+
     KNOWLEDGE_SERVICE_UNAVAILABLE_CONTENT = (
         "⚠️ 知识库检索服务当前不可用，无法检索文档内容，本次问答已终止。\n"
         "请检查知识库服务（如 RAGFlow）运行状态与网络连通性，稍后重试；若问题持续，请联系管理员。"
+    )
+
+    KNOWLEDGE_NO_DATASET_CONTENT = (
+        "⚠️ 未指定可检索的知识库，本次知识库问答已终止。\n"
+        "请在输入框选择知识库，或由管理员为当前智能体绑定 dataset_ids 后重试。"
     )
 
     @staticmethod

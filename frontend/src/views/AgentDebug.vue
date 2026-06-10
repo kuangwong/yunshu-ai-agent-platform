@@ -791,6 +791,7 @@ const activeTraceId = ref("");
 
 // --- Agent Context State ---
 const agentContext = ref<Record<string, any>>({});
+const ragRetrievalMeta = ref<Record<string, any> | null>(null);
 
 const clearContext = (key?: string) => {
   if (key) {
@@ -838,6 +839,7 @@ const loadGreeting = async () => {
 const clearHistory = () => {
   generateNewConversation(true);
   agentContext.value = {};
+  ragRetrievalMeta.value = null;
   activeTraceId.value = "";
   showFullLogViewer.value = false;
 };
@@ -1280,6 +1282,24 @@ const resolveReqContent = (msg: Message) => {
   return reqContent;
 };
 
+const collectKnowledgeDatasetIds = (): string[] => {
+  const ids: string[] = [];
+  const pushId = (raw: string) => {
+    const value = String(raw || "").trim();
+    if (value && !ids.includes(value)) ids.push(value);
+  };
+  const uploaded = chatInputRef.value?.uploadedFiles || [];
+  uploaded.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files?.length));
+  const lastUser = [...sendable].reverse().find((m) => m.role === "user");
+  lastUser?.files?.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  return ids;
+};
+
 const openSkillSelector = async () => {
   showSkillSelector.value = true;
   skillSelectorSearchQuery.value = "";
@@ -1691,6 +1711,7 @@ const sendMessage = async () => {
 
   // 3. Call Real API with SSE
   abortController = new AbortController();
+  ragRetrievalMeta.value = null;
 
   try {
     // Prepare Debug Options
@@ -1718,13 +1739,8 @@ const sendMessage = async () => {
       }
     }
 
-    const response = await fetch("/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": localStorage.getItem("api_key") || "",
-      },
-      body: JSON.stringify({
+    const knowledgeDatasetIds = collectKnowledgeDatasetIds();
+    const requestBody: Record<string, unknown> = {
         messages: (() => {
           const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files?.length));
           const lastUserIdx = sendable.reduce(
@@ -1758,7 +1774,18 @@ const sendMessage = async () => {
         agent_id: agentParams.agent_id,
         version_id: agentParams.version_id,
         conversation_id: conversationId.value,
-      }),
+    };
+    if (knowledgeDatasetIds.length > 0) {
+      requestBody.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
+
+    const response = await fetch("/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": localStorage.getItem("api_key") || "",
+      },
+      body: JSON.stringify(requestBody),
       signal: abortController.signal,
     });
 
@@ -1890,6 +1917,9 @@ const sendMessage = async () => {
                 if (data.agent_display_name) {
                     agentMsg.value.agentDisplayName = data.agent_display_name;
                 }
+              }
+              if (data.rag_retrieval) {
+                ragRetrievalMeta.value = data.rag_retrieval;
               }
             }
 
@@ -2126,6 +2156,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   } else if (data.type === "meta") {
     if (data.agent_name) msg.agentName = data.agent_name;
     if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
+    if (data.rag_retrieval) ragRetrievalMeta.value = data.rag_retrieval;
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -3414,6 +3445,7 @@ onUnmounted(() => {
       :agent-params="agentParams"
       :loading-config="loadingConfig"
       :agent-context="agentContext"
+      :rag-retrieval-meta="ragRetrievalMeta"
       @load-config="loadCurrentPrompt"
       @clear-context="clearContext"
     />

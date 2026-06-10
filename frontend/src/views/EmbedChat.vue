@@ -893,7 +893,10 @@
                                                                                                                                                                   <div class="flex flex-wrap gap-2 py-1">
                                                                                                                                                                      <template v-for="(cite, cIdx) in msg.citations" :key="cIdx">
                                                                                                                                                                        <div 
-                                                                                                                                                                          class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden"
+                                                                                                                                                                          class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer overflow-hidden"
+                                                                                                                                                                          :class="cite.similarity && cite.similarity < 0.5
+                                                                                                                                                                            ? 'bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200/80 dark:border-amber-700/50 hover:border-amber-400/60'
+                                                                                                                                                                            : 'bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 hover:border-primary/40 dark:hover:border-primary/40'"
                                                                                                                                                                           @click.stop="openCitationPopover(cite, $event)"
                                                                                                                                                                        >
                                                                                                                                                                           <!-- File Icon -->
@@ -905,7 +908,14 @@
                                                                                                                                                                             {{ cite.doc_name }}
                                                                                                                                                                           </span>
                                                                                                                                                                           <!-- Score -->
-                                                                                                                                                                          <span v-if="cite.similarity" class="text-[9px] font-mono text-gray-400 px-1 rounded bg-gray-100 dark:bg-gray-700">
+                                                                                                                                                                          <span
+                                                                                                                                                                            v-if="cite.similarity"
+                                                                                                                                                                            class="text-[9px] font-mono px-1 rounded"
+                                                                                                                                                                            :class="cite.similarity < 0.5
+                                                                                                                                                                              ? 'text-amber-600 dark:text-amber-400 bg-amber-100/80 dark:bg-amber-900/40'
+                                                                                                                                                                              : 'text-gray-400 bg-gray-100 dark:bg-gray-700'"
+                                                                                                                                                                            :title="cite.similarity < 0.5 ? '相似度较低，请结合原文核对' : undefined"
+                                                                                                                                                                          >
                                                                                                                                                                             {{ (cite.similarity * 100).toFixed(0) }}%
                                                                                                                                                                           </span>
                                                                                                                                                                        </div>
@@ -2400,6 +2410,25 @@ const resolveReqContent = (msg: Message) => {
     }
   }
   return reqContent;
+};
+
+/** 收集本轮结构化知识库 dataset ID（输入框附件 + 当前 user 消息 files） */
+const collectKnowledgeDatasetIds = (): string[] => {
+  const ids: string[] = [];
+  const pushId = (raw: string) => {
+    const value = String(raw || "").trim();
+    if (value && !ids.includes(value)) ids.push(value);
+  };
+  const uploaded = chatInputRef.value?.uploadedFiles || [];
+  uploaded.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files));
+  const lastUser = [...sendable].reverse().find((m) => m.role === "user");
+  lastUser?.files?.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  return ids;
 };
 
 /** 发给 API 的消息：仅当前轮 user 保留附件，历史轮次只传纯文字 */
@@ -4249,12 +4278,14 @@ const sendMessage = async () => {
   // 3. API Call
   abortController = new AbortController();
   try {
-    const body = {
+    const knowledgeDatasetIds = collectKnowledgeDatasetIds();
+    const body: Record<string, unknown> = {
       messages: buildOutboundMessages(),
-              stream: true,
-              agent_id: (config.routingMode === "expert" && config.expertAgentId) ? config.expertAgentId : (config.overrideAgentId || config.agentId),
-              enable_multi_agent: config.enableMultiAgent,
-              conversation_id: conversationId.value,      debug_options: {
+      stream: true,
+      agent_id: (config.routingMode === "expert" && config.expertAgentId) ? config.expertAgentId : (config.overrideAgentId || config.agentId),
+      enable_multi_agent: config.enableMultiAgent,
+      conversation_id: conversationId.value,
+      debug_options: {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
       },
@@ -4262,6 +4293,9 @@ const sendMessage = async () => {
         approval_mode: config.approvalMode || "ask",
       },
     };
+    if (knowledgeDatasetIds.length > 0) {
+      body.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
     const headers: any = {
       "Content-Type": "application/json",
     };

@@ -20,6 +20,11 @@ class AgentContext(BaseModel):
     agent_id: str
     agent_name: str
     dataset_ids: List[str] = Field(default_factory=list)
+    knowledge_dataset_ids: List[str] = Field(
+        default_factory=list,
+        description="本轮请求结构化传入的知识库 dataset ID（EmbedChat/API）",
+    )
+    require_explicit_dataset: bool = False
     engine_type: str = "LOCAL"
     engine_config: Optional[Dict[str, Any]] = None
     rag_params: Optional[Dict[str, Any]] = None

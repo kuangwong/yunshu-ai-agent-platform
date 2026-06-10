@@ -68,6 +68,7 @@ class AgentService:
         enable_multi_agent: bool = True,
         debug_options: Optional[Dict[str, Any]] = None,
         permission_options: Optional[Dict[str, Any]] = None,
+        knowledge_dataset_ids: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Main entry point for streaming chat.
@@ -242,6 +243,16 @@ class AgentService:
                             execution_status = "denied"
                             return
 
+            from app.services.ai.knowledge_utils import (
+                build_rag_retrieval_debug_meta,
+                merge_request_knowledge_dataset_ids,
+            )
+
+            request_knowledge_dataset_ids = merge_request_knowledge_dataset_ids(
+                knowledge_dataset_ids,
+                messages,
+            )
+
             # 3. Setup Context (Inject user info & api_key for permission checks)
             await AgentContextManager.setup_context(
                 config=agent_config, 
@@ -249,6 +260,7 @@ class AgentService:
                 user_info=user_info,
                 api_key=api_key,
                 conversation_id=conversation_id,
+                knowledge_dataset_ids=request_knowledge_dataset_ids,
             )
 
             # --- Active Skill Injection ---
@@ -388,6 +400,21 @@ class AgentService:
                 turn_display_label = "ChatBI 请求类别分析"
             else:
                 turn_display_label = turn_type_label(turn_classification.turn_type)
+
+            if turn_classification.turn_type == TurnType.KNOWLEDGE:
+                agent_config = await AgentContextManager.enrich_for_knowledge_turn(
+                    agent_config,
+                    user_query=user_query,
+                )
+                await AgentContextManager.setup_context(
+                    config=agent_config,
+                    debug_options=debug_options,
+                    user_info=user_info,
+                    api_key=api_key,
+                    conversation_id=conversation_id,
+                    knowledge_dataset_ids=request_knowledge_dataset_ids,
+                    require_explicit_dataset=True,
+                )
 
             # --- Long-Term Memory (LTM) Injection ---
             if should_inject_ltm(early_turn_type) and user_info:
@@ -569,7 +596,7 @@ class AgentService:
             # Update config for downstream use (important for Executors)
             agent_config.model_name = actual_model
 
-            yield {
+            meta_event: Dict[str, Any] = {
                 "type": "meta", 
                 "agent_name": agent_config.agent_name,
                 "agent_display_name": agent_config.agent_display_name or agent_config.agent_name,
@@ -578,6 +605,16 @@ class AgentService:
                 "turn_type_label": turn_display_label,
                 "thought_expanded_default": default_thought_expanded(turn_classification.turn_type),
             }
+            if (
+                turn_classification.turn_type == TurnType.KNOWLEDGE
+                or request_knowledge_dataset_ids
+                or (agent_config.engine_config or {}).get("dataset_ids")
+            ):
+                try:
+                    meta_event["rag_retrieval"] = await build_rag_retrieval_debug_meta()
+                except Exception as rag_meta_err:
+                    logger.warning("[AgentService] Failed to build rag_retrieval meta: %s", rag_meta_err)
+            yield meta_event
 
             # 3. Execution (Branch: Single vs Multi)
             secondary_agents = getattr(route_details, "secondary_agents", []) if route_details else []
@@ -721,6 +758,7 @@ class AgentService:
         api_key: Optional[str] = None,
         enable_multi_agent: bool = True,
         permission_options: Optional[Dict[str, Any]] = None,
+        knowledge_dataset_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Non-streaming wrapper for chat completion.
@@ -740,6 +778,7 @@ class AgentService:
             api_key=api_key,
             enable_multi_agent=enable_multi_agent,
             permission_options=permission_options,
+            knowledge_dataset_ids=knowledge_dataset_ids,
         ):
             if "trace_id" in chunk and chunk.get("status") == "init":
                 trace_id = chunk["trace_id"]

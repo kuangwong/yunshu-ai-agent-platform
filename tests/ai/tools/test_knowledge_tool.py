@@ -56,47 +56,80 @@ async def test_search_knowledge_base_explicit_ids():
 @pytest.mark.asyncio
 async def test_search_knowledge_base_context_ids():
     """测试从 Agent 上下文获取数据集 ID"""
+    from app.core.context import AgentContext, set_agent_context
+
     with patch("app.services.ai.ragflow_client.RagFlowClient.retrieve", new_callable=AsyncMock) as mock_retrieve, \
-         patch("app.services.ai.tools.knowledge_tool.get_current_agent_config") as mock_ctx_config, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
-        
+
         mock_retrieve.return_value = []
-        # 模拟上下文中有 dataset_ids
-        mock_ctx_config.side_effect = (
-            lambda k: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] if k == "dataset_ids" else None
-        )
         mock_config.return_value = None
-        
+        set_agent_context(
+            AgentContext(
+                agent_id="kb",
+                agent_name="knowledge-base",
+                dataset_ids=["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+            )
+        )
+
         await search_knowledge_base.ainvoke({"query": "hi"})
-        
+
         args, kwargs = mock_retrieve.call_args
         assert args[1] == ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
 
 @pytest.mark.asyncio
 async def test_search_knowledge_base_parameter_priority():
-    """测试参数（阈值、权重）的优先级逻辑"""
+    """测试参数（阈值、权重、top_k）的优先级逻辑"""
+    from app.core.context import AgentContext, set_agent_context
+
     with patch("app.services.ai.ragflow_client.RagFlowClient.retrieve", new_callable=AsyncMock) as mock_retrieve, \
-         patch("app.services.ai.tools.knowledge_tool.get_current_agent_config") as mock_ctx_config, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
-        
+
         mock_retrieve.return_value = []
-        
-        # 1. 系统配置：0.5
-        # 2. 上下文配置：0.8 (优先级更高)
+
         default_ds = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        mock_config.side_effect = (
-            lambda k: "0.5" if k == "ragflow_similarity_threshold" else default_ds
+        mock_config.side_effect = lambda k: {
+            "ragflow_similarity_threshold": "0.5",
+            "ragflow_vector_weight": "0.4",
+            "ragflow_metadata_top_k": "5",
+        }.get(k)
+        set_agent_context(
+            AgentContext(
+                agent_id="kb",
+                agent_name="knowledge-base",
+                dataset_ids=[default_ds],
+                require_explicit_dataset=False,
+                engine_config={
+                    "ragflow_similarity_threshold": 0.8,
+                    "ragflow_vector_weight": 0.6,
+                    "top_k": 9,
+                },
+            )
         )
-        mock_ctx_config.side_effect = (
-            lambda k: 0.8
-            if k == "ragflow_threshold"
-            else ([default_ds] if k == "dataset_ids" else None)
-        )
-        
+
         await search_knowledge_base.ainvoke({"query": "param test"})
-        
+
         args, kwargs = mock_retrieve.call_args
-        assert kwargs["similarity_threshold"] == 0.8 # 应当采用上下文覆盖的值
+        assert kwargs["similarity_threshold"] == 0.8
+        assert kwargs["vector_similarity_weight"] == 0.6
+        assert kwargs["top_k"] == 9
+
+
+@pytest.mark.asyncio
+async def test_search_knowledge_base_empty_result_is_structured_json():
+    rid = "4525d66cec7111f0a3d00242ac120006"
+    with patch("app.services.ai.ragflow_client.RagFlowClient.retrieve", new_callable=AsyncMock) as mock_retrieve, \
+         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
+        mock_retrieve.return_value = []
+        mock_config.return_value = None
+
+        result = await search_knowledge_base.ainvoke(
+            {"query": "不存在的内容", "dataset_ids": rid}
+        )
+
+    payload = json.loads(result)
+    assert payload["status"] == "empty"
+    assert payload["citations"] == []
+    assert "未找到" in payload["content"]
 
 
 @pytest.mark.asyncio

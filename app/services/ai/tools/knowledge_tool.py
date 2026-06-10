@@ -1,67 +1,21 @@
-import ast
 import logging
 import json
-import re
 from app.services.ai.tools.tool_compat import tool
-from typing import Any, Optional, List, Union
+from typing import Any, Optional, List
 from app.services.ai.ragflow_client import RagFlowClient
 from app.services.config_service import ConfigService
 from app.services.metadata_rag_service import MetadataRagService
 
 logger = logging.getLogger(__name__)
 
-from app.core.context import get_current_agent_config, get_current_agent_context
+from app.core.context import get_current_agent_context
 from app.core.orm import AsyncSessionLocal
+from app.services.ai.knowledge_utils import (
+    normalize_dataset_ids,
+    resolve_knowledge_dataset_ids,
+    resolve_rag_retrieval_params,
+)
 from app.services.permission_service import PermissionService
-
-# 32 位 hex，与 RAGFlow dataset id 常见格式一致
-_DATASET_ID_RE = re.compile(r"^[a-fA-F0-9]{32}$")
-
-
-def normalize_dataset_ids(raw: Union[str, List[Any], None]) -> List[str]:
-    """
-    将工具参数 / 配置中的 dataset_ids 规范为纯 ID 列表。
-    兼容：逗号分隔、JSON 数组、Python 单引号列表、多余引号与方括号。
-    """
-    if raw is None:
-        return []
-
-    items: List[Any]
-    if isinstance(raw, list):
-        items = raw
-    elif isinstance(raw, str):
-        text = raw.strip()
-        if not text:
-            return []
-        if text.startswith("["):
-            parsed: Any = None
-            # 优先 Python 单引号列表（模型侧更稳定）；再尝试 JSON 双引号
-            try:
-                parsed = ast.literal_eval(text)
-            except (ValueError, SyntaxError):
-                try:
-                    parsed = json.loads(text)
-                except json.JSONDecodeError:
-                    parsed = None
-            items = parsed if isinstance(parsed, list) else [text]
-        else:
-            items = text.split(",")
-    else:
-        items = [raw]
-
-    result: List[str] = []
-    for item in items:
-        token = str(item).strip().strip("[]\"' \t")
-        if not token:
-            continue
-        if _DATASET_ID_RE.match(token):
-            result.append(token)
-            continue
-        # 从混杂字符串中提取合法 ID（如 LLM 传入带括号的整段）
-        for match in _DATASET_ID_RE.findall(token):
-            if match not in result:
-                result.append(match)
-    return result
 
 
 @tool
@@ -84,33 +38,22 @@ async def search_knowledge_base(query: str, dataset_ids: Optional[str] = None) -
 
     logger.info(f"[KnowledgeTool] Called with query='{query}', explicit_ids='{dataset_ids}'")
 
-    # 1. Resolve Dataset IDs
-    target_datasets: List[str] = []
-
-    if dataset_ids:
-        target_datasets = normalize_dataset_ids(dataset_ids)
-        logger.info(f"[KnowledgeTool] Used explicit dataset_ids (normalized): {target_datasets}")
-    else:
-        context_datasets = get_current_agent_config("dataset_ids")
-        if context_datasets:
-            target_datasets = normalize_dataset_ids(context_datasets)
-
-        if not target_datasets:
-            default_ids_str = await ConfigService.get("ragflow_dataset_ids")
-            if default_ids_str:
-                target_datasets = normalize_dataset_ids(default_ids_str)
-            logger.info(f"[KnowledgeTool] Fallback to system default: {target_datasets}")
-
-    if dataset_ids and not target_datasets:
+    if dataset_ids and not normalize_dataset_ids(dataset_ids):
         return (
             "[Tool Error] Invalid dataset_ids. Use a plain 32-char ID, "
             "comma-separated IDs, or a single-quoted list like "
             "['4525d66cec7111f0a3d00242ac120006'] — do not use [\"...\"]."
         )
 
-    if not target_datasets:
-        logger.warning("[KnowledgeTool] No datasets configured.")
-        return "[System Warning] No knowledge base datasets configured. Please contact admin to set 'ragflow_dataset_ids'."
+    target_datasets, dataset_error = await resolve_knowledge_dataset_ids(
+        explicit_tool_ids=dataset_ids,
+        query=query,
+    )
+    if dataset_error and not target_datasets:
+        logger.warning("[KnowledgeTool] Dataset resolution blocked: %s", dataset_error)
+        return dataset_error
+
+    logger.info("[KnowledgeTool] Resolved dataset_ids: %s", target_datasets)
 
     ctx = get_current_agent_context()
     if ctx and ctx.user_id and not ctx.is_admin:
@@ -135,84 +78,42 @@ async def search_knowledge_base(query: str, dataset_ids: Optional[str] = None) -
                 "You may only use datasets assigned to you or created by yourself."
             )
 
-    # 2. Resolve Parameters (Threshold & Weight)
-    # Priority: Agent Engine Config > System Config > Hardcoded Default
-    
-    # Default values
-    threshold = 0.2
-    vector_weight = 0.3
-    
-    # Fetch from Agent Context
-    engine_config = get_current_agent_config("engine_config")
-    
-    # Check if we have engine_config in context (might be null if simple local agent)
-    # The 'get_current_agent_config' helper might just return top-level keys. 
-    # Let's check how context works. Usually we store specific keys. 
-    # If not found, we can try to fetch agent_id and look up, but context should have it if set correctly.
-    # Assuming 'engine_config' might NOT be in the simplified context dict. 
-    # However, 'dataset_ids' was there. Let's look at agent_service.py 'set_agent_context' again.
-    
-    # Re-reading agent_service.py: set_agent_context({...}) sets: agent_id, agent_name, dataset_ids, engine_type.
-    # It does NOT set full engine_config! So we can't get it from context directly unless we change agent_service.
-    # BUT, we can read system config first.
-    
-    # To get Agent-specific threshold without changing context structure too much, we could:
-    # A) Change agent_service.py to inject these into context.
-    # B) (Preferred for cleaner separation) Fetch config if needed? No, context is best.
-    
-    # Let's assume for now I will rely on System Config defaults first, 
-    # AND I will look for injected variables if I change agent_service.
-    # Wait, the Plan said: "Read ... from the current agent's engine_config."
-    
-    # Let's look at get_current_agent_config implementation or usage. 
-    # Since I cannot modify 'context.py' easily without seeing it, I'll update 'agent_service.py' to inject these values.
-    # OR, I will try to fetch them from System Config now, and update agent_service later.
-    
-    # Let's first get System Configs
     sys_threshold = await ConfigService.get("ragflow_similarity_threshold")
     sys_weight = await ConfigService.get("ragflow_vector_weight")
-    
-    if sys_threshold:
-        try:
-            threshold = float(sys_threshold)
-        except:
-            pass
-            
-    if sys_weight:
-        try:
-            vector_weight = float(sys_weight)
-        except:
-            pass
-            
-    # Now check Agent Config overrides (passed via Context)
-    # I need to update agent_service.py to pass these.
-    agent_threshold = get_current_agent_config("ragflow_threshold")
-    agent_weight = get_current_agent_config("ragflow_vector_weight")
-    
-    if agent_threshold is not None:
-         try:
-             threshold = float(agent_threshold)
-         except:
-             pass
-             
-    if agent_weight is not None:
-         try:
-             vector_weight = float(agent_weight)
-         except:
-             pass
+    sys_top_k = await ConfigService.get("ragflow_metadata_top_k")
+    threshold, vector_weight, top_k = resolve_rag_retrieval_params(
+        system_threshold=sys_threshold,
+        system_weight=sys_weight,
+        system_top_k=sys_top_k,
+    )
 
-    logger.info(f"[KnowledgeTool] Using params: threshold={threshold}, vector_weight={vector_weight}")
+    logger.info(
+        "[KnowledgeTool] Using params: threshold=%s, vector_weight=%s, top_k=%s",
+        threshold,
+        vector_weight,
+        top_k,
+    )
 
     try:
         chunks = await client.retrieve(
-            query, 
-            target_datasets, 
+            query,
+            target_datasets,
+            top_k=top_k,
             similarity_threshold=threshold,
-            vector_similarity_weight=vector_weight
+            vector_similarity_weight=vector_weight,
         )
-        
+
         if not chunks:
-            return "No relevant information found in the knowledge base."
+            empty_payload = {
+                "status": "empty",
+                "content": (
+                    "【知识库检索结果】未找到与用户问题高度相关的文档片段。\n"
+                    "请明确告知用户：当前知识库中暂无足够依据回答该问题，"
+                    "不要编造流程、制度或操作步骤；可建议用户换关键词或联系管理员补充文档。"
+                ),
+                "citations": [],
+            }
+            return json.dumps(empty_payload, ensure_ascii=False)
             
         # --- [NEW: Process for Inline Citations] ---
         # 1. Assign sequential IDs to chunks for easier LLM referencing

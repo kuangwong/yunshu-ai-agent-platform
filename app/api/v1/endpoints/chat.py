@@ -51,6 +51,10 @@ class ChatCompletionRequest(BaseModel):
     version_id: Optional[str] = None
     conversation_id: Optional[str] = None  # 服务端对话记忆 ID
     enable_multi_agent: bool = True        # 是否启用多智能体协同
+    knowledge_dataset_ids: Optional[List[str]] = Field(
+        default=None,
+        description="本轮结构化指定的 RAGFlow 知识库 dataset ID 列表（优先于消息内文本提示）",
+    )
     debug_options: Optional[Dict[str, Any]] = None
     permission_options: Optional[Dict[str, Any]] = None
 
@@ -227,6 +231,7 @@ async def create_chat_completion(
                 enable_multi_agent=completion_request.enable_multi_agent,
                 debug_options=completion_request.debug_options,
                 permission_options=completion_request.permission_options,
+                knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
             ):
                 # Format each chunk as an SSE data event
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -254,6 +259,7 @@ async def create_chat_completion(
             api_key=api_key_str,
             enable_multi_agent=completion_request.enable_multi_agent,
             permission_options=completion_request.permission_options,
+            knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
         )
         return StandardResponse(data=result)
 

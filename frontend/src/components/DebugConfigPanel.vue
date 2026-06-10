@@ -25,7 +25,13 @@ const props = defineProps<{
   agentParams: AgentParams;
   loadingConfig: boolean;
   agentContext: Record<string, any>;
+  ragRetrievalMeta?: Record<string, any> | null;
 }>();
+
+const formatDatasetIds = (ids: unknown) => {
+  if (!Array.isArray(ids) || ids.length === 0) return "（未指定）";
+  return ids.join(", ");
+};
 
 const emit = defineEmits<{
   (e: "update:visible", value: boolean): void;
@@ -345,6 +351,42 @@ const removeContextItem = (index: number) => {
         </div>
 
         <hr class="border-gray-100" />
+
+        <div
+          v-if="ragRetrievalMeta"
+          class="rounded-lg border border-amber-100 bg-amber-50/60 p-3 space-y-2"
+        >
+          <h4 class="text-[11px] font-bold text-amber-800 uppercase tracking-wider">
+            知识库检索实参
+          </h4>
+          <div class="grid grid-cols-1 gap-1.5 text-[11px] text-gray-700 font-mono">
+            <div>
+              <span class="text-gray-500">dataset_ids：</span>
+              {{ formatDatasetIds(ragRetrievalMeta.dataset_ids) }}
+            </div>
+            <div v-if="ragRetrievalMeta.request_dataset_ids?.length">
+              <span class="text-gray-500">request_dataset_ids：</span>
+              {{ formatDatasetIds(ragRetrievalMeta.request_dataset_ids) }}
+            </div>
+            <div>
+              <span class="text-gray-500">threshold：</span>
+              {{ ragRetrievalMeta.similarity_threshold }}
+            </div>
+            <div>
+              <span class="text-gray-500">vector_weight：</span>
+              {{ ragRetrievalMeta.vector_similarity_weight }}
+            </div>
+            <div>
+              <span class="text-gray-500">top_k：</span>
+              {{ ragRetrievalMeta.top_k }}
+            </div>
+            <div v-if="ragRetrievalMeta.require_explicit_dataset">
+              <span class="text-amber-700">require_explicit_dataset：true</span>
+            </div>
+          </div>
+        </div>
+
+        <hr v-if="ragRetrievalMeta" class="border-gray-100" />
 
         <!-- Live Context Stack (New) -->
         <div class="flex-1 min-h-0 flex flex-col">

@@ -717,23 +717,28 @@ class DataAgentRunner(BaseExecutor):
         interrupted = False
         initial_tool_choice = self._resolve_initial_tool_choice(state)
         original_model = agent.model
-        if initial_tool_choice is not None:
-            agent.model = _ForcedFirstToolChoiceModel(original_model, initial_tool_choice)
-        try:
-            async for chunk in self._stream_agentscope_events(
-                event_stream=agent.reply_stream(inputs),
-                agent=agent,
-                tools=guarded_tools,
-                native_model=native_model,
-                state=state,
-                stream_meta=stream_meta,
-                emit_final_guard=False,
-            ):
-                if is_interrupt_sse_chunk(chunk):
-                    interrupted = True
-                yield chunk
-        finally:
-            agent.model = original_model
+        
+        # 优化：如果在 prefetch 阶段就已经确定 schema 检索未命中 (schema_miss)，直接短路跳过首轮 LLM 交互以节省延迟与 Token，下沉进后面的修复轮次
+        if state.schema_miss:
+            logger.info("[DataAgentRunner] Prefetch schema miss, skipping initial LLM interaction and entering repair directly.")
+        else:
+            if initial_tool_choice is not None:
+                agent.model = _ForcedFirstToolChoiceModel(original_model, initial_tool_choice)
+            try:
+                async for chunk in self._stream_agentscope_events(
+                    event_stream=agent.reply_stream(inputs),
+                    agent=agent,
+                    tools=guarded_tools,
+                    native_model=native_model,
+                    state=state,
+                    stream_meta=stream_meta,
+                    emit_final_guard=False,
+                ):
+                    if is_interrupt_sse_chunk(chunk):
+                        interrupted = True
+                    yield chunk
+            finally:
+                agent.model = original_model
         if interrupted:
             return
         if self._is_schema_fatal(state):
@@ -1413,13 +1418,26 @@ class DataAgentRunner(BaseExecutor):
                         state.sql_plan_missing = True
                     state.sql_completed = True
                     parsed_output = self._try_parse_json_output(output)
-                    state.empty_sql_reason = self._detect_empty_result(parsed_output) or ""
-                    state.empty_sql_result = bool(state.empty_sql_reason)
+                    empty_reason = self._detect_empty_result(parsed_output) or ""
+                    
+                    sql_text = ""
+                    if isinstance(tool_args, dict):
+                        sql_text = tool_args.get("sql") or tool_args.get("query") or ""
+                    
+                    is_diag = self._is_diagnostic_sql(sql_text)
+                    
+                    if empty_reason:
+                        state.empty_sql_reason = empty_reason
+                        state.empty_sql_result = True
+                    else:
+                        if not is_diag:
+                            state.empty_sql_reason = ""
+                            state.empty_sql_result = False
+                            state.last_successful_sql_output = output
+                    
                     state.sql_error, state.sql_error_message = self._detect_sql_error(output)
                     if not state.sql_error:
                         await self._save_last_data_result_for_followups(tool_args, parsed_output)
-                        if not state.empty_sql_result:
-                            state.last_successful_sql_output = output
             self._sync_pending_data_run_state(state, stream_state)
             self._increment_step()
             self.trace_buffer.append(
@@ -1885,6 +1903,31 @@ class DataAgentRunner(BaseExecutor):
             return
         state.schema_completed = True
         state.sql_before_schema = False
+
+    @staticmethod
+    def _is_diagnostic_sql(sql: str) -> bool:
+        """识别大模型是否在执行用于诊断/对账的临时 SQL"""
+        sql_upper = " ".join(str(sql or "").upper().split())
+        # 1. 包含 SHOW TABLES / SHOW COLUMNS 等元数据查询
+        if any(x in sql_upper for x in ("SHOW TABLES", "SHOW COLUMNS", "DESCRIBE ", "DESC ")):
+            return True
+        # 2. 包含仅为了查某列唯一值的 DISTINCT 查询
+        if "SELECT DISTINCT" in sql_upper and "LIMIT" in sql_upper:
+            return True
+        # 3. 包含 COUNT 查询且没有 GROUP BY (即只查表行数)
+        if "COUNT(" in sql_upper and "GROUP BY" not in sql_upper:
+            return True
+        # 4. 包含小 LIMIT 限制 (小于等于 10) 的自由采样数据
+        import re
+        match = re.search(r"LIMIT\s+(\d+)", sql_upper)
+        if match:
+            try:
+                limit_val = int(match.group(1))
+                if limit_val <= 10:
+                    return True
+            except Exception:
+                pass
+        return False
 
     @staticmethod
     def _is_rag_not_synced(tool_output: Any) -> bool:

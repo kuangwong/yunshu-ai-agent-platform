@@ -206,8 +206,73 @@ def structurize_user_content(content: str) -> str:
     )
 
 
-def convert_history_to_messages(history: List[Dict[str, str]]) -> List[BaseMessage]:
-    """将平台 messages 转为 runtime BaseMessage 列表（含附件/多模态）。"""
+def _compress_markdown_tables(text: str) -> str:
+    """压缩文本中包含的历史 Markdown 数据表格，防止多轮时表格数据撑爆上下文。"""
+    if not text or "|" not in text:
+        return text
+    lines = text.splitlines()
+    output_lines = []
+    in_table = False
+    table_lines = []
+
+    def do_compress(tbl: List[str]) -> List[str]:
+        if len(tbl) <= 8:
+            return tbl
+        header = tbl[:2]
+        data = tbl[2:5]
+        omitted = len(tbl) - 5
+        cols = tbl[0].count("|") - 1
+        if cols > 2:
+            placeholder = "|" + "|".join(["..."] * (cols - 1)) + f" [此处省略历史表格明细 {omitted} 行] |"
+        else:
+            placeholder = f"| ... | [此处省略历史表格明细 {omitted} 行] |"
+        return header + data + [placeholder]
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            in_table = True
+            table_lines.append(line)
+        else:
+            if in_table:
+                output_lines.extend(do_compress(table_lines))
+                table_lines = []
+                in_table = False
+            output_lines.append(line)
+    if in_table:
+        output_lines.extend(do_compress(table_lines))
+    return "\n".join(output_lines)
+
+
+def _clean_assistant_text(content: str, strip_thought: bool = False) -> str:
+    """清洗 Assistant 历史回复内容，剥离高消耗低价值的 XML 调用、思维链和图表配置。"""
+    if not content:
+        return ""
+    
+    # 1. 剥离工具调用 function_calls
+    content = re.sub(r"<function_calls>.*?</function_calls>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"<function_calls>.*", "", content, flags=re.DOTALL | re.IGNORECASE)  # 兼容未闭合的
+
+    # 2. 剥离 Thought/Think 思考链
+    if strip_thought:
+        content = re.sub(r"<thought>.*?</thought>", "", content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r"<thought>.*", "", content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r"<think>.*", "", content, flags=re.DOTALL | re.IGNORECASE)
+
+    # 3. 压缩 Markdown 表格 (最多保留 3 行数据)
+    content = _compress_markdown_tables(content)
+
+    # 4. 剥离 ```chart JSON 块
+    content = re.sub(r"```chart\s*\{.*?\}(.*?)\n```", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"```chart\s*\[.*?\](.*?)\n```", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"```chart\s*.*?\n```", "", content, flags=re.DOTALL | re.IGNORECASE)
+
+    return content.strip()
+
+
+def convert_history_to_messages(history: List[Dict[str, str]], strip_thought: bool = False) -> List[BaseMessage]:
+    """将平台 messages 转为 runtime BaseMessage 列表（含附件/多模态），并执行历史消息裁剪。"""
     messages: List[BaseMessage] = []
     last_user_idx: Optional[int] = None
     for idx in range(len(history) - 1, -1, -1):
@@ -274,10 +339,12 @@ def convert_history_to_messages(history: List[Dict[str, str]]) -> List[BaseMessa
             else:
                 messages.append(HumanMessage(content=final_text))
         elif role == "assistant":
-            messages.append(AIMessage(content=content))
+            cleaned_content = _clean_assistant_text(content, strip_thought=strip_thought)
+            messages.append(AIMessage(content=cleaned_content))
         elif role == "system":
             messages.append(SystemMessage(content=content))
     return messages
+
 
 
 def _system_content_text(message: SystemMessage) -> str:

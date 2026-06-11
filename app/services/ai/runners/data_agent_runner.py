@@ -27,6 +27,7 @@ from app.services.ai.executors.common import (
     normalize_messages_for_llm,
 )
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.time_anchor import build_data_query_time_anchor_block
 from app.services.ai.multimodal_support import (
     ensure_multimodal_compatible,
     resolve_runtime_model_name,
@@ -57,7 +58,12 @@ from app.services.ai.runtime.agentscope.workspace import get_local_workspace
 from app.services.ai.runtime.agentscope.compat import AIMessage, HumanMessage, SystemMessage
 from app.services.ai.runtime.agentscope.data_runtime import DATA_QUERY_MAX_STEPS_CAP
 from app.services.ai.runtime.agentscope.data_tools import build_chatbi_toolkit
-from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+from app.services.ai.runtime.agentscope.tools import (
+    RuntimeToolSpec,
+    build_toolkit,
+    runtime_tool_spec_from_legacy_tool,
+)
+from app.services.ai.tools.registry import ToolRegistry
 from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
@@ -122,6 +128,8 @@ class _DataRunState:
     active_text_block_id: str = ""
     text_blocks_emitted_since_last_tool: int = 0
     current_text_block_emitted: bool = False
+    last_successful_sql_output: Any = None
+    successful_sqls: dict[str, Any] = field(default_factory=dict)
 
     @property
     def has_successful_nonempty_sql(self) -> bool:
@@ -283,7 +291,18 @@ class DataAgentRunner(BaseExecutor):
 
     async def _resolve_runtime_tools_from_config(self) -> list[RuntimeToolSpec]:
         _, specs = await build_chatbi_toolkit(self.config.tools)
-        return specs
+        tools = list(specs)
+        seen = {spec.name for spec in tools}
+
+        system_tools = ToolRegistry.get_system_implicit_tools()
+        if system_tools:
+            for tool in system_tools:
+                spec = runtime_tool_spec_from_legacy_tool(tool, source_type="system")
+                if spec.name in seen:
+                    continue
+                tools.append(spec)
+                seen.add(spec.name)
+        return tools
 
     @staticmethod
     def _is_schema_gate_block(output: Any) -> bool:
@@ -315,14 +334,34 @@ class DataAgentRunner(BaseExecutor):
                         f"{SCHEMA_GATE_PREFIX} 为保证数据准确性，必须先调用 get_dataset_schema "
                         "获取数据集定义，再执行 execute_sql_query。"
                     )
-                if state.has_successful_nonempty_sql:
+
+                current_sql = str(kwargs.get("sql") or kwargs.get("query") or "").strip()
+                current_sql_normalized = " ".join(current_sql.lower().split())
+
+                if current_sql_normalized and current_sql_normalized in state.successful_sqls:
+                    cached_output = state.successful_sqls[current_sql_normalized]
                     return (
-                        f"{SQL_REPEAT_GATE_PREFIX} 本轮已成功获取非空查数结果，禁止再次 execute_sql_query。"
-                        "请直接基于现有结果生成回答；如需重新查数，请调整条件后由用户发起新一轮提问。"
+                        f"{SQL_REPEAT_GATE_PREFIX} 本轮已成功执行过相同的 SQL 查询，禁止重复 execute_sql_query。\n"
+                        "为保证正常输出，系统已自动为您加载该 SQL 上一次查询成功的缓存数据结果，请直接基于此数据进行回答，无需再次调用查数工具：\n\n"
+                        f"{cached_output}"
                     )
+
                 result = _original(**kwargs)
                 if inspect.isawaitable(result):
-                    return await result
+                    result = await result
+
+                try:
+                    if result and not self._is_schema_gate_block(result) and not self._is_sql_repeat_gate_block(result):
+                        parsed_output = self._try_parse_json_output(result)
+                        empty_reason = self._detect_empty_result(parsed_output)
+                        sql_error, _ = self._detect_sql_error(result)
+                        if not sql_error and not empty_reason:
+                            if current_sql_normalized:
+                                state.successful_sqls[current_sql_normalized] = result
+                            state.last_successful_sql_output = result
+                except Exception:
+                    pass
+
                 return result
 
             wrapped.append(replace(spec, callable=invoke_sql_gated))
@@ -338,8 +377,11 @@ class DataAgentRunner(BaseExecutor):
         primary_model_name: str,
         restored_state: Any = None,
     ) -> Any:
-        # ChatBI 仅挂载查数相关工具；不合并 workspace 的 Grep/Read/Bash，避免模型跳过 get_dataset_schema。
-        toolkit, _ = await build_chatbi_toolkit([tool.name for tool in tools])
+        # ChatBI 挂载查数相关工具与系统隐式工具；不合并 workspace 的 Grep/Read/Bash，避免模型跳过 get_dataset_schema。
+        toolkit = build_toolkit(
+            tools,
+            approval_mode=self.permission_options.get("approval_mode"),
+        )
         workspace = await get_local_workspace(
             user_id=self._current_user_id(),
             conversation_id=self.conversation_id,
@@ -349,12 +391,24 @@ class DataAgentRunner(BaseExecutor):
             config=self.config,
             primary_model_name=primary_model_name,
         )
+        middlewares = []
+        if self.conversation_id:
+            from app.services.ai.runtime.agentscope.middleware import ModelCallStatsMiddleware
+            middlewares.append(
+                ModelCallStatsMiddleware(
+                    user_id=self._current_user_id(),
+                    conversation_id=self.conversation_id,
+                    agent_name=self._runtime_agent_name(),
+                    trace_id=self.trace_id,
+                )
+            )
         kwargs: Dict[str, Any] = {
             "name": self._runtime_agent_name(),
             "system_prompt": system_content,
             "model": native_model,
             "toolkit": toolkit,
             "react_config": ReActConfig(max_iters=max_steps),
+            "middlewares": middlewares,
         }
         if restored_state is not None:
             kwargs["state"] = restored_state
@@ -378,7 +432,7 @@ class DataAgentRunner(BaseExecutor):
 
         runtime_messages = [
             message
-            for message in normalize_messages_for_llm(convert_history_to_messages(history))
+            for message in normalize_messages_for_llm(convert_history_to_messages(history, strip_thought=True))
             if not isinstance(message, SystemMessage)
         ]
         user_question = next(
@@ -552,6 +606,7 @@ class DataAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 async for chunk in self._run_native_agent_turn(
                     native_model=native_model,
@@ -597,16 +652,30 @@ class DataAgentRunner(BaseExecutor):
             agent_name,
         )
         restored_state = None
-        if persisted and persisted.matches(
-            tools_fingerprint=tools_fingerprint,
-            agent_name=agent_name,
-        ):
-            try:
-                from agentscope.state import AgentState
+        if persisted:
+            if persisted.matches(
+                tools_fingerprint=tools_fingerprint,
+                agent_name=agent_name,
+            ):
+                try:
+                    from agentscope.state import AgentState
 
-                restored_state = AgentState.model_validate(persisted.state)
-            except Exception as exc:
-                logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
+                    restored_state = AgentState.model_validate(persisted.state)
+                except Exception as exc:
+                    logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
+            else:
+                logger.warning(
+                    "[DataAgentRunner] Tools fingerprint mismatch for agent=%s (stored=%s, current=%s). "
+                    "Resetting conversation state to prevent tool call conflicts.",
+                    agent_name, persisted.tools_fingerprint, tools_fingerprint
+                )
+                yield {
+                    "type": "log",
+                    "id": f"state_reset_{uuid.uuid4().hex[:8]}",
+                    "title": "智能体配置变更：历史会话状态已重置",
+                    "details": "检测到绑定的工具集或模型配置发生改变，为防工具调用崩溃，已重置运行时状态。",
+                    "status": "warning",
+                }
 
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
@@ -628,8 +697,11 @@ class DataAgentRunner(BaseExecutor):
             primary_model_name=str(getattr(llm_handle, "model_name", self.config.model_name) or ""),
         )
         if self._standalone_query and self._standalone_query != user_question:
+            # 仅保留最近 3 轮对话历史（6 条 Human/AI 消息），工具消息不计入轮数
+            conv_only = [m for m in runtime_messages[:-1] if isinstance(m, (HumanMessage, AIMessage))]
+            last_history = conv_only[-6:]
             runtime_messages = [
-                *runtime_messages[:-1],
+                *last_history,
                 HumanMessage(content=self._standalone_query),
             ]
         if restored_state and restored_state.context:
@@ -643,19 +715,30 @@ class DataAgentRunner(BaseExecutor):
             "max_steps": max_steps,
         }
         interrupted = False
-
-        async for chunk in self._stream_agentscope_events(
-            event_stream=agent.reply_stream(inputs),
-            agent=agent,
-            tools=guarded_tools,
-            native_model=native_model,
-            state=state,
-            stream_meta=stream_meta,
-            emit_final_guard=False,
-        ):
-            if is_interrupt_sse_chunk(chunk):
-                interrupted = True
-            yield chunk
+        initial_tool_choice = self._resolve_initial_tool_choice(state)
+        original_model = agent.model
+        
+        # 优化：如果在 prefetch 阶段就已经确定 schema 检索未命中 (schema_miss)，直接短路跳过首轮 LLM 交互以节省延迟与 Token，下沉进后面的修复轮次
+        if state.schema_miss:
+            logger.info("[DataAgentRunner] Prefetch schema miss, skipping initial LLM interaction and entering repair directly.")
+        else:
+            if initial_tool_choice is not None:
+                agent.model = _ForcedFirstToolChoiceModel(original_model, initial_tool_choice)
+            try:
+                async for chunk in self._stream_agentscope_events(
+                    event_stream=agent.reply_stream(inputs),
+                    agent=agent,
+                    tools=guarded_tools,
+                    native_model=native_model,
+                    state=state,
+                    stream_meta=stream_meta,
+                    emit_final_guard=False,
+                ):
+                    if is_interrupt_sse_chunk(chunk):
+                        interrupted = True
+                    yield chunk
+            finally:
+                agent.model = original_model
         if interrupted:
             return
         if self._is_schema_fatal(state):
@@ -785,7 +868,10 @@ class DataAgentRunner(BaseExecutor):
             example_ids = [ex["id"] for ex in examples if ex.get("id")]
             similarities = [ex.get("similarity", 0) for ex in examples if ex.get("id")]
             if example_ids:
-                await ExampleService.record_usage(example_ids, self.trace_id, similarities=similarities)
+                try:
+                    await ExampleService.record_usage(example_ids, self.trace_id, similarities=similarities)
+                except Exception as ex_rec:
+                    logger.warning("[DataAgentRunner] Failed to record few-shot example usage stats: %s", ex_rec)
 
             self._pending_few_shot_log = {
                 "type": "log",
@@ -843,24 +929,44 @@ class DataAgentRunner(BaseExecutor):
             )
         return "\n\n".join(blocks)
 
+    @staticmethod
+    def _clean_schema_fallback_query(text: str) -> str:
+        stop_words = ["分析", "统计", "查询", "获取", "列出", "展示", "显示", "查一下", "情况", "关于", "的", "在", "内", "后"]
+        cleaned = text
+        for word in stop_words:
+            cleaned = cleaned.replace(word, " ")
+        return " ".join(cleaned.split())
+
     async def _plan_schema_search_keywords(
         self,
         user_question: str,
         standalone_query: str,
         examples: List[Dict[str, Any]],
     ) -> str:
-        fallback_query = (standalone_query or user_question or "").strip()[:300]
+        fallback_query = self._clean_schema_fallback_query((standalone_query or user_question or "").strip())[:300]
+        if len(fallback_query) < 12 and re.match(r"^[\u4e00-\u9fa5\w\s-]+$", fallback_query):
+            query_lower = fallback_query.lower()
+            sql_keywords = {"select", "show", "list", "查询", "列出", "展示", "显示", "获取", "查一下", "统计"}
+            if not any(kw in query_lower for kw in sql_keywords):
+                logger.info(
+                    "[DataAgentRunner] Schema keyword planner bypassed for query: %s",
+                    fallback_query
+                )
+                return fallback_query
         prompt = (
             "你是 ChatBI 的元数据检索词规划器。你的任务不是生成 SQL，而是为 get_dataset_schema(keywords) "
             "生成最适合检索数据集/表/字段/指标定义的短关键词。\n\n"
             "要求：\n"
-            "1. 结合用户原始问题、独立查数问题和命中的历史案例；若没有历史案例，也必须从用户需求中抽取关键词。\n"
+            "1. 结合用户原始问题、独立查数问题 and 命中的历史案例；若没有历史案例，也必须从用户需求中抽取关键词。\n"
             "2. 优先保留业务对象/实体、指标、维度、时间字段含义，以及历史案例中出现过的物理表名/字段名。\n"
             "3. 去掉无助于元数据检索的动作词、礼貌词、排序数量描述和 SQL 生成意图。\n"
             "4. 不要生成 SQL，不要编造案例中没有出现的新物理表名。\n"
             "5. keywords 必须是空格分隔的关键词短语，优先 3 到 10 个词；不要输出完整查询句子。\n"
-            "6. 只返回 JSON。示例：{\"keywords\":\"商品 销售额 省份 product_order_detail product_name sales_amount\"}。\n"
-            "7. keywords 不能为空，禁止输出 `...`、`关键词`、`N/A` 这类占位符。\n\n"
+            "6. 严禁直接输出用户原始的长句子或问题原句，必须将其拆解为多个空格分隔的核心业务名词。\n"
+            "   - 反例：如果输入为“分析注册用户在注册后 7 天内的活跃情况”，你绝对不能返回 `{\"keywords\": \"分析注册用户在注册后 7 天内的活跃情况\"}`。\n"
+            "   - 正例：高品质的输出应为 `{\"keywords\": \"注册用户 活跃\"}`。\n"
+            "7. 只返回 JSON。示例：{\"keywords\":\"商品 销售额 省份 product_order_detail product_name sales_amount\"}。\n"
+            "8. keywords 不能为空，禁止输出 `...`、`关键词`、`N/A` 这类占位符。\n\n"
             f"【用户原始问题】\n{user_question}\n\n"
             f"【独立查数问题】\n{standalone_query}\n\n"
             f"【命中的历史案例线索】\n{self._example_schema_keyword_context(examples)}"
@@ -1043,11 +1149,13 @@ class DataAgentRunner(BaseExecutor):
             instructions.append("5. 结合【用户个性化偏好与记忆】，将最新提问中的俗称、别名、旧称转换为对应的标准名称。")
             ltm_section = f"\n\n【用户个性化偏好与记忆】\n{ltm_context}"
 
+        time_anchor = build_data_query_time_anchor_block()
         prompt = (
             "你是 ChatBI 查询改写器。请根据最近对话和用户偏好，把【最新提问】改写成一句独立、完整、适合检索元数据和历史 SQL 案例的查数问题。\n"
             "要求：\n"
             + "\n".join(instructions)
             + ltm_section
+            + f"\n\n{time_anchor}"
         )
         if recent_history:
             prompt += "\n\n【最近对话】\n" + "\n".join(recent_history)
@@ -1093,9 +1201,14 @@ class DataAgentRunner(BaseExecutor):
             "{dataset_menu}",
             DataQueryPrompts.REUSE_DATASET_MENU_PLACEHOLDER,
         )
-        result_json = json.dumps(last_result, ensure_ascii=False, indent=2)
-        if len(result_json) > 30000:
-            result_json = result_json[:30000] + "\n... [上一轮结果过长已截断]"
+        safe_result = dict(last_result)
+        for r_key in ("rows", "items", "data", "records"):
+            val = safe_result.get(r_key)
+            if isinstance(val, list) and len(val) > 50:
+                safe_result[r_key] = val[:50]
+                safe_result["_display_note"] = "部分明细数据由于上下文长度限制已在此处被省略..."
+                break
+        result_json = json.dumps(safe_result, ensure_ascii=False, indent=2)
 
         from app.services.ai.runtime.agentscope.compat import HumanMessage
 
@@ -1205,8 +1318,10 @@ class DataAgentRunner(BaseExecutor):
                 if len(result_json) > 20000:
                     result_json = result_json[:20000] + "\n... [上一轮结果过长已截断]"
             context_action_prompt = f"\n\n{DataQueryPrompts.context_action_guide(result_json)}"
+        time_anchor = build_data_query_time_anchor_block()
         return (
             f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n"
+            f"{time_anchor}\n\n"
             f"{DataQueryPrompts.SQL_PLAN_ENFORCEMENT}\n\n"
             f"{DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT}\n\n"
             f"{system_prompt}"
@@ -1303,8 +1418,23 @@ class DataAgentRunner(BaseExecutor):
                         state.sql_plan_missing = True
                     state.sql_completed = True
                     parsed_output = self._try_parse_json_output(output)
-                    state.empty_sql_reason = self._detect_empty_result(parsed_output) or ""
-                    state.empty_sql_result = bool(state.empty_sql_reason)
+                    empty_reason = self._detect_empty_result(parsed_output) or ""
+                    
+                    sql_text = ""
+                    if isinstance(tool_args, dict):
+                        sql_text = tool_args.get("sql") or tool_args.get("query") or ""
+                    
+                    is_diag = self._is_diagnostic_sql(sql_text)
+                    
+                    if empty_reason:
+                        state.empty_sql_reason = empty_reason
+                        state.empty_sql_result = True
+                    else:
+                        if not is_diag:
+                            state.empty_sql_reason = ""
+                            state.empty_sql_result = False
+                            state.last_successful_sql_output = output
+                    
                     state.sql_error, state.sql_error_message = self._detect_sql_error(output)
                     if not state.sql_error:
                         await self._save_last_data_result_for_followups(tool_args, parsed_output)
@@ -1582,6 +1712,26 @@ class DataAgentRunner(BaseExecutor):
         state.empty_sql_reason = ""
         state.sql_plan_missing = False
         state.sql_before_schema = False
+        # 彻底清空上一轮的 SQL 缓存，并重置 Schema 未命中状态，防范修复过程中的 Gate 误拦截
+        state.last_successful_sql_output = None
+        state.successful_sqls = {}
+        state.schema_miss = False
+
+    def _resolve_force_execute_sql_tool_choice(self, state: _DataRunState) -> Any | None:
+        from agentscope.tool import ToolChoice
+
+        if (
+            state.requires_fresh_data
+            and state.schema_completed
+            and not self._is_schema_fatal(state)
+            and not state.sql_completed
+        ):
+            return ToolChoice(mode="execute_sql_query")
+        return None
+
+    def _resolve_initial_tool_choice(self, state: _DataRunState) -> Any | None:
+        """Schema 已就绪时，首轮 Agent 第一次模型调用强制 execute_sql_query。"""
+        return self._resolve_force_execute_sql_tool_choice(state)
 
     def _resolve_repair_tool_choice(self, state: _DataRunState) -> Any | None:
         from agentscope.tool import ToolChoice
@@ -1601,8 +1751,7 @@ class DataAgentRunner(BaseExecutor):
         ):
             if not state.schema_completed:
                 return ToolChoice(mode="get_dataset_schema")
-            if not state.sql_completed:
-                return ToolChoice(mode="execute_sql_query")
+            return self._resolve_force_execute_sql_tool_choice(state)
         return None
 
     def _build_repair_title(self, state: _DataRunState) -> str:
@@ -1748,12 +1897,37 @@ class DataAgentRunner(BaseExecutor):
         state.no_authorized_schema = self._is_no_authorized_schema(output)
         state.rag_not_synced = self._is_rag_not_synced(output)
         state.schema_miss = self._is_no_relevant_schema(output)
-        if self._is_schema_fatal(state) or not str(output or "").strip():
+        if self._is_schema_fatal(state) or state.schema_miss or not str(output or "").strip():
             state.schema_completed = False
             state.sql_before_schema = False
             return
         state.schema_completed = True
         state.sql_before_schema = False
+
+    @staticmethod
+    def _is_diagnostic_sql(sql: str) -> bool:
+        """识别大模型是否在执行用于诊断/对账的临时 SQL"""
+        sql_upper = " ".join(str(sql or "").upper().split())
+        # 1. 包含 SHOW TABLES / SHOW COLUMNS 等元数据查询
+        if any(x in sql_upper for x in ("SHOW TABLES", "SHOW COLUMNS", "DESCRIBE ", "DESC ")):
+            return True
+        # 2. 包含仅为了查某列唯一值的 DISTINCT 查询
+        if "SELECT DISTINCT" in sql_upper and "LIMIT" in sql_upper:
+            return True
+        # 3. 包含 COUNT 查询且没有 GROUP BY (即只查表行数)
+        if "COUNT(" in sql_upper and "GROUP BY" not in sql_upper:
+            return True
+        # 4. 包含小 LIMIT 限制 (小于等于 10) 的自由采样数据
+        import re
+        match = re.search(r"LIMIT\s+(\d+)", sql_upper)
+        if match:
+            try:
+                limit_val = int(match.group(1))
+                if limit_val <= 10:
+                    return True
+            except Exception:
+                pass
+        return False
 
     @staticmethod
     def _is_rag_not_synced(tool_output: Any) -> bool:
@@ -1771,10 +1945,13 @@ class DataAgentRunner(BaseExecutor):
         try:
             return json.loads(text)
         except Exception:
-            try:
-                return ast.literal_eval(text)
-            except Exception:
-                return tool_output
+            # 限制字符串长度在 5000 以内才使用 ast.literal_eval 兜底，防止解析畸形超大报文时引起 CPU 挂起和 Event Loop 阻塞
+            if len(text) < 5000:
+                try:
+                    return ast.literal_eval(text)
+                except Exception:
+                    pass
+            return tool_output
 
     def _extract_result_row_lists(self, parsed: Any, depth: int = 0) -> list[list[Any]]:
         if depth > 4:
@@ -1845,6 +2022,7 @@ class DataAgentRunner(BaseExecutor):
         if self._is_structured_sql_result(parsed):
             return False, ""
 
+        # 剔除可能会误判成功数据集明细中包含“失败/错误”普通文本记录的过宽正则，仅保留系统/数据库底层强报错特征词
         error_patterns = [
             r"unknown column",
             r"unknown table",
@@ -1853,10 +2031,6 @@ class DataAgentRunner(BaseExecutor):
             r"access denied",
             r"permission denied",
             r"unauthorized",
-            r"^报错[:：]",
-            r"^错误[:：]",
-            r"^异常[:：]",
-            r"^失败[:：]",
             r"SQL Syntax Error",
             r"SQL Validation Failed",
         ]
@@ -1912,6 +2086,7 @@ class DataAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 agent, tools, native_model, data_state, stream_meta = await self._resolve_pending_runtime(pending)
                 interrupted = False

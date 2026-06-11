@@ -351,5 +351,4 @@ async def execute_sql_query_core(
     if auth_check_only:
         return json.dumps({"allowed": True}, ensure_ascii=False)
 
-    sql_to_run = sql.replace("%", "%%")
-    return await call_external_sql_api(sql_to_run, data_source=data_source)
+    return await call_external_sql_api(sql, data_source=data_source)

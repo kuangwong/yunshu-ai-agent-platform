@@ -75,10 +75,16 @@ def extract_latest_assistant_text(agent: Any, *, include_thinking: bool = False)
 
 
 def is_interrupt_sse_chunk(chunk: Dict[str, Any]) -> bool:
+    """Native agent 循环是否应暂停并等待外部恢复。
+
+    工具执行日志（type=log）在失败时也会带 status=error，但不应中断循环，
+    否则 reconcile / synthesis 兜底无法向用户输出可见正文。
+    """
     return chunk.get("type") in {
         "permission_required",
         "external_execution_required",
-    } or chunk.get("status") == "error"
+        "error",
+    }
 
 
 def _pending_request_id_field(kind: str) -> str:

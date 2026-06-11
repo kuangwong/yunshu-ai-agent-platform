@@ -690,6 +690,68 @@ async def test_general_runner_static_fallback_when_synthesis_returns_empty(chat_
 
 
 @pytest.mark.asyncio
+async def test_general_runner_continues_synthesis_after_tool_error_log(chat_config):
+    """工具失败日志 status=error 不应中断 native 流，应继续 synthesis 兜底输出正文。"""
+    from agentscope.state import AgentState
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.assistant_agent_runner import AssistantAgentRunner
+    from app.services.ai.runtime.agentscope.compat import AIMessage
+    from app.services.ai.runtime.agentscope.event_stream import new_native_stream_state
+
+    class FakeAgent:
+        def __init__(self):
+            self.state = AgentState(session_id="s1", reply_id="r1", context=[])
+
+    async def fake_event_stream():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_read",
+            tool_call_name="Read",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_read",
+            delta="Error: File does not exist: /tmp/missing.py",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_read")
+        yield SimpleNamespace(type="REPLY_END", reply_id="r1", session_id="s1")
+
+    class SynthesisLLM:
+        async def astream(self, messages):
+            yield AIMessage(content="文件不存在，请检查路径后重试。")
+
+    runner = AssistantAgentRunner(
+        config=chat_config,
+        trace_id="test-tool-error-synthesis",
+        trace_buffer=[],
+    )
+    state = new_native_stream_state(system_content="sys", max_steps=5)
+    state["user_query"] = "读取 user.py"
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_synthesis_llm",
+        AsyncMock(return_value=SynthesisLLM()),
+    ):
+        chunks = []
+        async for chunk in runner._stream_agentscope_native_events(
+            event_stream=fake_event_stream(),
+            agent=FakeAgent(),
+            tools=[],
+            native_model=SimpleNamespace(model="qwen-test"),
+            state=state,
+        ):
+            chunks.append(chunk)
+
+    tool_logs = [c for c in chunks if c.get("type") == "log" and c.get("status") == "error"]
+    assert tool_logs, "应保留工具失败日志"
+    content = "".join(
+        c["content"] for c in chunks if "content" in c and c.get("type") != "error"
+    )
+    assert "文件不存在" in content or "未能生成完整回答" in content
+
+
+@pytest.mark.asyncio
 async def test_general_runner_restored_state_only_sends_latest_user_message(chat_config):
     """恢复 AgentState 后，只应向 AgentScope 追加本轮最新用户消息，避免重复灌入历史。"""
     from agentscope.message import Msg, TextBlock

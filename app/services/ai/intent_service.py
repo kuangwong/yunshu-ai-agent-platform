@@ -1,7 +1,7 @@
 import json
 import re
 from enum import Enum
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 from pydantic import BaseModel, Field
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
@@ -137,6 +137,9 @@ _KNOWLEDGE_SIGNALS = [
     "流程是什么", "怎么处理", "如何处理", "怎么做", "如何做", "怎样处理",
     "规范", "手册", "sop", "注意事项", "制度", "指引", "文档说明",
     "操作步骤", "处理流程", "标准流程", "预案", "是什么意思",
+    "怎么操作", "如何操作", "操作指引", "运维规范", "故障排查", "应急预案",
+    "知识库", "文档里", "说明书", "用户手册", "政策", "条例", "合规",
+    "wiki", "playbook", "runbook",
 ]
 _DATA_QUERY_SIGNALS = [
     "查询", "查一下", "查下", "统计", "多少", "列表", "记录", "趋势",
@@ -292,6 +295,21 @@ class IntentService:
         )
 
     @staticmethod
+    def _intent_from_tool_call_payload(data: Any) -> Optional[IntentResponse]:
+        """意图模型偶发直接返回工具调用 JSON，而非 IntentResponse 结构。"""
+        if not isinstance(data, dict):
+            return None
+        tool_name = str(data.get("tool") or data.get("name") or "").strip().lower()
+        if "search_knowledge" in tool_name:
+            return IntentResponse(
+                intent=IntentType.KNOWLEDGE_BASE,
+                confidence=0.9,
+                reasoning="模型返回 search_knowledge_base 工具调用，归类为知识库问答",
+                entities=[],
+            )
+        return None
+
+    @staticmethod
     def _parse_response(raw: str) -> IntentResponse:
         text = (raw or "").strip()
         try:
@@ -301,6 +319,9 @@ class IntentService:
             if not match:
                 raise
             data = json.loads(match.group())
+            tool_intent = IntentService._intent_from_tool_call_payload(data)
+            if tool_intent is not None:
+                return tool_intent
             return IntentResponse.model_validate(data)
 
     async def identify_intent(

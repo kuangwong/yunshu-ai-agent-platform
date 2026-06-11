@@ -224,6 +224,23 @@ async def resolve_data_query_turn_classification(
     has_last_data_result = bool(has_last_data_result)
 
     q = (user_query or "").strip()
+    if not messages:
+        classification = DataQueryTurnClassification(
+            turn_type=DataQueryTurnType.NEW_DATA_QUERY,
+            reasoning="首轮会话无历史，自动归类为新数据查询以降低首包延迟",
+            requires_fresh_data=True,
+            requires_few_shot=True,
+            skip_intent_llm=True,
+            intent=IntentType.DATA_QUERY,
+        )
+        intent_info = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=1.0,
+            reasoning=classification.reasoning,
+            entities=[],
+        )
+        return classification, intent_info, 0.0
+
     intent_start = time.time()
     classification = await _classify_with_llm(
         q,

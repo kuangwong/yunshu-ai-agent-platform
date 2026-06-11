@@ -77,17 +77,24 @@ def default_data_agent_turn_classification(monkeypatch):
 @pytest.mark.asyncio
 async def test_data_agent_runner_resolves_chatbi_runtime_tools(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
+    from app.services.ai.tools.registry import ToolRegistry
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-data", trace_buffer=[])
 
     tools = await runner._resolve_runtime_tools_from_config()
+    tool_names = [tool.name for tool in tools]
 
-    assert [tool.name for tool in tools] == [
+    assert tool_names[:3] == [
         "update_dashboard_context",
         "get_dataset_schema",
         "execute_sql_query",
     ]
-    assert [tool.permission_scope for tool in tools] == ["read", "read", "read"]
+    assert [tool.permission_scope for tool in tools[:3]] == ["read", "read", "read"]
+    system_tool_names = {tool.name for tool in ToolRegistry.get_system_implicit_tools()}
+    assert system_tool_names.issubset(set(tool_names))
+    assert "get_current_time" in tool_names
+    time_tool = next(tool for tool in tools if tool.name == "get_current_time")
+    assert time_tool.permission_scope == "read"
 
 
 @pytest.mark.asyncio
@@ -292,12 +299,15 @@ async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_to
 
     fake_workspace = MagicMock()
     fake_toolkit = MagicMock()
-    build_chatbi = AsyncMock(return_value=(fake_toolkit, []))
+    build_chatbi = AsyncMock(return_value=(MagicMock(), []))
+    build_toolkit = MagicMock(return_value=fake_toolkit)
     captured_agent_kwargs: dict = {}
 
     def fake_agent(**kwargs):
         captured_agent_kwargs.update(kwargs)
-        return MagicMock(name="AgentInstance")
+        instance = MagicMock()
+        instance.name = "AgentInstance"
+        return instance
 
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.get_local_workspace",
@@ -306,6 +316,10 @@ async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_to
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.build_chatbi_toolkit",
         build_chatbi,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.build_toolkit",
+        build_toolkit,
     )
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.Agent",
@@ -331,6 +345,10 @@ async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_to
     )
 
     build_chatbi.assert_awaited_once()
+    build_toolkit.assert_called_once_with(
+        tools,
+        approval_mode=runner.permission_options.get("approval_mode"),
+    )
     assert captured_agent_kwargs["toolkit"] is fake_toolkit
     assert captured_agent_kwargs["offloader"] is fake_workspace
     assert agent.name == "AgentInstance"
@@ -346,6 +364,8 @@ async def test_data_agent_runner_system_content_includes_data_guardrails(data_co
     system_content = await runner._build_system_content()
 
     assert DataQueryPrompts.GLOBAL_GUARDRAILS in system_content
+    assert "[当前时间锚点]" in system_content
+    assert "【相对时间 SQL 规则】" in system_content
     assert DataQueryPrompts.SQL_PLAN_ENFORCEMENT in system_content
     assert DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT in system_content
     assert data_config.system_prompt in system_content
@@ -758,11 +778,13 @@ async def test_data_agent_runner_builds_native_agent_with_chatbi_toolkit(
     assert captured["system_prompt"] == "system"
     assert captured["react_config"].max_iters == 7
     schemas = await captured["toolkit"].get_tool_schemas()
-    assert [item["function"]["name"] for item in schemas] == [
+    schema_names = [item["function"]["name"] for item in schemas]
+    assert schema_names[:3] == [
         "update_dashboard_context",
         "get_dataset_schema",
         "execute_sql_query",
     ]
+    assert "get_current_time" in schema_names
 
 
 @pytest.mark.asyncio
@@ -1564,6 +1586,34 @@ def test_resolve_repair_tool_choice_forces_sql_after_schema(data_config):
     choice = runner._resolve_repair_tool_choice(state)
     assert isinstance(choice, ToolChoice)
     assert choice.mode == "execute_sql_query"
+
+
+def test_resolve_initial_tool_choice_forces_sql_after_prefetched_schema(data_config):
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-initial-force-sql", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    choice = runner._resolve_initial_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "execute_sql_query"
+
+
+def test_resolve_initial_tool_choice_skips_without_fresh_data_or_schema(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-initial-no-force", trace_buffer=[])
+
+    assert runner._resolve_initial_tool_choice(
+        _DataRunState(requires_fresh_data=False, schema_completed=True)
+    ) is None
+    assert runner._resolve_initial_tool_choice(
+        _DataRunState(requires_fresh_data=True, schema_completed=False)
+    ) is None
+    assert runner._resolve_initial_tool_choice(
+        _DataRunState(requires_fresh_data=True, schema_completed=True, sql_completed=True)
+    ) is None
 
 
 def test_resolve_repair_tool_choice_forces_schema_when_missing(data_config):
@@ -2413,26 +2463,15 @@ async def test_data_agent_runner_double_repair_when_model_skips_sql_twice(
             self.tool_choices.append(tool_choice)
             if self.calls == 1:
                 return ChatResponse(
-                    content=[
-                        ToolCallBlock(
-                            id="call_schema",
-                            name="get_dataset_schema",
-                            input='{"keywords": "demo"}',
-                        )
-                    ],
+                    content=[TextBlock(text="第一次跳过 SQL 直接回答")],
                     is_last=True,
                 )
             if self.calls == 2:
                 return ChatResponse(
-                    content=[TextBlock(text="第一次跳过 SQL 直接回答")],
-                    is_last=True,
-                )
-            if self.calls == 3:
-                return ChatResponse(
                     content=[TextBlock(text="第一次 repair 仍跳过 SQL")],
                     is_last=True,
                 )
-            if self.calls == 4:
+            if self.calls == 3:
                 return ChatResponse(
                     content=[
                         ToolCallBlock(
@@ -2518,10 +2557,12 @@ async def test_data_agent_runner_double_repair_when_model_skips_sql_twice(
         if isinstance(event, dict) and event.get("title") == "必须先执行 SQL 查数"
     ]
     assert len(repair_titles) == 2
+    assert fake_model.tool_choices[0] is not None
+    assert getattr(fake_model.tool_choices[0], "mode", None) == "execute_sql_query"
+    assert fake_model.tool_choices[1] is not None
+    assert getattr(fake_model.tool_choices[1], "mode", None) == "execute_sql_query"
     assert fake_model.tool_choices[2] is not None
     assert getattr(fake_model.tool_choices[2], "mode", None) == "execute_sql_query"
-    assert fake_model.tool_choices[3] is not None
-    assert getattr(fake_model.tool_choices[3], "mode", None) == "execute_sql_query"
 
 
 @pytest.mark.asyncio

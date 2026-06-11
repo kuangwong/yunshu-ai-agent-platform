@@ -434,22 +434,25 @@
             <div
               class="flex justify-end items-center space-x-2 mt-1 pr-10"
             >
-              <!-- Actions (Hover Only) -->
-              <div class="flex items-center space-x-2 transition-opacity" :class="windowWidth < 640 ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'">
+              <!-- Actions -->
+              <div class="flex flex-nowrap items-center space-x-2">
               <button
                 @click="startEdit(msg)"
-                class="flex items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                class="flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
                 :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="编辑"
                 :disabled="isProcessing"
               >
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                 </svg>
-                <span>编辑</span>
+                <span class="hidden sm:inline">编辑</span>
               </button>
               <button
                 @click="copyMessage(msg.content)"
-                class="flex items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                class="flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="复制"
               >
                 <svg
                   class="w-3 h-3"
@@ -464,7 +467,7 @@
                     d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"
                   />
                 </svg>
-                <span>复制</span>
+                <span class="hidden sm:inline">复制</span>
               </button>
               <!-- Time -->
               <span v-if="msg.timestamp" class="text-[10px] text-gray-400 dark:text-gray-500 select-none ml-1">{{ formatBubbleTime(msg.timestamp) }}</span>
@@ -666,7 +669,12 @@
                              </div>
                           </div>                          <!-- Details -->
                           <div v-if="log.details && log.isExpanded" class="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700/50">
-                            <template v-if="splitSqlToolLogDetails(log.details)">
+                            <KnowledgeToolLogDetails
+                              v-if="isKnowledgeToolLog(log.details)"
+                              :details="log.details"
+                              class="mb-1"
+                            />
+                            <template v-else-if="splitSqlToolLogDetails(log.details)">
                               <div class="space-y-1.5 mb-1">
                                 <div class="p-2 bg-gray-900 rounded border border-gray-800 font-mono text-[10px] text-emerald-400 leading-relaxed overflow-x-auto relative group/sql">
                                   <div class="flex justify-between items-center mb-1 text-[9px] text-gray-500 font-sans uppercase tracking-tight">
@@ -830,7 +838,7 @@
                                                                 <MessageRenderer
                                                                   :content="msg.content"
                                                                   @quick-question="handleQuickQuestion"
-                                                                  @show-citation="(id) => handleShowCitation(msg, id)"
+                                                                  @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
                                                                 />
                                 <!-- Typewriter Cursor -->
                                 <span 
@@ -861,7 +869,7 @@
                                   </span>
                                 </div>
                                                                                                                           <!-- Citation Cards -->
-                                                                                                                          <div v-if="msg.citations && msg.citations.some(c => (c.similarity || 0) >= 0.5)" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50">
+                                                                                                                          <div v-if="msg.citations && msg.citations.length > 0" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50">
                                                                                                                             <button 
                                                                                                                               @click="msg.isCitationsExpanded = !msg.isCitationsExpanded"
                                                                                                                               class="flex items-center space-x-1.5 mb-2 w-full text-left group/cite-head"
@@ -869,7 +877,7 @@
                                                                                                                                <svg class="w-3.5 h-3.5 text-gray-400 group-hover/cite-head:text-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                                                                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                                                                                                                                </svg>
-                                                                                                                               <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1 group-hover/cite-head:text-gray-600 dark:group-hover/cite-head:text-gray-300 transition-colors">引用来源 ({{ msg.citations.filter(c => (c.similarity || 0) >= 0.5).length }})</span>
+                                                                                                                               <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1 group-hover/cite-head:text-gray-600 dark:group-hover/cite-head:text-gray-300 transition-colors">引用来源 ({{ msg.citations.length }})</span>
                                                                                                                                <svg 
                                                                                                                                   class="w-3.5 h-3.5 text-gray-400 transform transition-transform duration-200"
                                                                                                                                   :class="{ 'rotate-180': msg.isCitationsExpanded }"
@@ -888,12 +896,13 @@
                                                                                                                               >
                                                                                                                                 <div v-show="msg.isCitationsExpanded" class="overflow-hidden">
                                                                                                                                                                   <div class="flex flex-wrap gap-2 py-1">
-                                                                                                                                                                     <!-- Only render visible cards with similarity > 50% -->
                                                                                                                                                                      <template v-for="(cite, cIdx) in msg.citations" :key="cIdx">
                                                                                                                                                                        <div 
-                                                                                                                                                                          v-if="(cite.similarity || 0) >= 0.5"
-                                                                                                                                                                          class="group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden"
-                                                                                                                                                                          @click="cite.isExpanded = !cite.isExpanded"
+                                                                                                                                                                          class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer overflow-hidden"
+                                                                                                                                                                          :class="cite.similarity && cite.similarity < 0.5
+                                                                                                                                                                            ? 'bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200/80 dark:border-amber-700/50 hover:border-amber-400/60'
+                                                                                                                                                                            : 'bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 hover:border-primary/40 dark:hover:border-primary/40'"
+                                                                                                                                                                          @click.stop="openCitationPopover(cite, $event)"
                                                                                                                                                                        >
                                                                                                                                                                           <!-- File Icon -->
                                                                                                                                                                           <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -904,62 +913,30 @@
                                                                                                                                                                             {{ cite.doc_name }}
                                                                                                                                                                           </span>
                                                                                                                                                                           <!-- Score -->
-                                                                                                                                                                          <span v-if="cite.similarity" class="text-[9px] font-mono text-gray-400 px-1 rounded bg-gray-100 dark:bg-gray-700">
+                                                                                                                                                                          <span
+                                                                                                                                                                            v-if="cite.similarity"
+                                                                                                                                                                            class="text-[9px] font-mono px-1 rounded"
+                                                                                                                                                                            :class="cite.similarity < 0.5
+                                                                                                                                                                              ? 'text-amber-600 dark:text-amber-400 bg-amber-100/80 dark:bg-amber-900/40'
+                                                                                                                                                                              : 'text-gray-400 bg-gray-100 dark:bg-gray-700'"
+                                                                                                                                                                            :title="cite.similarity < 0.5 ? '相似度较低，请结合原文核对' : undefined"
+                                                                                                                                                                          >
                                                                                                                                                                             {{ (cite.similarity * 100).toFixed(0) }}%
                                                                                                                                                                           </span>
                                                                                                                                                                        </div>
-                                                                                                                                                                       <!-- Global Preview Modal (Rendered regardless of similarity threshold) -->
-                                                                                                                                                                       <div v-if="cite.isExpanded" class="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/20 backdrop-blur-sm" @click.stop="cite.isExpanded = false">
-                                                                                                                                                                          <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col border border-gray-200 dark:border-gray-700 animate-fade-in-up" @click.stop>
-                                                                                                                                                                             <div class="flex justify-between items-start mb-4">
-                                                                                                                                                                                <div class="flex items-center gap-3">
-                                                                                                                                                                                   <div class="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                                                                                                                                                                                      <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                                                                                                                                                                   </div>
-                                                                                                                                                                                   <div>
-                                                                                                                                                                                      <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">{{ cite.doc_name }}</h4>
-                                                                                                                                                                                      <div class="flex items-center gap-2 mt-0.5">
-                                                                                                                                                                                         <span class="text-[10px] text-gray-400 font-mono">匹配度: {{ (cite.similarity * 100).toFixed(1) }}%</span>
-                                                                                                                                                                                         <span class="w-1 h-1 rounded-full bg-gray-300"></span>
-                                                                                                                                                                                         <span class="text-[10px] text-gray-400">RAGFlow Chunk #{{ cite.chunk_id?.slice(-6) || cite.id }}</span>
-                                                                                                                                                                                      </div>
-                                                                                                                                                                                   </div>
-                                                                                                                                                                                </div>
-                                                                                                                                                                                <button @click="cite.isExpanded = false" class="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-400">
-                                                                                                                                                                                   <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-                                                                                                                                                                                </button>
-                                                                                                                                                                             </div>
-                                                                                                                                                                             <div class="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg border border-gray-100 dark:border-gray-700/50">
-                                                                                                                                                                                <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-wrap font-sans">
-                                                                                                                                                                                   {{ cite.content }}
-                                                                                                                                                                                </div>
-                                                                                                                                                                             </div>
-                                                                                                                                                                             <div class="mt-4 flex justify-end">
-                                                                                                                                                                                <button @click="cite.isExpanded = false" class="px-4 py-2 bg-primary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-all shadow-md shadow-primary/20" :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }">
-                                                                                                                                                                                   关闭
-                                                                                                                                                                                </button>
-                                                                                                                                                                             </div>
-                                                                                                                                                                          </div>
-                                                                                                                                                                       </div>
                                                                                                                                                                      </template>
-                                                                                                                                     <!-- Fallback if no high-similarity chunks found -->
-                                                                                                                                     <div v-if="!msg.citations.some(c => (c.similarity || 0) >= 0.5)" class="w-full py-2 text-[10px] text-gray-400 italic">
-                                                                                                                                        未发现相关度超过 50% 的直接参考资料
-                                                                                                                                     </div>
                                                                                                                                   </div>
                                                                                                                                 </div>
                                                                                                                               </transition>
                                                                                             </div>
                                                             </div>
             <!-- Agent Message Actions (Overlay/Bottom) -->
-            <div
-              class="flex items-center space-x-2 mt-1.5 transition-opacity"
-              :class="windowWidth < 640 ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'"
-            >
+            <div class="flex flex-nowrap items-center space-x-2 mt-1.5">
               <button
                 @click="copyMessage(msg.content)"
-                class="flex items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                class="flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
                 :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="复制"
               >
                 <svg
                   class="w-3 h-3"
@@ -974,7 +951,7 @@
                     d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"
                   />
                 </svg>
-                <span>复制</span>
+                <span class="hidden sm:inline">复制</span>
               </button>
               <!-- Export Data Button -->
               <button
@@ -994,7 +971,9 @@
               <button
                 v-if="msg === lastAgentMessage && !isProcessing"
                 @click="regenerate"
-                class="flex items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                class="flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="重新生成"
               >
                 <svg
                   class="w-3 h-3"
@@ -1009,13 +988,14 @@
                     d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
                   />
                 </svg>
-                <span>重新生成</span>
+                <span class="hidden sm:inline">重新生成</span>
               </button>
               <!-- Token 消耗显示 -->
-              <span
+              <button
                 v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
-                class="flex items-center space-x-1.5 text-[10px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/40 px-1.5 py-0.5 rounded border border-gray-100/50 dark:border-gray-800/20 select-none font-mono cursor-help ml-1"
-                title="本次大模型交互消耗的 Token 数量，包括输入提示词（Input）和输出回答（Output）。"
+                @click="openModelCallStats(msg)"
+                class="flex shrink-0 items-center space-x-1.5 text-[10px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/40 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-primary dark:hover:text-primary-active border border-gray-100/50 dark:border-gray-800/20 rounded px-1.5 py-0.5 select-none font-mono transition-all duration-200 cursor-pointer active:scale-95 ml-1"
+                title="点击查看详细的大模型调用统计指标（如单步耗时、工具调用明细、Token消耗详情等）"
               >
                 <span class="flex items-center space-x-0.5">
                   <span class="scale-90 text-[9px] text-gray-400/80">in:</span>
@@ -1026,7 +1006,7 @@
                   <span class="scale-90 text-[9px] text-gray-400/80">out:</span>
                   <span class="font-medium text-gray-500 dark:text-gray-400">{{ msg.completion_tokens || 0 }}</span>
                 </span>
-              </span>
+              </button>
               <!-- Feedback Buttons（托管引擎不展示点赞踩） -->
               <div v-if="!hideEmbedLikeDislike" class="flex items-center space-x-1 ml-auto">
                 <button
@@ -1104,65 +1084,14 @@
       </div>
     </transition>
 
-    <!-- Citation Bottom Sheet (Mobile Only) -->
-    <teleport to="body">
-        <transition name="drawer">
-            <div v-if="showCitationDrawer" class="fixed inset-0 z-[200] flex flex-col justify-end">
-                <!-- Backdrop -->
-                <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="showCitationDrawer = false"></div>
-                <!-- Panel -->
-                <div 
-                    class="relative bg-white dark:bg-gray-900 rounded-t-[2.5rem] shadow-[0_-10px_40px_rgba(0,0,0,0.2)] p-6 pt-2 pb-12 flex flex-col animate-slide-up border-t border-white/10 select-none touch-none"
-                    @click.stop
-                    ref="citationPanel"
-                    @touchstart="handleTouchStart"
-                    @touchmove="handleTouchMove"
-                    @touchend="handleTouchEnd"
-                    :style="panelStyle"
-                >
-                    <!-- Drag Handle -->
-                    <div class="w-12 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mx-auto my-4 mb-6"></div>
-                    
-                    <div class="flex justify-between items-start mb-6">
-                        <div class="flex items-center gap-3">
-                            <div class="p-2.5 bg-blue-50 dark:bg-blue-900/30 rounded-2xl text-blue-600">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                            </div>
-                            <div class="min-w-0">
-                                <h4 class="text-sm font-black text-gray-800 dark:text-gray-100 truncate max-w-[200px]">{{ activeCitation?.doc_name }}</h4>
-                                <div class="text-[10px] text-gray-400 font-bold uppercase tracking-tighter mt-0.5">Reference Material · {{ (activeCitation?.similarity * 100).toFixed(0) }}% Match</div>
-                            </div>
-                        </div>
-                        <button @click="showCitationDrawer = false" class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-400">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
-                    </div>
-
-                    <div class="flex-1 overflow-y-auto max-h-[50vh] bg-gray-50/50 dark:bg-gray-800/50 p-5 rounded-3xl border border-gray-100 dark:border-gray-800 mb-4 custom-scrollbar">
-                        <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed font-medium">
-                            {{ activeCitation?.content }}
-                        </div>
-                    </div>
-
-                    <div class="flex gap-3">
-                        <button 
-                            @click="copyToClipboard(activeCitation?.content)"
-                            class="flex-1 py-3.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded-2xl text-xs font-black uppercase tracking-widest active:scale-95 transition-all"
-                        >
-                            复制内容
-                        </button>
-                        <button 
-                            @click="showCitationDrawer = false"
-                            class="flex-1 py-3.5 bg-primary text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-primary/20 active:scale-95 transition-all"
-                            :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
-                        >
-                            阅读完毕
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </transition>
-    </teleport>
+    <CitationPopover
+      :visible="citationPopover.visible"
+      :citation="citationPopover.citation"
+      :anchor-rect="citationPopover.anchorRect"
+      :anchor-el="citationPopover.anchorEl"
+      @close="closeCitationPopover"
+      @copy="(content) => copyToClipboard(content)"
+    />
 
     <!-- Input Area -->
     <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 relative z-20">
@@ -1702,7 +1631,7 @@
       title="确定要开始新对话吗？"
       message="当前内容将保存至历史记录。"
       type="primary"
-      @confirm="() => { resetSession(); showConfirmModal = false; }"
+      @confirm="handleConfirmClearSession"
       @cancel="showConfirmModal = false"
     />
     <!-- Settings Modal -->
@@ -2058,6 +1987,190 @@
         </div>
       </div>
     </div>
+
+    <!-- Model Call Stats Modal -->
+    <div
+      v-if="showStatsModal"
+      class="absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      @click.self="showStatsModal = false"
+    >
+      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-fade-in-up border border-gray-200 dark:border-gray-700 flex flex-col max-h-[85%]">
+        <!-- Header -->
+        <div class="px-4 py-3.5 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-gray-50 dark:bg-gray-800/50 shrink-0">
+          <div class="flex items-center space-x-2">
+            <svg class="w-4 h-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" :style="{ color: 'var(--primary-color, #1677ff)' }">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2" />
+            </svg>
+            <h3 class="text-sm font-bold text-gray-800 dark:text-gray-200">大模型调用明细指标</h3>
+          </div>
+          <button @click="showStatsModal = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors cursor-pointer">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- Body -->
+        <div class="p-4 overflow-y-auto space-y-4 flex-1">
+          <!-- Loading skeleton -->
+          <div v-if="loadingStats" class="space-y-3 py-6">
+            <div class="h-4 bg-gray-100 dark:bg-gray-700 rounded w-2/3 animate-pulse"></div>
+            <div class="space-y-2">
+              <div class="h-3 bg-gray-100 dark:bg-gray-700 rounded animate-pulse"></div>
+              <div class="h-3 bg-gray-100 dark:bg-gray-700 rounded animate-pulse w-5/6"></div>
+              <div class="h-3 bg-gray-100 dark:bg-gray-700 rounded animate-pulse w-4/5"></div>
+            </div>
+          </div>
+
+          <!-- Empty state -->
+          <div v-else-if="currentStats.length === 0" class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">
+            <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            暂无此消息的大模型调用明细记录
+          </div>
+
+          <!-- Content -->
+          <div v-else class="space-y-4">
+            <!-- Summary stats -->
+            <div class="grid grid-cols-4 gap-2 text-center">
+              <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+                <div class="text-[10px] text-gray-400 dark:text-gray-500">调用次数</div>
+                <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalCalls }}</div>
+              </div>
+              <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+                <div class="text-[10px] text-gray-400 dark:text-gray-500">总耗时</div>
+                <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalDuration }}s</div>
+              </div>
+              <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+                <div class="text-[10px] text-gray-400 dark:text-gray-500">总输入</div>
+                <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalIn }}</div>
+              </div>
+              <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+                <div class="text-[10px] text-gray-400 dark:text-gray-500">总输出</div>
+                <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalOut }}</div>
+              </div>
+            </div>
+
+            <!-- Detailed logs list -->
+            <div class="space-y-3">
+              <div
+                v-for="(stat, index) in currentStats"
+                :key="index"
+                class="bg-gray-50/50 dark:bg-gray-900/20 border border-gray-100 dark:border-gray-700/50 rounded-xl p-3 space-y-2 transition-all hover:shadow-sm"
+              >
+                <!-- Log header -->
+                <div class="flex items-start justify-between">
+                  <div class="flex flex-col">
+                    <div class="flex items-center space-x-1.5">
+                      <span class="inline-flex items-center justify-center w-5 h-5 text-[10px] font-bold text-white rounded bg-primary/80 shrink-0" :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }">
+                        #{{ stat.call_index }}
+                      </span>
+                      <span class="text-xs font-bold text-gray-700 dark:text-gray-300 max-w-[150px] truncate" :title="stat.agent_name">
+                        {{ stat.agent_name }}
+                      </span>
+                    </div>
+                    <span v-if="stat.timestamp" class="text-[9px] text-gray-400 dark:text-gray-500 mt-1 font-mono">
+                      调用时间: {{ formatModelCallTime(stat.timestamp) }}
+                    </span>
+                  </div>
+                  <span class="text-[10px] text-gray-400 dark:text-gray-500 font-mono text-right shrink-0">
+                    {{ (stat.elapsed_ms / 1000).toFixed(2) }}s ({{ stat.elapsed_ms }}ms)
+                  </span>
+                </div>
+
+                <!-- Log parameters -->
+                <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                  <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                    <span class="text-gray-400">大模型名称:</span>
+                    <span class="font-medium text-gray-700 dark:text-gray-300 font-mono text-[11px] truncate max-w-[130px]" :title="stat.model_name">
+                      {{ stat.model_name }}
+                    </span>
+                  </div>
+                  <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                    <span class="text-gray-400">输入信息数:</span>
+                    <span class="font-medium text-gray-700 dark:text-gray-300">
+                      {{ stat.input_message_count }}
+                    </span>
+                  </div>
+                  <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                    <span class="text-gray-400">输入 Token:</span>
+                    <span class="font-medium text-gray-700 dark:text-gray-300 font-mono">
+                      {{ stat.input_tokens }}
+                      <span v-if="stat.cache_input_tokens > 0" class="text-[10px] text-green-500 font-normal ml-0.5" :title="'命中上下文缓存 Token: ' + stat.cache_input_tokens">
+                        (hit:{{ stat.cache_input_tokens }}, {{ ((stat.cache_input_tokens / stat.input_tokens) * 100).toFixed(0) }}%)
+                      </span>
+                    </span>
+                  </div>
+                  <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                    <span class="text-gray-400">输出 Token:</span>
+                    <span class="font-medium text-gray-700 dark:text-gray-300 font-mono">
+                      {{ stat.output_tokens }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Tool Calls -->
+                <div class="pt-1 text-[11px] space-y-1.5">
+                  <div class="flex items-center space-x-1">
+                    <span class="text-gray-400 shrink-0">工具调用:</span>
+                    <span
+                      v-if="stat.has_tool_calls && stat.tool_names && stat.tool_names.length > 0"
+                      class="inline-flex flex-wrap gap-1"
+                    >
+                      <span
+                        v-for="tName in stat.tool_names"
+                        :key="tName"
+                        class="bg-blue-50 dark:bg-blue-900/30 text-blue-500 border border-blue-100/50 dark:border-blue-800/30 px-1 py-0.5 rounded text-[9px] font-mono"
+                      >
+                        {{ tName }}
+                      </span>
+                    </span>
+                    <span v-else-if="stat.has_tools_bound" class="text-gray-400 italic">
+                      无（已绑定工具但未调用）
+                    </span>
+                    <span v-else class="text-gray-400 italic">
+                      无（未绑定工具）
+                    </span>
+                  </div>
+                  <!-- Tool Call Arguments Details -->
+                  <div v-if="stat.tool_calls && stat.tool_calls.length > 0" class="bg-gray-100/60 dark:bg-gray-950/40 p-2 rounded-lg text-[10px] font-mono text-gray-600 dark:text-gray-400 border border-gray-100 dark:border-gray-800 space-y-1 max-h-[100px] overflow-y-auto">
+                    <div v-for="(call, cIdx) in stat.tool_calls" :key="cIdx" class="break-all whitespace-pre-wrap">
+                      <span class="text-blue-500 dark:text-blue-400 font-bold">{{ call.name }}</span>(<span class="text-gray-600 dark:text-gray-400">{{ formatToolArgs(call.arguments) }}</span>)
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Thoughts and Output Text Expansion Panel -->
+                <div v-if="stat.reasoning_content || stat.response_text" class="pt-1 border-t border-gray-100/50 dark:border-gray-700/20">
+                  <button 
+                    @click="toggleStatExpand(stat.call_index)" 
+                    class="text-[10px] text-primary dark:text-blue-400 hover:underline flex items-center space-x-1 font-bold focus:outline-none cursor-pointer"
+                  >
+                    <span>{{ expandedStats[stat.call_index] ? '收起思考与输出' : '展开思考与输出' }}</span>
+                    <svg class="w-3 h-3 transform transition-transform" :class="expandedStats[stat.call_index] ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  <div v-if="expandedStats[stat.call_index]" class="mt-2 space-y-2 text-[10px] font-mono">
+                    <!-- Reasoning/Thought -->
+                    <div v-if="stat.reasoning_content" class="bg-amber-50/40 dark:bg-amber-950/10 border border-amber-100/50 dark:border-amber-900/20 p-2 rounded-lg text-amber-800 dark:text-amber-300">
+                      <div class="font-bold text-[9px] uppercase text-amber-500 mb-1">思考过程 (Thought)</div>
+                      <div class="whitespace-pre-wrap leading-relaxed">{{ stat.reasoning_content }}</div>
+                    </div>
+                    <!-- Final text output -->
+                    <div v-if="stat.response_text" class="bg-gray-100/80 dark:bg-gray-950/60 border border-gray-200/50 dark:border-gray-800/40 p-2 rounded-lg text-gray-700 dark:text-gray-300">
+                      <div class="font-bold text-[9px] uppercase text-gray-400 mb-1">大模型输出 (Output)</div>
+                      <div class="whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto break-all">{{ stat.response_text }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     </div>
 </template>
 <script setup lang="ts">
@@ -2069,6 +2182,7 @@ import { useToast } from "../composables/useToast";
 const toast = useToast();
 const showToast = toast.showToast;
 import MessageRenderer from "@/components/MessageRenderer.vue";
+import CitationPopover from "@/components/CitationPopover.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import ConfirmModal from "@/components/ConfirmModal.vue";
 import ExpertCapsule from "@/components/embed/ExpertCapsule.vue";
@@ -2090,6 +2204,8 @@ import {
   type TurnType,
 } from "@/utils/turnLogDisplay";
 import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
+import KnowledgeToolLogDetails from "@/components/KnowledgeToolLogDetails.vue";
+import { isKnowledgeToolLog } from "@/utils/knowledgeToolLog";
 import {
   dispatchAgentscopeStreamEvent,
   formatExternalExecutionStatus,
@@ -2178,6 +2294,22 @@ const formatTimeLabel = (isoStr: string): string => {
     return `${month}-${day} ${hours}:${minutes}`;
   } catch (e) { return ""; }
 };
+
+const formatModelCallTime = (isoStr: string): string => {
+  try {
+    const date = new Date(isoStr);
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${d} ${hours}:${minutes}:${seconds}`;
+  } catch (e) {
+    return isoStr || "";
+  }
+};
+
 
 function getDisplayLogs(msg: Message) {
   return filterLogsForTurn(msg.logs, msg.turnType);
@@ -2302,6 +2434,44 @@ const chatInputRef = ref<any>(null);
 const userInput = ref("");
 const showKnowledgeBaseSelector = ref(false);
 const showFileBrowserModal = ref(false);
+
+const showStatsModal = ref(false);
+const loadingStats = ref(false);
+const currentStats = ref<any[]>([]);
+const expandedStats = ref<Record<string, boolean>>({});
+
+const toggleStatExpand = (callIndex: number) => {
+  expandedStats.value[callIndex] = !expandedStats.value[callIndex];
+};
+
+const formatToolArgs = (args: any): string => {
+  if (!args) return "{}";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args);
+  } catch (e) {
+    return String(args);
+  }
+};
+
+watch(showStatsModal, (newVal) => {
+  if (!newVal) {
+    expandedStats.value = {};
+  }
+});
+
+const statsSummary = computed(() => {
+  let totalCalls = currentStats.value.length;
+  let totalDuration = currentStats.value.reduce((acc, cur) => acc + (cur.elapsed_ms || 0), 0);
+  let totalIn = currentStats.value.reduce((acc, cur) => acc + (cur.input_tokens || 0), 0);
+  let totalOut = currentStats.value.reduce((acc, cur) => acc + (cur.output_tokens || 0), 0);
+  return {
+    totalCalls,
+    totalDuration: (totalDuration / 1000).toFixed(2),
+    totalIn,
+    totalOut
+  };
+});
 
 const getSelectedKnowledgeBaseIds = () => {
   const attached = chatInputRef.value?.uploadedFiles?.find((f: any) => f.type === "knowledge_base");
@@ -2486,6 +2656,27 @@ const resolveReqContent = (msg: Message) => {
     }
   }
   return reqContent;
+};
+
+/** 收集会话内知识库 dataset ID（输入框附件 + 历史 user 消息附件，追问时继承首轮选择） */
+const collectKnowledgeDatasetIds = (): string[] => {
+  const ids: string[] = [];
+  const pushId = (raw: string) => {
+    const value = String(raw || "").trim();
+    if (value && !ids.includes(value)) ids.push(value);
+  };
+  const uploaded = chatInputRef.value?.uploadedFiles || [];
+  uploaded.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files));
+  sendable.forEach((m) => {
+    if (m.role !== "user") return;
+    m.files?.forEach((file: any) => {
+      if (file.type === "knowledge_base") pushId(file.url);
+    });
+  });
+  return ids;
 };
 
 /** 发给 API 的消息：仅当前轮 user 保留附件，历史轮次只传纯文字 */
@@ -3121,39 +3312,6 @@ const executeDeleteCommand = async () => {
   }
 };
 
-// --- Touch Handling for Citation Drawer ---
-const touchStartY = ref(0);
-const touchCurrentY = ref(0);
-
-const handleTouchStart = (e: TouchEvent) => {
-    if (e.touches && e.touches[0]) {
-        touchStartY.value = e.touches[0].clientY;
-        touchCurrentY.value = e.touches[0].clientY;
-    }
-};
-
-const handleTouchMove = (e: TouchEvent) => {
-    if (e.touches && e.touches[0]) {
-        touchCurrentY.value = e.touches[0].clientY;
-    }
-};
-
-const handleTouchEnd = () => {
-    const diff = touchCurrentY.value - touchStartY.value;
-    if (diff > 100) { // Dragged down significantly
-        showCitationDrawer.value = false;
-    }
-    touchStartY.value = 0;
-    touchCurrentY.value = 0;
-};
-
-const panelStyle = computed(() => {
-    const diff = touchCurrentY.value - touchStartY.value;
-    if (touchStartY.value > 0 && diff > 0) {
-        return { transform: `translateY(${diff}px)`, transition: 'none' };
-    }
-    return {};
-});
 watch(showHistorySidebar, (val) => {
     if (val && historyList.value.length === 0) {
         fetchHistory();
@@ -3518,6 +3676,13 @@ const resetSession = (newToken?: string) => {
     axios.defaults.headers.common["X-API-Key"] = newToken;
   }
   initChat();
+};
+const handleConfirmClearSession = () => {
+  resetSession();
+  showConfirmModal.value = false;
+  nextTick(() => {
+    chatInputRef.value?.focus();
+  });
 };
 const fetchSlashCommands = async () => {
   try {
@@ -3962,6 +4127,25 @@ const handleFeedback = async (msg: Message, type: "up" | "down") => {
     feedback: msg.feedback,
   });
 };
+
+const openModelCallStats = async (msg: any) => {
+  currentStats.value = [];
+  showStatsModal.value = true;
+  loadingStats.value = true;
+  try {
+    const res = await axios.get(`/api/v1/chat/conversation/${conversationId.value}/model_calls`, {
+      params: { trace_id: msg.trace_id }
+    });
+    if (res.data && res.data.data) {
+      currentStats.value = res.data.data.stats || [];
+    }
+  } catch (err) {
+    console.error("加载大模型调用明细失败:", err);
+  } finally {
+    loadingStats.value = false;
+  }
+};
+
 const stopGeneration = () => {
   if (abortController) {
     abortController.abort();
@@ -3985,40 +4169,74 @@ const stopGeneration = () => {
     }
   }
 };
-// Citation Drawer State (Mobile Only)
-const showCitationDrawer = ref(false);
-const activeCitation = ref<any>(null);
+const citationPopover = ref<{
+  visible: boolean;
+  citation: any;
+  anchorRect: DOMRect | null;
+  anchorEl: HTMLElement | null;
+}>({
+  visible: false,
+  citation: null,
+  anchorRect: null,
+  anchorEl: null,
+});
 
-const handleShowCitation = (msg: Message, citeId: string) => {
-  console.log("[Citation] UI Action - Target ID:", citeId);
-  if (!msg.citations || msg.citations.length === 0) {
-    console.warn("[Citation] Message has no citations attached.");
+const closeCitationPopover = () => {
+  citationPopover.value.visible = false;
+  citationPopover.value.citation = null;
+  citationPopover.value.anchorRect = null;
+  citationPopover.value.anchorEl = null;
+};
+
+const openCitationPopover = (citation: any, event: MouseEvent | HTMLElement) => {
+  const anchor = event instanceof HTMLElement ? event : (event.currentTarget as HTMLElement);
+  if (!anchor) return;
+
+  if (
+    citationPopover.value.visible &&
+    citationPopover.value.citation === citation
+  ) {
+    closeCitationPopover();
     return;
   }
-  
-  // 1. Find the target
-  let target = msg.citations.find(c => 
-    String(c.id) === String(citeId) || 
-    String(c.chunk_id) === String(citeId) ||
-    String(c.chunk_id)?.endsWith(String(citeId))
+
+  const rect = anchor.getBoundingClientRect();
+  citationPopover.value = {
+    visible: true,
+    citation,
+    anchorRect: new DOMRect(rect.x, rect.y, rect.width, rect.height),
+    anchorEl: anchor,
+  };
+};
+
+const resolveCitation = (msg: Message, citeId: string) => {
+  if (!msg.citations || msg.citations.length === 0) return null;
+
+  let target = msg.citations.find(
+    (c) =>
+      String(c.id) === String(citeId) ||
+      String(c.chunk_id) === String(citeId) ||
+      String(c.chunk_id)?.endsWith(String(citeId))
   );
-  
+
   if (!target && /^\d+$/.test(citeId)) {
-      const idx = parseInt(citeId);
-      target = msg.citations[idx - 1] || msg.citations[idx];
+    const idx = parseInt(citeId);
+    target = msg.citations[idx - 1] || msg.citations[idx];
   }
 
-  if (target) {
-    if (windowWidth.value < 640) {
-        // MOBILE: Open Bottom Sheet
-        activeCitation.value = target;
-        showCitationDrawer.value = true;
-    } else {
-        // DESKTOP: Open Modal
-        msg.isCitationsExpanded = true;
-        msg.citations.forEach(c => { c.isExpanded = false; });
-        target.isExpanded = true;
-    }
+  return target || null;
+};
+
+const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLElement) => {
+  const target = resolveCitation(msg, citeId);
+  if (!target) return;
+
+  msg.isCitationsExpanded = true;
+  await nextTick();
+  const anchorEl = anchor || (document.querySelector(`[data-cite-id="${citeId}"]`) as HTMLElement);
+  if (anchorEl) {
+    anchorEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    openCitationPopover(target, anchorEl);
   }
 };
 
@@ -4334,12 +4552,14 @@ const sendMessage = async () => {
   // 3. API Call
   abortController = new AbortController();
   try {
-    const body = {
+    const knowledgeDatasetIds = collectKnowledgeDatasetIds();
+    const body: Record<string, unknown> = {
       messages: buildOutboundMessages(),
-              stream: true,
-              agent_id: (config.routingMode === "expert" && config.expertAgentId) ? config.expertAgentId : (config.overrideAgentId || config.agentId),
-              enable_multi_agent: config.enableMultiAgent,
-              conversation_id: conversationId.value,      debug_options: {
+      stream: true,
+      agent_id: (config.routingMode === "expert" && config.expertAgentId) ? config.expertAgentId : (config.overrideAgentId || config.agentId),
+      enable_multi_agent: config.enableMultiAgent,
+      conversation_id: conversationId.value,
+      debug_options: {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
       },
@@ -4347,6 +4567,9 @@ const sendMessage = async () => {
         approval_mode: config.approvalMode || "ask",
       },
     };
+    if (knowledgeDatasetIds.length > 0) {
+      body.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
     const headers: any = {
       "Content-Type": "application/json",
     };

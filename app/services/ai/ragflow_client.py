@@ -332,7 +332,7 @@ class RagFlowClient:
         vector_similarity_weight: float = 0.3
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve chunks from specific datasets.
+        Retrieve chunks from specific datasets with robust auto-retry on network errors or 5xx failures.
         
         Args:
             query: User question.
@@ -356,55 +356,66 @@ class RagFlowClient:
         # [Log] Request Payload
         logger.info(f"[RAGFlowClient] Retrieval Request Payload: {json.dumps(payload, ensure_ascii=False)}")
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        max_attempts = 3
+        last_exception = None
+        
+        for attempt in range(1, max_attempts + 1):
             try:
-                response = await client.post(url, headers=self._get_headers(), json=payload)
-                
-                if response.status_code == 200:
-                    res_json = response.json()
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, headers=self._get_headers(), json=payload)
                     
-                    if res_json.get("code") == 0:
-                        chunks = res_json.get("data", [])
-                        # Normalize chunks
-                        if isinstance(chunks, dict):
-                            chunks = chunks.get("chunks", [])
+                    if response.status_code == 200:
+                        res_json = response.json()
                         
-                        # [Log] Response Summary
-                        logger.info(f"[RAGFlowClient] Retrieval Success. Found {len(chunks) if chunks else 0} chunks. (Query: {query[:20]}...)")
-                        
-                        normalized_chunks = []
-                        if isinstance(chunks, list):
-                            for chunk in chunks:
-                                # Robust document name extraction
-                                doc_name = (
-                                    chunk.get("document_keyword") or
-                                    chunk.get("doc_name") or 
-                                    chunk.get("docnm_kwd") or 
-                                    chunk.get("doc_nm") or 
-                                    chunk.get("document_name") or 
-                                    chunk.get("source") or 
-                                    "Unknown Document"
-                                )
-                                
-                                if doc_name == "Unknown Document":
-                                     logger.debug(f"[RAGFlow] Missing doc_name in retrieval chunk: {json.dumps(chunk, ensure_ascii=False)}")
-
-                                normalized_chunks.append({
-                                    "doc_name": doc_name,
-                                    "content": chunk.get("content_with_weight") or chunk.get("content") or str(chunk),
-                                    "similarity": chunk.get("similarity", 0.0),
-                                    "chunk_id": chunk.get("chunk_id") or chunk.get("id")
-                                })
-                        return normalized_chunks
+                        if res_json.get("code") == 0:
+                            chunks = res_json.get("data", [])
+                            # Normalize chunks
+                            if isinstance(chunks, dict):
+                                chunks = chunks.get("chunks", [])
+                            
+                            # [Log] Response Summary
+                            logger.info(f"[RAGFlowClient] Retrieval Success. Found {len(chunks) if chunks else 0} chunks. (Query: {query[:20]}...)")
+                            
+                            normalized_chunks = []
+                            if isinstance(chunks, list):
+                                for chunk in chunks:
+                                    # Robust document name extraction
+                                    doc_name = (
+                                        chunk.get("document_keyword") or
+                                        chunk.get("doc_name") or 
+                                        chunk.get("docnm_kwd") or 
+                                        chunk.get("doc_nm") or 
+                                        chunk.get("document_name") or 
+                                        chunk.get("source") or 
+                                        "Unknown Document"
+                                    )
+                                    
+                                    if doc_name == "Unknown Document":
+                                         logger.debug(f"[RAGFlow] Missing doc_name in retrieval chunk: {json.dumps(chunk, ensure_ascii=False)}")
+ 
+                                    normalized_chunks.append({
+                                        "doc_name": doc_name,
+                                        "content": chunk.get("content_with_weight") or chunk.get("content") or str(chunk),
+                                        "similarity": chunk.get("similarity", 0.0),
+                                        "chunk_id": chunk.get("chunk_id") or chunk.get("id")
+                                    })
+                            return normalized_chunks
+                        else:
+                            error_msg = f"RAGFlow API Error ({response.status_code}): {res_json.get('message')}"
+                            logger.error(f"[RAGFlow] {error_msg}")
+                            raise Exception(error_msg)
                     else:
-                        error_msg = f"RAGFlow API Error ({response.status_code}): {res_json.get('message')}"
+                        error_msg = f"RAGFlow HTTP Error {response.status_code}: {response.text}"
                         logger.error(f"[RAGFlow] {error_msg}")
                         raise Exception(error_msg)
-                else:
-                    error_msg = f"RAGFlow HTTP Error {response.status_code}: {response.text}"
-                    logger.error(f"[RAGFlow] {error_msg}")
-                    raise Exception(error_msg)
             except Exception as e:
-                 # Re-raise so caller can handle retry logic
-                 logger.error(f"[RAGFlow] Retrieval Exception: {e}")
-                 raise e
+                last_exception = e
+                logger.warning(f"[RAGFlow] Retrieval attempt {attempt} failed: {e}")
+                if attempt < max_attempts:
+                    import asyncio
+                    await asyncio.sleep(attempt * 0.5)
+                    continue
+        
+        # All attempts failed
+        logger.error(f"[RAGFlow] All {max_attempts} retrieval attempts failed. Last exception: {last_exception}")
+        raise last_exception

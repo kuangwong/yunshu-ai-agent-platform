@@ -5,6 +5,29 @@ import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
 
 type ApprovalMode = "ask" | "allow" | "deny";
+
+const APPROVAL_MODE_OPTIONS: {
+  value: ApprovalMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "ask",
+    label: "请求批准",
+    description: "写操作与需授权的工具调用前，均需你确认后才会执行",
+  },
+  {
+    value: "allow",
+    label: "自动批准",
+    description: "自动执行工具调用，仅在系统判定为危险操作时拦截",
+  },
+  {
+    value: "deny",
+    label: "拒绝执行",
+    description: "禁止所有需确认的工具调用（只读查询仍可执行）",
+  },
+];
+
 type ModelOption = {
   id?: string;
   name?: string;
@@ -109,11 +132,27 @@ watch(() => props.modelValue, (val) => { if (!val && inputRef.value) inputRef.va
 watch(() => props.isProcessing, (processing) => {
   if (processing) {
     showPlusMenu.value = false;
+    showApprovalMenu.value = false;
     isDrawerExpanded.value = false;
     showCommandMenu.value = false;
     showMentionList.value = false;
   }
 });
+
+const toggleApprovalMenu = () => {
+  if (props.isProcessing) return;
+  const next = !showApprovalMenu.value;
+  showApprovalMenu.value = next;
+  if (next) {
+    showPlusMenu.value = false;
+    nextTick(() => updateApprovalMenuPosition());
+  }
+};
+
+const selectApprovalMode = (mode: ApprovalMode) => {
+  emit("update:approvalMode", mode);
+  showApprovalMenu.value = false;
+};
 
 const handleInput = (e: Event) => {
   if (props.isProcessing) return;
@@ -210,28 +249,97 @@ const modelLabel = computed(() => {
   return model?.name || props.selectedModel;
 });
 
+const activeApprovalMode = computed(
+  () => props.approvalMode || "ask",
+);
+
+const activeApprovalLabel = computed(() => {
+  const option = APPROVAL_MODE_OPTIONS.find((item) => item.value === activeApprovalMode.value);
+  return option?.label || "请求批准";
+});
+
+const approvalTriggerToneClass = computed(() => {
+  switch (activeApprovalMode.value) {
+    case "allow":
+      return "bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/45 dark:text-blue-300 dark:hover:bg-blue-950/60";
+    case "deny":
+      return "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/45 dark:text-red-300 dark:hover:bg-red-950/60";
+    default:
+      return "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700/70";
+  }
+});
+
 const plusMenuContainerRef = ref<HTMLElement | null>(null);
+const approvalTriggerWrapperRef = ref<HTMLElement | null>(null);
+const approvalMenuPanelRef = ref<HTMLElement | null>(null);
+const approvalTriggerRef = ref<HTMLButtonElement | null>(null);
+const showApprovalMenu = ref(false);
+const approvalMenuPosition = reactive({
+  bottom: 0,
+  left: 0,
+  width: 320,
+});
+
+const isMobileViewport = computed(() => props.windowWidth < 640);
+
+const updateApprovalMenuPosition = () => {
+  const el = approvalTriggerRef.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const gutter = 12;
+  const maxWidth = 320;
+  const menuWidth = isMobileViewport.value
+    ? window.innerWidth - gutter * 2
+    : maxWidth;
+  let left = rect.left;
+  if (isMobileViewport.value) {
+    left = gutter;
+  } else if (left + menuWidth > window.innerWidth - gutter) {
+    left = Math.max(gutter, rect.right - menuWidth);
+  }
+  if (left < gutter) left = gutter;
+  approvalMenuPosition.bottom = Math.max(gutter, window.innerHeight - rect.top + 8);
+  approvalMenuPosition.left = left;
+  approvalMenuPosition.width = menuWidth;
+};
 
 const handleGlobalClick = (event: MouseEvent) => {
   if (showPlusMenu.value && plusMenuContainerRef.value && !plusMenuContainerRef.value.contains(event.target as Node)) {
     showPlusMenu.value = false;
+  }
+  if (showApprovalMenu.value) {
+    const target = event.target as Node;
+    const inTrigger = approvalTriggerWrapperRef.value?.contains(target);
+    const inPanel = approvalMenuPanelRef.value?.contains(target);
+    if (!inTrigger && !inPanel) {
+      showApprovalMenu.value = false;
+    }
   }
 };
 
 const handleGlobalKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape') {
     showPlusMenu.value = false;
+    showApprovalMenu.value = false;
   }
+};
+
+const handleApprovalMenuLayout = () => {
+  if (showApprovalMenu.value) updateApprovalMenuPosition();
 };
 
 onMounted(() => {
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('keydown', handleGlobalKeydown);
+  window.addEventListener('resize', handleApprovalMenuLayout);
+  window.addEventListener('scroll', handleApprovalMenuLayout, true);
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', handleGlobalClick);
   document.removeEventListener('keydown', handleGlobalKeydown);
+  window.removeEventListener('resize', handleApprovalMenuLayout);
+  window.removeEventListener('scroll', handleApprovalMenuLayout, true);
 });
 const showPlusMenu = ref(false);
 const isUploading = ref(false);
@@ -240,6 +348,7 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const togglePlusMenu = () => {
   if (props.isProcessing) return;
   showPlusMenu.value = !showPlusMenu.value;
+  if (showPlusMenu.value) showApprovalMenu.value = false;
 };
 
 const triggerFileInput = () => {
@@ -498,7 +607,12 @@ defineExpose({
         </div>
 
         <!-- Input Box -->
-        <div @dragover.prevent @drop="handleDropFile" class="relative flex flex-col bg-gray-50 dark:bg-gray-800 rounded-2xl px-3 py-2.5 border border-gray-200 dark:border-gray-700 transition-all duration-500" :class="{ 'ring-2 ring-primary/20 border-primary/30 bg-white dark:bg-gray-900 shadow-lg shadow-primary/5': isProcessing }">
+        <div
+          @dragover.prevent
+          @drop="handleDropFile"
+          class="relative flex flex-col rounded-2xl border border-gray-200 bg-white px-3 py-2.5 transition-all duration-200 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/25 dark:border-gray-700 dark:bg-gray-800 dark:focus-within:ring-primary/30"
+          :class="{ 'ring-2 ring-primary/20 border-primary shadow-lg shadow-primary/5 dark:bg-gray-900': isProcessing }"
+        >
             <div v-if="isProcessing" class="absolute inset-0 rounded-xl opacity-40 pointer-events-none overflow-hidden">
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-primary/20 to-transparent w-[200%] animate-scan"></div>
             </div>
@@ -538,7 +652,7 @@ defineExpose({
 
             <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full min-h-[46px] bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed disabled:opacity-60" :placeholder="isProcessing ? 'AI 正在生成回复...' : '输入消息，或 \'/\' 使用快捷指令...'"></textarea>
 
-            <div class="relative z-20 mt-1 flex min-h-9 items-center gap-2">
+            <div class="relative z-20 mt-1 flex min-h-9 flex-wrap items-center gap-1.5 sm:gap-2">
                 <!-- Plus Button & Menu (Premium Glassmorphism Style) -->
                 <div ref="plusMenuContainerRef" class="relative flex-shrink-0 z-30">
                     <button @click="togglePlusMenu" :disabled="isProcessing" class="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400" :class="{ 'text-primary bg-gray-100 dark:bg-gray-700 rotate-45': showPlusMenu && !isProcessing }" title="添加附件或上下文">
@@ -594,28 +708,166 @@ defineExpose({
                     </transition>
                 </div>
 
-                <label class="relative flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-semibold text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700/70">
-                    <span class="pointer-events-none">请求批准</span>
-                    <select
-                      :value="approvalMode || 'ask'"
+                <div ref="approvalTriggerWrapperRef" class="relative flex-shrink-0">
+                    <button
+                      ref="approvalTriggerRef"
+                      type="button"
                       :disabled="isProcessing"
-                      class="approval-mode-select absolute inset-0 cursor-pointer opacity-0 disabled:cursor-not-allowed"
-                      aria-label="批准方式"
-                      @change="emit('update:approvalMode', (($event.target as HTMLSelectElement).value as ApprovalMode))"
+                      :title="`工具批准：${activeApprovalLabel}`"
+                      class="flex h-8 max-w-[9.5rem] items-center gap-1 rounded-full px-2.5 text-xs font-semibold leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:max-w-none sm:gap-1.5 sm:px-3"
+                      :class="[
+                        approvalTriggerToneClass,
+                        showApprovalMenu && !isProcessing
+                          ? (activeApprovalMode === 'ask'
+                            ? 'bg-gray-100 dark:bg-gray-700/70'
+                            : 'ring-1 ring-current/25 shadow-sm')
+                          : '',
+                      ]"
+                      aria-haspopup="listbox"
+                      :aria-expanded="showApprovalMenu"
+                      @click.stop="toggleApprovalMenu"
                     >
-                        <option value="ask">ASK</option>
-                        <option value="allow">ALLOW</option>
-                        <option value="deny">DENY</option>
-                    </select>
-                    <span class="pointer-events-none text-gray-700 dark:text-gray-200">{{ (approvalMode || 'ask').toUpperCase() }}</span>
-                    <svg class="pointer-events-none h-3.5 w-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6" />
-                    </svg>
-                </label>
+                        <svg
+                          v-if="activeApprovalMode === 'ask'"
+                          class="h-4 w-4 flex-shrink-0 opacity-90"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                        </svg>
+                        <svg
+                          v-else-if="activeApprovalMode === 'allow'"
+                          class="h-4 w-4 flex-shrink-0 opacity-90"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016a11.959 11.959 0 0 0-4.5-1.253Z" />
+                        </svg>
+                        <svg
+                          v-else
+                          class="h-4 w-4 flex-shrink-0 opacity-90"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                        <span
+                          class="truncate"
+                          :class="activeApprovalMode === 'ask' ? 'text-gray-700 dark:text-gray-200' : ''"
+                        >{{ activeApprovalLabel }}</span>
+                        <svg class="h-3.5 w-3.5 flex-shrink-0 opacity-70 transition-transform" :class="{ 'rotate-180': showApprovalMenu }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6" />
+                        </svg>
+                    </button>
+
+                    <Teleport to="body">
+                        <transition
+                          enter-active-class="transition ease-out duration-150"
+                          enter-from-class="opacity-0 translate-y-1"
+                          enter-to-class="opacity-100 translate-y-0"
+                          leave-active-class="transition ease-in duration-100"
+                          leave-from-class="opacity-100 translate-y-0"
+                          leave-to-class="opacity-0 translate-y-1"
+                        >
+                            <div
+                              v-if="showApprovalMenu"
+                              class="fixed inset-0 z-[1200]"
+                              @click="showApprovalMenu = false"
+                            >
+                                <div
+                                  class="absolute inset-0"
+                                  :class="isMobileViewport ? 'bg-black/50' : 'bg-black/15'"
+                                />
+                                <div
+                                  ref="approvalMenuPanelRef"
+                                  class="overflow-hidden shadow-2xl"
+                                  :class="isMobileViewport
+                                    ? 'absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800'
+                                    : 'absolute rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800'"
+                                  :style="isMobileViewport ? {} : {
+                                    bottom: `${approvalMenuPosition.bottom}px`,
+                                    left: `${approvalMenuPosition.left}px`,
+                                    width: `${approvalMenuPosition.width}px`,
+                                  }"
+                                  role="listbox"
+                                  aria-label="工具批准方式"
+                                  @click.stop
+                                >
+                                    <div
+                                      class="border-b border-gray-100 dark:border-gray-700"
+                                      :class="isMobileViewport ? 'px-4 py-3.5' : 'px-3 py-2.5'"
+                                    >
+                                        <p
+                                          class="font-semibold text-gray-900 dark:text-gray-100"
+                                          :class="isMobileViewport ? 'text-sm' : 'text-xs'"
+                                        >应如何批准工具操作？</p>
+                                    </div>
+                                    <div
+                                      class="overflow-y-auto py-1 custom-scrollbar"
+                                      :class="isMobileViewport ? 'max-h-[min(70vh,420px)] pb-[max(0.75rem,env(safe-area-inset-bottom))]' : 'max-h-[min(50vh,280px)]'"
+                                    >
+                                        <button
+                                          v-for="option in APPROVAL_MODE_OPTIONS"
+                                          :key="option.value"
+                                          type="button"
+                                          role="option"
+                                          :aria-selected="activeApprovalMode === option.value"
+                                          class="flex w-full items-start gap-2.5 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                                          :class="[
+                                            isMobileViewport ? 'px-4 py-3.5' : 'px-3 py-2.5',
+                                            activeApprovalMode === option.value ? 'bg-primary/10 dark:bg-primary/20' : '',
+                                          ]"
+                                          @click="selectApprovalMode(option.value)"
+                                        >
+                                            <div class="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                                                <svg v-if="option.value === 'ask'" class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                                                </svg>
+                                                <svg v-else-if="option.value === 'allow'" class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016a11.959 11.959 0 0 0-4.5-1.253Z" />
+                                                </svg>
+                                                <svg v-else class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" />
+                                                </svg>
+                                            </div>
+                                            <div class="min-w-0 flex-1">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <span
+                                                      class="font-semibold text-gray-900 dark:text-gray-100"
+                                                      :class="isMobileViewport ? 'text-base' : 'text-sm'"
+                                                    >{{ option.label }}</span>
+                                                    <svg
+                                                      v-if="activeApprovalMode === option.value"
+                                                      class="h-4 w-4 flex-shrink-0 text-primary"
+                                                      fill="none"
+                                                      stroke="currentColor"
+                                                      viewBox="0 0 24 24"
+                                                    >
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
+                                                    </svg>
+                                                </div>
+                                                <p
+                                                  class="mt-1 leading-snug text-gray-600 dark:text-gray-300"
+                                                  :class="isMobileViewport ? 'text-xs' : 'text-[11px]'"
+                                                >{{ option.description }}</p>
+                                            </div>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </transition>
+                    </Teleport>
+                </div>
 
                 <div class="flex-1"></div>
 
-                <label class="relative flex max-w-[9rem] items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700/70 sm:max-w-[14rem]" :title="selectedModel ? `覆盖模型: ${selectedModel}` : '使用智能体默认模型'">
+                <label class="relative flex h-8 max-w-[9rem] flex-shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-semibold leading-none text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700/70 sm:max-w-[14rem] sm:gap-1.5 sm:px-3" :title="selectedModel ? `覆盖模型: ${selectedModel}` : '使用智能体默认模型'">
                     <span class="pointer-events-none max-w-[7rem] truncate sm:max-w-[12rem]">{{ modelLabel }}</span>
                     <select
                       :value="selectedModel || ''"

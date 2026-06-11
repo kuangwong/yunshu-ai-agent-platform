@@ -51,6 +51,10 @@ class ChatCompletionRequest(BaseModel):
     version_id: Optional[str] = None
     conversation_id: Optional[str] = None  # 服务端对话记忆 ID
     enable_multi_agent: bool = True        # 是否启用多智能体协同
+    knowledge_dataset_ids: Optional[List[str]] = Field(
+        default=None,
+        description="本轮结构化指定的 RAGFlow 知识库 dataset ID 列表（优先于消息内文本提示）",
+    )
     debug_options: Optional[Dict[str, Any]] = None
     permission_options: Optional[Dict[str, Any]] = None
 
@@ -165,6 +169,69 @@ async def finalize_conversation(
     )
 
 
+class ModelCallStatDetail(BaseModel):
+    call_index: int = Field(..., description="调用序号")
+    timestamp: str = Field(..., description="时间戳")
+    conversation_id: str = Field(..., description="会话ID")
+    agent_name: str = Field(..., description="智能体名称")
+    model_name: str = Field(..., description="使用的模型名称")
+    input_message_count: int = Field(..., description="输入消息轮数")
+    has_tools_bound: bool = Field(..., description="是否绑定了工具")
+    input_tokens: int = Field(..., description="输入 Token 数")
+    output_tokens: int = Field(..., description="输出 Token 数")
+    cache_input_tokens: int = Field(..., description="缓存命中输入 Token")
+    total_tokens: int = Field(..., description="总 Token")
+    has_tool_calls: bool = Field(..., description="是否触发了工具调用")
+    tool_names: List[str] = Field(..., description="调用的工具名称列表")
+    elapsed_ms: float = Field(..., description="调用耗时(ms)")
+    trace_id: Optional[str] = Field(None, description="本次运行的 Trace ID")
+    response_text: Optional[str] = Field("", description="模型输出文本")
+    reasoning_content: Optional[str] = Field("", description="模型深度思考内容")
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="工具调用详情")
+
+
+class ModelCallStatsResponse(BaseModel):
+    stats: List[ModelCallStatDetail] = Field(..., description="大模型调用指标列表")
+
+
+@router.get("/conversation/{conversation_id}/model_calls",
+    response_model=StandardResponse[ModelCallStatsResponse],
+    summary="获取会话的大模型调用明细",
+    description="从服务端的 Redis 列表中获取当前会话的大模型调用指标，支持通过 trace_id 过滤。"
+)
+async def get_conversation_model_calls(
+    conversation_id: str,
+    trace_id: Optional[str] = None,
+    user_info: Dict[str, Any] = Depends(require_api_key)
+):
+    user_id = user_info.get("user_id") if user_info else None
+    uid = str(user_id) if user_id else "anonymous"
+
+    from app.services.ai.runtime.agentscope.middleware import STATS_KEY_SUFFIX
+    from app.services.ai.memory_service import memory_service
+    from app.core.redis import get_redis
+
+    key = f"{memory_service.KEY_PREFIX}:{uid}:{conversation_id}:{STATS_KEY_SUFFIX}"
+    redis = await get_redis()
+    if not redis:
+        return StandardResponse(data=ModelCallStatsResponse(stats=[]))
+
+    raw_data = await redis.lrange(key, 0, -1)
+    stats = []
+    for item in raw_data:
+        try:
+            if isinstance(item, bytes):
+                item = item.decode("utf-8")
+            record = json.loads(item)
+            if trace_id and record.get("trace_id") != trace_id:
+                continue
+            stats.append(record)
+        except Exception:
+            continue
+
+    return StandardResponse(data=ModelCallStatsResponse(stats=stats))
+
+
 @router.post("/completions",
     response_model=StandardResponse[ChatCompletionResponse],
     summary="发送对话请求",
@@ -227,6 +294,7 @@ async def create_chat_completion(
                 enable_multi_agent=completion_request.enable_multi_agent,
                 debug_options=completion_request.debug_options,
                 permission_options=completion_request.permission_options,
+                knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
             ):
                 # Format each chunk as an SSE data event
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -254,6 +322,7 @@ async def create_chat_completion(
             api_key=api_key_str,
             enable_multi_agent=completion_request.enable_multi_agent,
             permission_options=completion_request.permission_options,
+            knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
         )
         return StandardResponse(data=result)
 

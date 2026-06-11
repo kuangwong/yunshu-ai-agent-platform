@@ -149,8 +149,10 @@ class AssistantAgentRunner(BaseExecutor):
         route_hint = AssistantPrompts.route_hints(self.route_hints)
         if route_hint:
             system_content = f"{route_hint}\n\n{system_content}"
+        # 仅保留最近 10 轮原始历史（20 条消息），防止长对话 Token 无限累积
+        pruned_history = history[-20:] if history else history
         runtime_messages = [SystemMessage(content=system_content)]
-        runtime_messages.extend(convert_history_to_messages(history))
+        runtime_messages.extend(convert_history_to_messages(pruned_history, strip_thought=True))
         runtime_messages = normalize_messages_for_llm(runtime_messages)
 
         # 3. Execution Mode Selection
@@ -299,6 +301,7 @@ class AssistantAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 persisted = await agent_state_store.load(
                     self._runtime_user_id(),
@@ -306,16 +309,30 @@ class AssistantAgentRunner(BaseExecutor):
                     agent_name,
                 )
                 restored_state = None
-                if persisted and persisted.matches(
-                    tools_fingerprint=tools_fingerprint,
-                    agent_name=agent_name,
-                ):
-                    try:
-                        from agentscope.state import AgentState
+                if persisted:
+                    if persisted.matches(
+                        tools_fingerprint=tools_fingerprint,
+                        agent_name=agent_name,
+                    ):
+                        try:
+                            from agentscope.state import AgentState
 
-                        restored_state = AgentState.model_validate(persisted.state)
-                    except Exception as exc:
-                        logger.warning("[AssistantAgentRunner] Failed to restore AgentState: %s", exc)
+                            restored_state = AgentState.model_validate(persisted.state)
+                        except Exception as exc:
+                            logger.warning("[AssistantAgentRunner] Failed to restore AgentState: %s", exc)
+                    else:
+                        logger.warning(
+                            "[AssistantAgentRunner] Tools fingerprint mismatch for agent=%s (stored=%s, current=%s). "
+                            "Resetting conversation state to prevent tool call conflicts.",
+                            agent_name, persisted.tools_fingerprint, tools_fingerprint
+                        )
+                        yield {
+                            "type": "log",
+                            "id": f"state_reset_{uuid.uuid4().hex[:8]}",
+                            "title": "智能体配置变更：历史会话状态已重置",
+                            "details": "检测到绑定的工具集或模型配置发生改变，为防工具调用崩溃，已重置运行时状态。",
+                            "status": "warning",
+                        }
 
                 agent = await self._build_native_agent(
                     native_model=native_model,
@@ -383,6 +400,7 @@ class AssistantAgentRunner(BaseExecutor):
         primary_model_name: str,
     ) -> Any:
         from agentscope.agent import Agent, ReActConfig
+        from app.services.ai.runtime.agentscope.middleware import ModelCallStatsMiddleware
 
         context_config = await load_context_config()
         model_config = await build_model_config(
@@ -398,6 +416,16 @@ class AssistantAgentRunner(BaseExecutor):
             tools,
             approval_mode=self.permission_options.get("approval_mode"),
         )
+        middlewares = []
+        if self.conversation_id:
+            middlewares.append(
+                ModelCallStatsMiddleware(
+                    user_id=self._runtime_user_id(),
+                    conversation_id=self.conversation_id,
+                    agent_name=self._runtime_agent_name(),
+                    trace_id=self.trace_id,
+                )
+            )
         return Agent(
             name=self._runtime_agent_name(),
             system_prompt=system_content,
@@ -408,6 +436,7 @@ class AssistantAgentRunner(BaseExecutor):
             model_config=model_config,
             context_config=context_config,
             react_config=ReActConfig(max_iters=max_steps),
+            middlewares=middlewares,
         )
 
     @staticmethod
@@ -607,6 +636,9 @@ class AssistantAgentRunner(BaseExecutor):
         ):
             yield chunk
 
+    def _build_synthesis_user_message(self, user_query: str, execution_review: str) -> str:
+        return AssistantPrompts.synthesis_user_message(user_query, execution_review)
+
     async def _stream_general_synthesis_fallback(
         self,
         *,
@@ -653,7 +685,7 @@ class AssistantAgentRunner(BaseExecutor):
             messages = normalize_messages_for_llm([
                 SystemMessage(content=str(state.get("system_content") or self.config.system_prompt or "")),
                 HumanMessage(
-                    content=AssistantPrompts.synthesis_user_message(user_query, execution_review)
+                    content=self._build_synthesis_user_message(user_query, execution_review)
                 ),
             ])
             async for chunk in llm.astream(messages):
@@ -759,6 +791,7 @@ class AssistantAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 agent, tools, native_model, state = await self._resolve_pending_runtime(pending)
                 interrupted = False
@@ -861,7 +894,12 @@ class AssistantAgentRunner(BaseExecutor):
             timestamp=datetime.fromtimestamp(time.time() - duration_tool / 1000)
         )
         
-        display_output = truncate_for_context(str(tool_output), max_len=500)
+        if tool_name == "search_knowledge_base" and not is_error:
+            from app.services.ai.knowledge_utils import format_knowledge_tool_log_display
+
+            display_output = format_knowledge_tool_log_display(tool_output, max_len=1200)
+        else:
+            display_output = truncate_for_context(str(tool_output), max_len=500)
         log_event = {
             "type": "log",
             "id": tool_id,

@@ -6,6 +6,7 @@ import TraceLogViewer from "@/components/TraceLogViewer.vue";
 import DebugConfigPanel from "@/components/DebugConfigPanel.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import MessageRenderer from "@/components/MessageRenderer.vue";
+import CitationPopover from "@/components/CitationPopover.vue";
 import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
@@ -28,6 +29,8 @@ import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
 import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
 import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
+import KnowledgeToolLogDetails from "@/components/KnowledgeToolLogDetails.vue";
+import { isKnowledgeToolLog } from "@/utils/knowledgeToolLog";
 
 const route = useRoute();
 const { showToast } = useToast();
@@ -790,6 +793,7 @@ const activeTraceId = ref("");
 
 // --- Agent Context State ---
 const agentContext = ref<Record<string, any>>({});
+const ragRetrievalMeta = ref<Record<string, any> | null>(null);
 
 const clearContext = (key?: string) => {
   if (key) {
@@ -837,6 +841,7 @@ const loadGreeting = async () => {
 const clearHistory = () => {
   generateNewConversation(true);
   agentContext.value = {};
+  ragRetrievalMeta.value = null;
   activeTraceId.value = "";
   showFullLogViewer.value = false;
 };
@@ -1062,6 +1067,39 @@ const regenerate = async (agentMsg: Message) => {
   await sendMessage();
 };
 
+const openModelCallStats = async (msg: any) => {
+  currentStats.value = [];
+  showStatsModal.value = true;
+  loadingStats.value = true;
+  try {
+    const res = await axios.get(`/api/v1/chat/conversation/${conversationId.value}/model_calls`, {
+      params: { trace_id: msg.trace_id }
+    });
+    if (res.data && res.data.data) {
+      currentStats.value = res.data.data.stats || [];
+    }
+  } catch (err) {
+    console.error("加载大模型调用明细失败:", err);
+  } finally {
+    loadingStats.value = false;
+  }
+};
+
+const formatModelCallTime = (isoStr: string): string => {
+  try {
+    const date = new Date(isoStr);
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${d} ${hours}:${minutes}:${seconds}`;
+  } catch (e) {
+    return isoStr || "";
+  }
+};
+
 const chatInputRef = ref<any>(null);
 const showKnowledgeBaseSelector = ref(false);
 const showFileBrowserModal = ref(false);
@@ -1072,6 +1110,44 @@ const isLoadingSkillsList = ref(false);
 
 const showMemorySelector = ref(false);
 const showMemoryDetailModal = ref(false);
+
+const showStatsModal = ref(false);
+const loadingStats = ref(false);
+const currentStats = ref<any[]>([]);
+const expandedStats = ref<Record<string, boolean>>({});
+
+const toggleStatExpand = (callIndex: number) => {
+  expandedStats.value[callIndex] = !expandedStats.value[callIndex];
+};
+
+const formatToolArgs = (args: any): string => {
+  if (!args) return "{}";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args);
+  } catch (e) {
+    return String(args);
+  }
+};
+
+watch(showStatsModal, (newVal) => {
+  if (!newVal) {
+    expandedStats.value = {};
+  }
+});
+
+const statsSummary = computed(() => {
+  let totalCalls = currentStats.value.length;
+  let totalDuration = currentStats.value.reduce((acc, cur) => acc + (cur.elapsed_ms || 0), 0);
+  let totalIn = currentStats.value.reduce((acc, cur) => acc + (cur.input_tokens || 0), 0);
+  let totalOut = currentStats.value.reduce((acc, cur) => acc + (cur.output_tokens || 0), 0);
+  return {
+    totalCalls,
+    totalDuration: (totalDuration / 1000).toFixed(2),
+    totalIn,
+    totalOut
+  };
+});
 const selectedMemoryDetail = ref<any>(null);
 const memoryList = ref<any[]>([]);
 const isLoadingMemoryList = ref(false);
@@ -1277,6 +1353,26 @@ const resolveReqContent = (msg: Message) => {
     }
   }
   return reqContent;
+};
+
+const collectKnowledgeDatasetIds = (): string[] => {
+  const ids: string[] = [];
+  const pushId = (raw: string) => {
+    const value = String(raw || "").trim();
+    if (value && !ids.includes(value)) ids.push(value);
+  };
+  const uploaded = chatInputRef.value?.uploadedFiles || [];
+  uploaded.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files?.length));
+  sendable.forEach((m) => {
+    if (m.role !== "user") return;
+    m.files?.forEach((file: any) => {
+      if (file.type === "knowledge_base") pushId(file.url);
+    });
+  });
+  return ids;
 };
 
 const openSkillSelector = async () => {
@@ -1489,28 +1585,84 @@ const handleQuickQuestion = (question: string) => {
   sendMessage();
 };
 
-const handleShowCitation = (msg: Message, citeId: string) => {
-  console.log("[Citation Debug] UI Action - Target ID:", citeId);
-  if (!msg.citations || msg.citations.length === 0) return;
-  
-  // 1. Match by ID
-  let target = msg.citations.find(c => 
-    String(c.chunk_id) === String(citeId) || 
-    String(c.id) === String(citeId) ||
-    String(c.chunk_id)?.endsWith(String(citeId))
-  );
-  
-  // 2. Match by index
-  if (!target && /^\d+$/.test(citeId)) {
-      const idx = parseInt(citeId);
-      target = msg.citations[idx - 1] || msg.citations[idx];
+const citationPopover = ref<{
+  visible: boolean;
+  citation: any;
+  anchorRect: DOMRect | null;
+  anchorEl: HTMLElement | null;
+}>({
+  visible: false,
+  citation: null,
+  anchorRect: null,
+  anchorEl: null,
+});
+
+const closeCitationPopover = () => {
+  citationPopover.value.visible = false;
+  citationPopover.value.citation = null;
+  citationPopover.value.anchorRect = null;
+  citationPopover.value.anchorEl = null;
+};
+
+const openCitationPopover = (citation: any, event: MouseEvent | HTMLElement) => {
+  const anchor = event instanceof HTMLElement ? event : (event.currentTarget as HTMLElement);
+  if (!anchor) return;
+
+  if (
+    citationPopover.value.visible &&
+    citationPopover.value.citation === citation
+  ) {
+    closeCitationPopover();
+    return;
   }
 
-  if (target) {
-    msg.isCitationsExpanded = true;
-    msg.citations.forEach(c => c.isExpanded = false);
-    target.isExpanded = true;
-    console.log("[Citation Debug] Opened:", target.doc_name);
+  const rect = anchor.getBoundingClientRect();
+  citationPopover.value = {
+    visible: true,
+    citation,
+    anchorRect: new DOMRect(rect.x, rect.y, rect.width, rect.height),
+    anchorEl: anchor,
+  };
+};
+
+const resolveCitation = (msg: Message, citeId: string) => {
+  if (!msg.citations || msg.citations.length === 0) return null;
+
+  let target = msg.citations.find(
+    (c) =>
+      String(c.chunk_id) === String(citeId) ||
+      String(c.id) === String(citeId) ||
+      String(c.chunk_id)?.endsWith(String(citeId))
+  );
+
+  if (!target && /^\d+$/.test(citeId)) {
+    const idx = parseInt(citeId);
+    target = msg.citations[idx - 1] || msg.citations[idx];
+  }
+
+  return target || null;
+};
+
+const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLElement) => {
+  const target = resolveCitation(msg, citeId);
+  if (!target) return;
+
+  msg.isCitationsExpanded = true;
+  await nextTick();
+  const anchorEl = anchor || (document.querySelector(`[data-cite-id="${citeId}"]`) as HTMLElement);
+  if (anchorEl) {
+    anchorEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    openCitationPopover(target, anchorEl);
+  }
+};
+
+const copyCitationContent = async (content: string) => {
+  try {
+    await navigator.clipboard.writeText(content);
+    showToast("已复制引用内容", "success");
+  } catch (err) {
+    console.error("Failed to copy citation:", err);
+    showToast("复制失败", "error");
   }
 };
 
@@ -1634,6 +1786,7 @@ const sendMessage = async () => {
 
   // 3. Call Real API with SSE
   abortController = new AbortController();
+  ragRetrievalMeta.value = null;
 
   try {
     // Prepare Debug Options
@@ -1661,13 +1814,8 @@ const sendMessage = async () => {
       }
     }
 
-    const response = await fetch("/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": localStorage.getItem("api_key") || "",
-      },
-      body: JSON.stringify({
+    const knowledgeDatasetIds = collectKnowledgeDatasetIds();
+    const requestBody: Record<string, unknown> = {
         messages: (() => {
           const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files?.length));
           const lastUserIdx = sendable.reduce(
@@ -1701,7 +1849,18 @@ const sendMessage = async () => {
         agent_id: agentParams.agent_id,
         version_id: agentParams.version_id,
         conversation_id: conversationId.value,
-      }),
+    };
+    if (knowledgeDatasetIds.length > 0) {
+      requestBody.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
+
+    const response = await fetch("/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": localStorage.getItem("api_key") || "",
+      },
+      body: JSON.stringify(requestBody),
       signal: abortController.signal,
     });
 
@@ -1833,6 +1992,9 @@ const sendMessage = async () => {
                 if (data.agent_display_name) {
                     agentMsg.value.agentDisplayName = data.agent_display_name;
                 }
+              }
+              if (data.rag_retrieval) {
+                ragRetrievalMeta.value = data.rag_retrieval;
               }
             }
 
@@ -2069,6 +2231,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   } else if (data.type === "meta") {
     if (data.agent_name) msg.agentName = data.agent_name;
     if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
+    if (data.rag_retrieval) ragRetrievalMeta.value = data.rag_retrieval;
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -2174,19 +2337,6 @@ const tryRenderTable = (text: string) => {
     if (Array.isArray(data) && data.length > 0 && typeof data[0] === "object") {
       const cols = Object.keys(data[0]);
       return { cols, rows: data };
-    }
-  } catch (e) {
-    return null;
-  }
-  return null;
-};
-
-const tryRenderCitations = (text: string) => {
-  try {
-    const data = JSON.parse(text);
-    // Check if it looks like RAGFlow references (array of objects with doc_name/content)
-    if (Array.isArray(data) && data.length > 0 && (data[0].doc_name || data[0].content)) {
-        return data;
     }
   } catch (e) {
     return null;
@@ -2836,6 +2986,24 @@ onUnmounted(() => {
                   </svg>
                   <span>重新生成</span>
                 </button>
+
+                <!-- Token Usage -->
+                <button
+                  v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
+                  @click="openModelCallStats(msg)"
+                  class="flex items-center space-x-1.5 px-2 py-1 text-[10px] font-mono text-gray-500 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-md transition-all duration-200 cursor-pointer active:scale-95"
+                  title="点击查看详细的大模型调用统计指标"
+                >
+                  <span class="flex items-center space-x-0.5">
+                    <span class="scale-90 text-[9px] text-gray-400/80">in:</span>
+                    <span class="font-medium text-gray-500 dark:text-gray-400">{{ msg.prompt_tokens || 0 }}</span>
+                  </span>
+                  <span class="text-gray-300 dark:text-gray-700">/</span>
+                  <span class="flex items-center space-x-0.5">
+                    <span class="scale-90 text-[9px] text-gray-400/80">out:</span>
+                    <span class="font-medium text-gray-500 dark:text-gray-400">{{ msg.completion_tokens || 0 }}</span>
+                  </span>
+                </button>
               </div>
 
               <!-- Agent Message Bubble (Unified Card Style) -->
@@ -2986,21 +3154,11 @@ onUnmounted(() => {
 
                             <!-- Card Body (Details) -->
                             <div v-show="log.isExpanded" class="mt-2 pt-2 border-t border-gray-100">
-                                 <!-- 1. Citation Rendering -->
-                                <div v-if="tryRenderCitations(log.details)" class="space-y-2">
-                                    <div v-for="(ref, idx) in tryRenderCitations(log.details)" :key="idx" class="p-2 bg-blue-50/30 rounded border border-blue-100/50 text-xs">
-                                        <div class="font-bold text-blue-700 mb-1 flex justify-between items-center">
-                                            <div class="flex items-center space-x-1">
-                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                                <span class="truncate max-w-[150px]">{{ ref.doc_name || 'Unknown Document' }}</span>
-                                            </div>
-                                            <span v-if="ref.similarity" class="bg-white px-1.5 py-0.5 rounded text-[10px] text-blue-600 font-medium border border-blue-100 shadow-sm">{{ (ref.similarity * 100).toFixed(0) }}%</span>
-                                        </div>
-                                        <div class="text-gray-600 leading-relaxed" :title="ref.content">
-                                            {{ ref.content }}
-                                        </div>
-                                    </div>
-                                </div>
+                                 <!-- 1. Knowledge tool log -->
+                                <KnowledgeToolLogDetails
+                                  v-if="isKnowledgeToolLog(log.details)"
+                                  :details="log.details"
+                                />
 
                                 <!-- 2. Auto Table Rendering -->
                                 <div v-else-if="tryRenderTable(log.details)" class="overflow-x-auto border rounded-lg bg-white">
@@ -3216,7 +3374,7 @@ onUnmounted(() => {
                     />
                   </svg>
                 </button>
-                <MessageRenderer :content="msg.content" @quick-question="handleQuickQuestion" @show-citation="(id) => handleShowCitation(msg, id)" />
+                <MessageRenderer :content="msg.content" @quick-question="handleQuickQuestion" @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)" />
                 <!-- 导出 / 点赞踩（托管 RAGFlow、OpenClaw 不展示点赞踩） -->
                 <div
                   v-if="msg.role === 'agent' && !msg.isThinking && (msg.trace_id || !hideDebugLikeDislikeForHostedAgent)"
@@ -3267,53 +3425,21 @@ onUnmounted(() => {
                 ></span>
               </div>
               <!-- Citations Area (Always outside text content container) -->
-              <div v-if="msg.citations && msg.citations.some(c => (c.similarity || 0) >= 0.5)" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50 relative z-10">
+              <div v-if="msg.citations && msg.citations.length > 0" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50 relative z-10">
                 <button @click="msg.isCitationsExpanded = !msg.isCitationsExpanded" class="flex items-center space-x-1.5 mb-2 w-full text-left group/cite-head">
                    <svg class="w-3.5 h-3.5 text-gray-400 group-hover/cite-head:text-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
-                   <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1">引用来源 ({{ msg.citations.filter(c => (c.similarity || 0) >= 0.5).length }})</span>
+                   <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1">引用来源 ({{ msg.citations.length }})</span>
                    <svg class="w-3.5 h-3.5 text-gray-400 transform transition-transform duration-200" :class="{ 'rotate-180': msg.isCitationsExpanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
                 </button>
                 <transition enter-active-class="transition-all duration-300 ease-out" enter-from-class="opacity-0 max-h-0" enter-to-class="opacity-100 max-h-[500px]" leave-active-class="transition-all duration-200 ease-in" leave-from-class="opacity-100 max-h-[500px]" leave-to-class="opacity-0 max-h-0">
                   <div v-show="msg.isCitationsExpanded" class="overflow-hidden">
                     <div class="flex flex-wrap gap-2 py-1">
                        <template v-for="(cite, cIdx) in msg.citations" :key="cIdx">
-                         <div v-if="(cite.similarity || 0) >= 0.5" class="group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden" @click="cite.isExpanded = !cite.isExpanded">
+                         <div class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden" @click.stop="openCitationPopover(cite, $event)">
                             <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                             <span class="text-[11px] font-medium text-gray-600 dark:text-gray-300 truncate max-w-[150px]">{{ cite.doc_name }}</span>
                             <span v-if="cite.similarity" class="text-[9px] font-mono text-gray-400 px-1 rounded bg-gray-100 dark:bg-gray-700">{{ (cite.similarity * 100).toFixed(0) }}%</span>
                          </div>
-                         <Teleport to="body">
-                           <div v-if="cite.isExpanded" class="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/40 backdrop-blur-sm" @click.stop="cite.isExpanded = false">
-                              <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col border border-gray-200 dark:border-gray-700 animate-fade-in-up" @click.stop>
-                                 <div class="flex justify-between items-start mb-4">
-                                    <div class="flex items-center gap-3">
-                                       <div class="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                                          <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                       </div>
-                                       <div>
-                                          <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">{{ cite.doc_name }}</h4>
-                                          <div class="flex items-center gap-2 mt-0.5">
-                                             <span class="text-[10px] text-gray-400 font-mono">匹配度: {{ (cite.similarity * 100).toFixed(1) }}%</span>
-                                             <span class="w-1 h-1 rounded-full bg-gray-300"></span>
-                                             <span class="text-[10px] text-gray-400">ID: {{ cite.id }}</span>
-                                          </div>
-                                       </div>
-                                    </div>
-                                    <button @click="cite.isExpanded = false" class="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-400">
-                                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-                                    </button>
-                                 </div>
-                                 <div class="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg border border-gray-100 dark:border-gray-700/50 text-sm text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-wrap font-sans italic">
-                                    “{{ cite.content }}”
-                                 </div>
-                                 <div class="mt-4 flex justify-end">
-                                    <button @click="cite.isExpanded = false" class="px-4 py-2 bg-primary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-all shadow-md shadow-primary/20">
-                                       关闭
-                                    </button>
-                                 </div>
-                              </div>
-                           </div>
-                         </Teleport>
                        </template>
                     </div>
                   </div>
@@ -3389,6 +3515,7 @@ onUnmounted(() => {
       :agent-params="agentParams"
       :loading-config="loadingConfig"
       :agent-context="agentContext"
+      :rag-retrieval-meta="ragRetrievalMeta"
       @load-config="loadCurrentPrompt"
       @clear-context="clearContext"
     />
@@ -3618,6 +3745,15 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <CitationPopover
+    :visible="citationPopover.visible"
+    :citation="citationPopover.citation"
+    :anchor-rect="citationPopover.anchorRect"
+    :anchor-el="citationPopover.anchorEl"
+    @close="closeCitationPopover"
+    @copy="copyCitationContent"
+  />
 
   <!-- Confirm Modal -->
   <ConfirmModal
@@ -4318,6 +4454,190 @@ onUnmounted(() => {
             {{ selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? '取消勾选' : '勾选引用' }}
           </button>
           <button @click="showMemoryDetailModal = false" class="px-3.5 py-1.5 text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model Call Stats Modal -->
+  <div
+    v-if="showStatsModal"
+    class="absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+    @click.self="showStatsModal = false"
+  >
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-fade-in-up border border-gray-200 dark:border-gray-700 flex flex-col max-h-[85%]">
+      <!-- Header -->
+      <div class="px-4 py-3.5 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-gray-50 dark:bg-gray-800/50 shrink-0">
+        <div class="flex items-center space-x-2">
+          <svg class="w-4 h-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" :style="{ color: 'var(--primary-color, #1677ff)' }">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2" />
+          </svg>
+          <h3 class="text-sm font-bold text-gray-800 dark:text-gray-200">大模型调用明细指标</h3>
+        </div>
+        <button @click="showStatsModal = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors cursor-pointer">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="p-4 overflow-y-auto space-y-4 flex-1">
+        <!-- Loading skeleton -->
+        <div v-if="loadingStats" class="space-y-3 py-6">
+          <div class="h-4 bg-gray-100 dark:bg-gray-700 rounded w-2/3 animate-pulse"></div>
+          <div class="space-y-2">
+            <div class="h-3 bg-gray-100 dark:bg-gray-700 rounded animate-pulse"></div>
+            <div class="h-3 bg-gray-100 dark:bg-gray-700 rounded animate-pulse w-5/6"></div>
+            <div class="h-3 bg-gray-100 dark:bg-gray-700 rounded animate-pulse w-4/5"></div>
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <div v-else-if="currentStats.length === 0" class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">
+          <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          暂无此消息的大模型调用明细记录
+        </div>
+
+        <!-- Content -->
+        <div v-else class="space-y-4">
+          <!-- Summary stats -->
+          <div class="grid grid-cols-4 gap-2 text-center">
+            <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+              <div class="text-[10px] text-gray-400 dark:text-gray-500">调用次数</div>
+              <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalCalls }}</div>
+            </div>
+            <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+              <div class="text-[10px] text-gray-400 dark:text-gray-500">总耗时</div>
+              <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalDuration }}s</div>
+            </div>
+            <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+              <div class="text-[10px] text-gray-400 dark:text-gray-500">总输入</div>
+              <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalIn }}</div>
+            </div>
+            <div class="bg-gray-50 dark:bg-gray-900/40 p-2 rounded-lg border border-gray-100/50 dark:border-gray-700/30">
+              <div class="text-[10px] text-gray-400 dark:text-gray-500">总输出</div>
+              <div class="text-xs font-bold text-gray-700 dark:text-gray-200 mt-0.5">{{ statsSummary.totalOut }}</div>
+            </div>
+          </div>
+
+          <!-- Detailed logs list -->
+          <div class="space-y-3">
+            <div
+              v-for="(stat, index) in currentStats"
+              :key="index"
+              class="bg-gray-50/50 dark:bg-gray-900/20 border border-gray-100 dark:border-gray-700/50 rounded-xl p-3 space-y-2 transition-all hover:shadow-sm"
+            >
+              <!-- Log header -->
+              <div class="flex items-start justify-between">
+                <div class="flex flex-col">
+                  <div class="flex items-center space-x-1.5">
+                    <span class="inline-flex items-center justify-center w-5 h-5 text-[10px] font-bold text-white rounded bg-primary/80 shrink-0" :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }">
+                      #{{ stat.call_index }}
+                    </span>
+                    <span class="text-xs font-bold text-gray-700 dark:text-gray-300 max-w-[150px] truncate" :title="stat.agent_name">
+                      {{ stat.agent_name }}
+                    </span>
+                  </div>
+                  <span v-if="stat.timestamp" class="text-[9px] text-gray-400 dark:text-gray-500 mt-1 font-mono">
+                    调用时间: {{ formatModelCallTime(stat.timestamp) }}
+                  </span>
+                </div>
+                <span class="text-[10px] text-gray-400 dark:text-gray-500 font-mono text-right shrink-0">
+                  {{ (stat.elapsed_ms / 1000).toFixed(2) }}s ({{ stat.elapsed_ms }}ms)
+                </span>
+              </div>
+
+              <!-- Log parameters -->
+              <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                  <span class="text-gray-400">大模型名称:</span>
+                  <span class="font-medium text-gray-700 dark:text-gray-300 font-mono text-[11px] truncate max-w-[130px]" :title="stat.model_name">
+                    {{ stat.model_name }}
+                  </span>
+                </div>
+                <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                  <span class="text-gray-400">输入信息数:</span>
+                  <span class="font-medium text-gray-700 dark:text-gray-300">
+                    {{ stat.input_message_count }}
+                  </span>
+                </div>
+                <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                  <span class="text-gray-400">输入 Token:</span>
+                  <span class="font-medium text-gray-700 dark:text-gray-300 font-mono">
+                    {{ stat.input_tokens }}
+                    <span v-if="stat.cache_input_tokens > 0" class="text-[10px] text-green-500 font-normal ml-0.5" :title="'命中上下文缓存 Token: ' + stat.cache_input_tokens">
+                      (hit:{{ stat.cache_input_tokens }}, {{ ((stat.cache_input_tokens / stat.input_tokens) * 100).toFixed(0) }}%)
+                    </span>
+                  </span>
+                </div>
+                <div class="flex justify-between border-b border-gray-100/50 dark:border-gray-700/20 pb-1">
+                  <span class="text-gray-400">输出 Token:</span>
+                  <span class="font-medium text-gray-700 dark:text-gray-300 font-mono">
+                    {{ stat.output_tokens }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Tool Calls -->
+              <div class="pt-1 text-[11px] space-y-1.5">
+                <div class="flex items-center space-x-1">
+                  <span class="text-gray-400 shrink-0">工具调用:</span>
+                  <span
+                    v-if="stat.has_tool_calls && stat.tool_names && stat.tool_names.length > 0"
+                    class="inline-flex flex-wrap gap-1"
+                  >
+                    <span
+                      v-for="tName in stat.tool_names"
+                      :key="tName"
+                      class="bg-blue-50 dark:bg-blue-900/30 text-blue-500 border border-blue-100/50 dark:border-blue-800/30 px-1 py-0.5 rounded text-[9px] font-mono"
+                    >
+                      {{ tName }}
+                    </span>
+                  </span>
+                  <span v-else-if="stat.has_tools_bound" class="text-gray-400 italic">
+                    无（已绑定工具但未调用）
+                  </span>
+                  <span v-else class="text-gray-400 italic">
+                    无（未绑定工具）
+                  </span>
+                </div>
+                <!-- Tool Call Arguments Details -->
+                <div v-if="stat.tool_calls && stat.tool_calls.length > 0" class="bg-gray-100/60 dark:bg-gray-950/40 p-2 rounded-lg text-[10px] font-mono text-gray-600 dark:text-gray-400 border border-gray-100 dark:border-gray-800 space-y-1 max-h-[100px] overflow-y-auto">
+                  <div v-for="(call, cIdx) in stat.tool_calls" :key="cIdx" class="break-all whitespace-pre-wrap">
+                    <span class="text-blue-500 dark:text-blue-400 font-bold">{{ call.name }}</span>(<span class="text-gray-600 dark:text-gray-400">{{ formatToolArgs(call.arguments) }}</span>)
+                  </div>
+                </div>
+              </div>
+
+              <!-- Thoughts and Output Text Expansion Panel -->
+              <div v-if="stat.reasoning_content || stat.response_text" class="pt-1 border-t border-gray-100/50 dark:border-gray-700/20">
+                <button 
+                  @click="toggleStatExpand(stat.call_index)" 
+                  class="text-[10px] text-primary dark:text-blue-400 hover:underline flex items-center space-x-1 font-bold focus:outline-none cursor-pointer"
+                >
+                  <span>{{ expandedStats[stat.call_index] ? '收起思考与输出' : '展开思考与输出' }}</span>
+                  <svg class="w-3 h-3 transform transition-transform" :class="expandedStats[stat.call_index] ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                <div v-if="expandedStats[stat.call_index]" class="mt-2 space-y-2 text-[10px] font-mono">
+                  <!-- Reasoning/Thought -->
+                  <div v-if="stat.reasoning_content" class="bg-amber-50/40 dark:bg-amber-950/10 border border-amber-100/50 dark:border-amber-900/20 p-2 rounded-lg text-amber-800 dark:text-amber-300">
+                    <div class="font-bold text-[9px] uppercase text-amber-500 mb-1">思考过程 (Thought)</div>
+                    <div class="whitespace-pre-wrap leading-relaxed">{{ stat.reasoning_content }}</div>
+                  </div>
+                  <!-- Final text output -->
+                  <div v-if="stat.response_text" class="bg-gray-100/80 dark:bg-gray-950/60 border border-gray-200/50 dark:border-gray-800/40 p-2 rounded-lg text-gray-700 dark:text-gray-300">
+                    <div class="font-bold text-[9px] uppercase text-gray-400 mb-1">大模型输出 (Output)</div>
+                    <div class="whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto break-all">{{ stat.response_text }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

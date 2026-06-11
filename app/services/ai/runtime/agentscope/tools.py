@@ -16,6 +16,7 @@ RuntimeToolAuditStatus = Literal["start", "success", "error"]
 
 
 READ_ONLY_TOOL_NAMES = {
+    "get_current_time",
     "get_dataset_schema",
     "search_knowledge_base",
     "memory_search",
@@ -33,6 +34,7 @@ READ_ONLY_TOOL_NAMES = {
     "code_syntax_linter",
     "fetch_static_web_url",
     "web_search_baidu",
+    "system_http_request",
 }
 
 @dataclass(frozen=True)

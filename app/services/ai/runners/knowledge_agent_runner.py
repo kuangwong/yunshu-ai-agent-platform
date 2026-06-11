@@ -5,7 +5,7 @@ import inspect
 import logging
 import time
 import uuid
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.common import (
     convert_history_to_messages,
@@ -18,6 +18,14 @@ from app.services.ai.runtime.agentscope.stream_reconcile import truncate_for_con
 from app.services.metadata_rag_service import MetadataRagService
 from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, runtime_tool_spec_from_legacy_tool
+from app.services.ai.knowledge_utils import (
+    NO_KNOWLEDGE_DATASET_MESSAGE,
+    collect_citation_ids_from_payload,
+    filter_invalid_citation_markers,
+    format_dataset_ids_for_tool,
+    knowledge_prefetch_had_citations,
+    resolve_knowledge_dataset_ids,
+)
 from app.services.ai.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -25,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 class KnowledgeAgentRunner(AssistantAgentRunner):
     """知识库问答 Runner：自动检索 + AgentScope ReAct，可扩展挂载业务工具。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._valid_citation_ids: Set[str] = set()
+
+    def _build_synthesis_user_message(self, user_query: str, execution_review: str) -> str:
+        return KnowledgeChatPrompts.synthesis_user_message(user_query, execution_review)
 
     def _runtime_agent_name(self) -> str:
         return self.config.agent_name or "KnowledgeAgent"
@@ -53,6 +68,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         *,
         query: str,
         tools: List[RuntimeToolSpec],
+        dataset_ids: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """ReAct 开始前平台侧自动执行 search_knowledge_base。"""
         kb_spec = next((tool for tool in tools if tool.name == "search_knowledge_base"), None)
@@ -66,7 +82,10 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             "type": "log",
             "id": tool_id,
             "title": "自动检索知识库",
-            "details": f"平台自动调用 search_knowledge_base(query={query or 'None'})",
+            "details": (
+                f"平台自动调用 search_knowledge_base("
+                f"query={query or 'None'}, dataset_ids={dataset_ids or 'agent-default'})"
+            ),
             "status": "pending",
             "category": "tool",
             "started_at": int(started_at * 1000),
@@ -74,10 +93,14 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
         output = ""
         try:
-            result = kb_spec.callable(query=query or "")
+            tool_kwargs: Dict[str, Any] = {"query": query or ""}
+            if dataset_ids:
+                tool_kwargs["dataset_ids"] = dataset_ids
+            result = kb_spec.callable(**tool_kwargs)
             if inspect.isawaitable(result):
                 result = await result
             output = str(result or "")
+            self._valid_citation_ids = collect_citation_ids_from_payload(output)
         except Exception as exc:
             logger.error("[KnowledgeAgentRunner] Auto search_knowledge_base failed: %s", exc)
             err_msg = str(exc)
@@ -91,7 +114,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         observation = self._build_tool_observation(
             tool_id=tool_id,
             tool_name="search_knowledge_base",
-            tool_args={"query": query},
+            tool_args={"query": query, "dataset_ids": dataset_ids},
             tool_output=output,
             duration_tool=duration_ms,
             target_tool=kb_spec,
@@ -126,6 +149,22 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         if normalized.startswith("[Tool Error]") or normalized.startswith("[TOOL_ERROR]"):
             return MetadataRagService._is_service_unavailable(text)
         return False
+
+    async def _yield_knowledge_no_dataset_abort(
+        self,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        yield {
+            "type": "log",
+            "id": f"kb_no_dataset_{uuid.uuid4().hex[:8]}",
+            "title": "未指定知识库",
+            "details": NO_KNOWLEDGE_DATASET_MESSAGE,
+            "status": "error",
+            "category": "knowledge",
+        }
+        yield {
+            "content": KnowledgeChatPrompts.KNOWLEDGE_NO_DATASET_CONTENT,
+            "status": "error",
+        }
 
     async def _yield_knowledge_fatal_abort(
         self,
@@ -176,16 +215,28 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         system_content = self.config.system_prompt or ""
         system_content = f"{KnowledgeChatPrompts.TURN_SYSTEM_HINT}\n\n{system_content}"
 
+        resolved_dataset_ids, dataset_error = await resolve_knowledge_dataset_ids(
+            query=user_question,
+        )
+        if dataset_error and not resolved_dataset_ids:
+            async for chunk in self._yield_knowledge_no_dataset_abort():
+                yield chunk
+            return
+
+        prefetch_dataset_ids = format_dataset_ids_for_tool(resolved_dataset_ids)
         prefetched_knowledge_output: str | None = None
         knowledge_service_unavailable = False
+        prefetch_had_citations = False
         async for chunk in self._auto_invoke_search_knowledge_base(
             query=user_question,
             tools=tools,
+            dataset_ids=prefetch_dataset_ids,
         ):
             if chunk.get("__knowledge_service_unavailable__"):
                 knowledge_service_unavailable = True
             if chunk.get("__knowledge_output__") is not None:
                 prefetched_knowledge_output = str(chunk["__knowledge_output__"])
+                prefetch_had_citations = knowledge_prefetch_had_citations(prefetched_knowledge_output)
                 continue
             yield chunk
 
@@ -203,18 +254,29 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                 )
             )
 
+        # 仅保留最近 5 轮历史对话（最多 10 条消息）
+        history = history[-10:]
         runtime_messages = [SystemMessage(content=system_content)]
-        runtime_messages.extend(convert_history_to_messages(history))
+        runtime_messages.extend(convert_history_to_messages(history, strip_thought=True))
         runtime_messages = normalize_messages_for_llm(runtime_messages)
 
         max_steps_str = await ConfigService.get("agent_max_iterations")
         max_steps = int(max_steps_str) if max_steps_str else 5
 
-        native_system_content = (
-            f"{KnowledgeChatPrompts.SEARCH_CORRECTION_MSG}\n\n{system_content}"
-        )
+        if prefetch_had_citations:
+            native_system_content = (
+                f"{KnowledgeChatPrompts.PREFETCH_DONE_CORRECTION_MSG}\n\n{system_content}"
+            )
+        else:
+            native_system_content = (
+                f"{KnowledgeChatPrompts.SEARCH_CORRECTION_MSG}\n\n{system_content}"
+            )
 
-        if not all(isinstance(tool, RuntimeToolSpec) for tool in tools):
+        # 预检索成功后仍保留 search_knowledge_base 注册，避免模型受用户附件/系统提示
+        # 强制调用约束时触发 AgentScope ToolNotFoundError。
+        react_tools = tools
+
+        if not all(isinstance(tool, RuntimeToolSpec) for tool in react_tools):
             yield {
                 "type": "error",
                 "status": "error",
@@ -237,9 +299,15 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
         async for chunk in self._execute_with_agentscope_native_agent(
             native_model=native_model,
-            tools=tools,
+            tools=react_tools,
             system_content=native_system_content,
             runtime_messages=runtime_messages,
             max_steps=max_steps,
         ):
+            if "content" in chunk and self._valid_citation_ids:
+                chunk = dict(chunk)
+                chunk["content"] = filter_invalid_citation_markers(
+                    str(chunk.get("content") or ""),
+                    self._valid_citation_ids,
+                )
             yield chunk

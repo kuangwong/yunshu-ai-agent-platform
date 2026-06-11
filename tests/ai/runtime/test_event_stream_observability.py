@@ -191,6 +191,23 @@ async def test_map_standard_agentscope_event_interrupts_on_external_execution():
     assert any(c.get("type") == "external_execution_required" for c in chunks)
 
 
+def test_is_interrupt_sse_chunk_only_pauses_for_pending_or_fatal_errors():
+    assert is_interrupt_sse_chunk({"type": "permission_required", "permission_request_id": "p1"})
+    assert is_interrupt_sse_chunk({"type": "external_execution_required", "external_execution_request_id": "e1"})
+    assert is_interrupt_sse_chunk({"type": "error", "status": "error", "content": "fatal"})
+
+    assert not is_interrupt_sse_chunk(
+        {
+            "type": "log",
+            "id": "tool-1",
+            "title": "工具完成: Read (120ms)",
+            "details": "Error: File does not exist: /tmp/missing.py",
+            "status": "error",
+        }
+    )
+    assert not is_interrupt_sse_chunk({"content": "partial answer", "status": "error"})
+
+
 def test_extract_latest_assistant_text_reads_last_assistant_msg():
     from agentscope.message import Msg, TextBlock
     from agentscope.state import AgentState

@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import yaml
+import httpx
 from datetime import datetime
 from typing import List, Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +29,7 @@ _SERVICE_UNAVAILABLE_HINTS = (
     "bad gateway", "service unavailable", "gateway timeout",
     "temporarily unavailable", "timed out", "timeout",
     "connection refused", "connection error", "connection aborted",
-    "connect timeout", "read timeout", "max retries",
+    "connect timeout", "read timeout", "max retries", "server disconnected",
     "name or service not known", "failed to establish",
 )
 
@@ -39,8 +40,22 @@ class MetadataRagService:
     """
 
     @staticmethod
-    def _is_service_unavailable(err_msg: str) -> bool:
-        """判断错误是否属于「服务级不可用」（应立即终止，而非重试/剔除坏 ID）。"""
+    def _is_service_unavailable(e: Exception) -> bool:
+        """判断错误是否属于「服务级不可用」（应立即终止，而非重试/剔除坏 ID）。
+
+        通过 httpx 强类型异常与状态码做精准拦截，并用字符串做模糊匹配兜底。
+        """
+        # 1. 强类型判定：如果属于底层网络连接、断连或超时错误，直接判定不可用
+        if isinstance(e, (httpx.TimeoutException, httpx.NetworkError)):
+            return True
+
+        # 2. 如果是带状态码的 HTTP 错误，判断是否为 5xx 故障
+        if isinstance(e, httpx.HTTPStatusError):
+            if e.response.status_code in (502, 503, 504):
+                return True
+
+        # 3. 兜底字串模糊匹配
+        err_msg = str(e)
         m = (err_msg or "").lower()
         return any(hint in m for hint in _SERVICE_UNAVAILABLE_HINTS)
 
@@ -322,7 +337,7 @@ class MetadataRagService:
                 logger.error(f"[RAG Retrieval] Attempt {attempt+1} failed on IDs {rag_ids}: {err_msg}")
 
                 # 服务级不可用（502/503/504、超时、连接失败）：重试无意义，立即终止。
-                if MetadataRagService._is_service_unavailable(err_msg):
+                if MetadataRagService._is_service_unavailable(e):
                     trace_logs.append("Search aborted: metadata service unavailable")
                     logger.error(
                         f"[RAG Retrieval] Metadata service unavailable, abort without retry: {err_msg}"

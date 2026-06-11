@@ -54,6 +54,14 @@ def test_get_current_time_function():
     time_utc = get_current_time.invoke({"timezone": "UTC"})
     assert "+0000" in time_utc or "UTC" in time_utc
 
+
+def test_get_current_time_is_read_only_without_approval():
+    from app.services.ai.runtime.agentscope.tools import runtime_tool_spec_from_legacy_tool
+
+    spec = runtime_tool_spec_from_legacy_tool(get_current_time, source_type="system")
+    assert spec.permission_scope == "read"
+    assert spec.is_read_only is True
+
 if __name__ == "__main__":
     # Manual run check
     print("Testing registry...")

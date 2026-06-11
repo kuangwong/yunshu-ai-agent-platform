@@ -197,19 +197,11 @@ class DataQueryPrompts:
 
     # get_dataset_schema 成功后强制进入 execute_sql_query
     FORCE_SQL_AFTER_SCHEMA = (
-        "【下一步强制动作】你已经拿到 Schema。现在禁止输出任何解释性文字，必须立刻调用 execute_sql_query 查数。\n"
+        "【下一步强制动作】你已经拿到 Schema。现在禁止输出任何解释性文字，必须立刻发起 execute_sql_query 查数。\n"
         "要求：\n"
-        "1) 先输出 <sql_plan>{...}</sql_plan>（简短即可），grain_keys 必须明确；\n"
-        "2) 随后直接发起 execute_sql_query 工具调用；\n"
-        "3) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。\n"
-        "工具调用示例（参数名必须是 sql/data_source/dataset_name）：\n"
-        "<function_calls>\n"
-        "  <invoke name=\"execute_sql_query\">\n"
-        "    <parameter name=\"sql\">SELECT 1 LIMIT 1</parameter>\n"
-        "    <parameter name=\"data_source\">your_data_source</parameter>\n"
-        "    <parameter name=\"dataset_name\">your_dataset</parameter>\n"
-        "  </invoke>\n"
-        "</function_calls>"
+        "1) 先在 <thought> 中输出 <sql_plan>{...}</sql_plan>（简短即可，至少包含 dataset_name/data_source/grain_keys/time_window/joins/ratio）；\n"
+        "2) 随后直接通过大模型底层的原生 tools 参数发起 execute_sql_query 工具调用，切忌直接在文本中手写 XML 结构；\n"
+        "3) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。"
     )
 
     # 元数据服务（RAGFlow）不可用时的硬终止回复
@@ -407,9 +399,17 @@ class AssistantPrompts:
 class KnowledgeChatPrompts:
     """KnowledgeExecutor 使用的系统级提示词。"""
 
+    CITATION_FORMAT_RULE = (
+        "【引用标注规范（必须遵守）】\n"
+        "凡引用知识库检索结果中的陈述，必须在对应句子末尾标注英文方括号引用序号 [ID:n]，"
+        "n 为检索结果中的序号（如 [ID:1]、[ID:7]）。\n"
+        "禁止省略引用标记；禁止编造检索结果中不存在的 [ID:n]。"
+    )
+
     TURN_SYSTEM_HINT = (
         "【知识库问答模式】用户正在询问文档/SOP/操作指引。"
-        "请基于知识库检索结果作答；若检索无结果，应明确说明未找到相关内容，禁止编造流程或制度。"
+        "请基于知识库检索结果作答；若检索无结果，应明确说明未找到相关内容，禁止编造流程或制度。\n"
+        f"{CITATION_FORMAT_RULE}"
     )
 
     SEARCH_CORRECTION_MSG = (
@@ -418,9 +418,20 @@ class KnowledgeChatPrompts:
         "在未获得工具返回前，禁止凭记忆编造流程或制度内容。"
     )
 
+    PREFETCH_DONE_CORRECTION_MSG = (
+        "【平台已预检索】系统已在推理前自动完成 search_knowledge_base，"
+        "请直接基于【知识库检索结果】组织回答，默认不要再调用 search_knowledge_base。"
+        "仅当用户问题与预检索词明显不同、或预检索结果明确不足时，才可补充调用一次。"
+    )
+
     KNOWLEDGE_SERVICE_UNAVAILABLE_CONTENT = (
         "⚠️ 知识库检索服务当前不可用，无法检索文档内容，本次问答已终止。\n"
         "请检查知识库服务（如 RAGFlow）运行状态与网络连通性，稍后重试；若问题持续，请联系管理员。"
+    )
+
+    KNOWLEDGE_NO_DATASET_CONTENT = (
+        "⚠️ 未指定可检索的知识库，本次知识库问答已终止。\n"
+        "请在输入框选择知识库，或由管理员为当前智能体绑定 dataset_ids 后重试。"
     )
 
     @staticmethod
@@ -433,7 +444,21 @@ class KnowledgeChatPrompts:
             f"【已自动执行 search_knowledge_base】检索词：{query}\n"
             f"【知识库检索结果】\n{raw}\n\n"
             "平台已在 Agent 推理开始前自动完成知识库检索。请优先基于以上内容组织回答，"
-            "并在回答中引用关键依据；若结果不足以回答，可再次调用 search_knowledge_base 补充检索。"
+            "并在每个相关陈述句末尾标注 [ID:n]（n 为检索结果序号）；"
+            "若结果不足以回答，可再次调用 search_knowledge_base 补充检索。\n"
+            f"{KnowledgeChatPrompts.CITATION_FORMAT_RULE}"
+        )
+
+    @staticmethod
+    def synthesis_user_message(user_question: str, execution_review: str) -> str:
+        """知识库问答 synthesis 阶段的用户消息。"""
+        return (
+            f"【当前追问】：{user_question}\n\n"
+            f"{execution_review}\n\n"
+            "请结合上述【执行过程回顾】和知识库检索结果，为用户提供准确、连贯的最终回答。\n"
+            "每个基于检索内容的陈述句末尾必须保留 [ID:n] 引用标记。\n\n"
+            f"{KnowledgeChatPrompts.CITATION_FORMAT_RULE}\n\n"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
         )
 
 

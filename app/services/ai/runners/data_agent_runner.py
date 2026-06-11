@@ -118,6 +118,8 @@ class _DataRunState:
     empty_sql_reason: str = ""
     sql_error: bool = False
     sql_error_message: str = ""
+    sql_fatal_error: bool = False
+    sql_fatal_message: str = ""
     requires_sql_plan: bool = False
     sql_plan_seen: bool = False
     sql_plan_missing: bool = False
@@ -146,6 +148,8 @@ class _DataRunState:
     @property
     def ready_to_answer(self) -> bool:
         if not self.requires_fresh_data:
+            return True
+        if self.sql_fatal_error:
             return True
         return (
             self.schema_completed
@@ -761,6 +765,8 @@ class DataAgentRunner(BaseExecutor):
             return
 
         for _ in range(MAX_DATA_REPAIR_ROUNDS):
+            if state.sql_fatal_error:
+                break
             repair_message = self._build_repair_message(state)
             if not repair_message:
                 break
@@ -797,6 +803,8 @@ class DataAgentRunner(BaseExecutor):
             if self._is_schema_fatal(state):
                 async for chunk in self._yield_schema_fatal_abort(state):
                     yield chunk
+                return
+            if state.sql_fatal_error:
                 return
             if state.full_content:
                 if self.conversation_id:
@@ -1100,11 +1108,12 @@ class DataAgentRunner(BaseExecutor):
             "本月呢", "上月呢", "今天呢", "昨天呢", "本周呢", "上周呢",
             "再按", "再看", "再查", "换成", "改成", "只看", "只查", "也看", "也查",
             "then", "this", "that", "it", "previous", "last one", "what about",
+            "还是", "刚才的", "之前那个", "不是", "用这个", "数据查询", "数据需求", "查数据", "查数", "数据智能体"
         ]
         if any(marker in q_lower for marker in context_markers):
             return True
         query_verbs = ["查询", "查", "统计", "列出", "展示", "显示", "获取", "select", "show", "list"]
-        return len(q) < 8 and not any(verb in q_lower for verb in query_verbs)
+        return len(q) < 12 and not any(verb in q_lower for verb in query_verbs)
 
     async def _resolve_standalone_query_for_new_data_query(
         self,
@@ -1144,11 +1153,12 @@ class DataAgentRunner(BaseExecutor):
             "1. 只补全上下文缺失的查询对象、指标、维度、时间范围或筛选条件。",
             "2. 必须保留最新提问新增或修改的条件。",
             "3. 不要生成 SQL，不要选择表名/字段名，不要解释。",
-            "4. 如果无法可靠补全，原样返回最新提问。",
+            "4. 【纠错与澄清回溯】：如果【最新提问】本身没有具体的数据查询业务诉求，而只是为了纠正意图、强调是数据查询、或澄清需求（例如：'还是数据查询需求'、'不对，是查数'、'用数据查'、'重新用数据查一下'），说明它是一个‘意图校准信号’。此时，你必须回溯并找出最近对话中【用户上一次提出的真实查询诉求】（即被系统误判的那个真实业务问题，如'查一下我的信息'），并结合更前文的历史数据背景（如'统计近一年入职员工数据'），合并生成一个独立的、完整的业务查数问题。",
+            "5. 如果无法可靠补全，原样返回最新提问。",
         ]
         ltm_section = ""
         if has_ltm:
-            instructions.append("5. 结合【用户个性化偏好与记忆】，将最新提问中的俗称、别名、旧称转换为对应的标准名称。")
+            instructions.append("6. 结合【用户个性化偏好与记忆】，将最新提问中的俗称、别名、旧称转换为对应的标准名称。")
             ltm_section = f"\n\n【用户个性化偏好与记忆】\n{ltm_context}"
 
         time_anchor = build_data_query_time_anchor_block()
@@ -1438,6 +1448,9 @@ class DataAgentRunner(BaseExecutor):
                             state.last_successful_sql_output = output
                     
                     state.sql_error, state.sql_error_message = self._detect_sql_error(output)
+                    if state.sql_error and self._is_sql_fatal_error(state.sql_error_message):
+                        state.sql_fatal_error = True
+                        state.sql_fatal_message = state.sql_error_message
                     if not state.sql_error:
                         await self._save_last_data_result_for_followups(tool_args, parsed_output)
             self._sync_pending_data_run_state(state, stream_state)
@@ -1538,6 +1551,20 @@ class DataAgentRunner(BaseExecutor):
                 yield chunk
                 if is_interrupt_sse_chunk(chunk):
                     return
+            if state.sql_fatal_error:
+                logger.info("[DataAgentRunner] Fatal SQL error detected during ReAct. Terminating execution immediately.")
+                yield {
+                    "type": "log",
+                    "id": f"fatal_sql_{uuid.uuid4().hex[:8]}",
+                    "title": "SQL 执行致命错误",
+                    "details": state.sql_fatal_message,
+                    "status": "error",
+                }
+                yield {
+                    "content": f"数据查询发生致命错误，已终止：\n\n{state.sql_fatal_message}",
+                    "status": "error",
+                }
+                return
 
         if emit_final_guard:
             guard_emitted = False
@@ -2039,6 +2066,32 @@ class DataAgentRunner(BaseExecutor):
         if any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in error_patterns):
             return True, text[:1000]
         return False, ""
+
+    @staticmethod
+    def _is_sql_fatal_error(text: str) -> bool:
+        q = str(text or "").strip()
+        if not q:
+            return False
+        fatal_prefixes = (
+            "[Permission Denied]",
+            "[Security Error]",
+            "[Validation Failed]",
+            "Error: Dataset",
+        )
+        if any(q.startswith(prefix) for prefix in fatal_prefixes):
+            return True
+        fatal_keywords = [
+            "未在元数据中注册",
+            "拒绝执行",
+            "没有表",
+            "权限不足",
+            "表不存在",
+            "table does not exist",
+            "access denied",
+            "permission denied"
+        ]
+        q_lower = q.lower()
+        return any(kw in q_lower for kw in fatal_keywords)
 
     async def _resolve_pending_runtime(
         self,

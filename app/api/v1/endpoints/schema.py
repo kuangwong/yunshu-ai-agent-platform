@@ -169,34 +169,126 @@ async def get_database_schema(
         ))
 
     # 2. Local Provider (Default)
-    found_datasets = []
+    trace_logs.append(f"Searching local datasets with query: '{request.query}'")
     
-    # Strategy: Keyword Search / RAG
-    if request.query:
-        # Search by single query string
-        trace_logs.append(f"Searching local datasets with query: '{request.query}'")
-        found_datasets = await MetadataService.search_datasets(conn, request.query)
-        trace_logs.append(f"Found {len(found_datasets)} datasets.")
-                
-    if not found_datasets:
+    # 获取用户有权访问的已启用数据集列表
+    authorized_datasets = await MetadataService.search_datasets(
+        conn,
+        status=1,
+        user_id=user_id,
+        is_admin=is_admin
+    )
+    authorized_ids = None if is_admin else [ds.id for ds in authorized_datasets]
+    
+    if not is_admin and not authorized_ids:
+        trace_logs.append("No authorized datasets found for user.")
         return StandardResponse(data=SchemaResponse(
-            schema_context="[System] No relevant metadata found. Please refine your query.",
+            schema_context="[System] No authorized metadata found.",
             hits=[],
             provider="local",
             logs=trace_logs
         ))
+
+    # 获取系统配置参数对齐检索门槛
+    from app.services.config_service import ConfigService
+    if request.ragflow_similarity_threshold is not None:
+        threshold = float(request.ragflow_similarity_threshold)
+    else:
+        threshold = float(await ConfigService.get("ragflow_similarity_threshold") or 0.2)
+
+    if request.ragflow_metadata_top_k is not None:
+        top_k = int(request.ragflow_metadata_top_k)
+    else:
+        top_k = 5
+
+    redis_results = []
+    vector_search_success = False
+    query = (request.query or "").strip()
+    
+    if query:
+        try:
+            from app.services.ai.embedding_client import EmbeddingClient
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            
+            # 计算提问词向量
+            query_embedding = await EmbeddingClient.embed_text(query)
+            
+            # 执行 FT.SEARCH KNN 检索
+            redis_results = await MetadataIndexService.search_knn(
+                query_embedding=query_embedding,
+                authorized_dataset_ids=authorized_ids,
+                top_k=top_k
+            )
+            vector_search_success = True
+            trace_logs.append(f"Redis Vector Search completed. Found {len(redis_results)} raw items.")
+        except Exception as ex:
+            logger.warning("[Local Search] Redis Vector Search failed: %s. Falling back to keyword search.", ex)
+            trace_logs.append(f"Redis Vector Search failed: {ex}. Falling back to MySQL keyword search.")
+
+    if vector_search_success:
+        hits = []
+        context_parts = []
+        dataset_id_to_obj = {ds.id: ds for ds in authorized_datasets}
+        unique_hit_datasets = {}
         
-    yaml_outputs = []
-    hits = []
-    for ds in found_datasets:
-        yaml_text = await MetadataService.export_dataset_yaml(conn, ds.id)
-        yaml_outputs.append(yaml_text)
-        hits.append(SchemaHit(id=ds.id, name=ds.name, display_name=ds.display_name))
+        for item in redis_results:
+            sim = item.get("similarity", 0.0)
+            if sim < threshold:
+                trace_logs.append(f"Skipping hit {item.get('doc_name')} due to similarity {sim:.4f} below threshold {threshold}")
+                continue
+                
+            doc_name = item.get("doc_name", "unknown")
+            content = item.get("content", "")
+            ds_id = int(item.get("dataset_id", 0))
+            
+            trace_logs.append(f"Hit: {doc_name} (Sim: {sim:.2f})")
+            context_parts.append(f"--- Source: {doc_name} (Sim: {sim:.2f}) ---\n{content}")
+            
+            if ds_id and ds_id not in unique_hit_datasets:
+                if ds_id in dataset_id_to_obj:
+                    ds = dataset_id_to_obj[ds_id]
+                    unique_hit_datasets[ds_id] = SchemaHit(id=ds.id, name=ds.name, display_name=ds.display_name)
+                    
+        schema_context = "\n\n".join(context_parts) if context_parts else "[System] No relevant metadata found above the similarity threshold."
         
-    final_context = "\n---\n".join(yaml_outputs)
-    return StandardResponse(data=SchemaResponse(
-        schema_context=final_context,
-        hits=hits,
-        provider="local",
-        logs=trace_logs
-    ))
+        return StandardResponse(data=SchemaResponse(
+            schema_context=schema_context,
+            hits=list(unique_hit_datasets.values()),
+            provider="local",
+            logs=trace_logs
+        ))
+        
+    else:
+        # 兜底降级: MySQL LIKE 模糊匹配检索
+        trace_logs.append("Running fallback MySQL keyword search.")
+        found_datasets = []
+        if query:
+            found_datasets = await MetadataService.search_datasets(
+                conn, 
+                query=query, 
+                user_id=user_id, 
+                is_admin=is_admin
+            )
+        
+        if not found_datasets:
+            return StandardResponse(data=SchemaResponse(
+                schema_context="[System] No relevant metadata found. Please refine your query.",
+                hits=[],
+                provider="local",
+                logs=trace_logs
+            ))
+            
+        yaml_outputs = []
+        hits = []
+        for ds in found_datasets:
+            yaml_text = await MetadataService.export_dataset_yaml(conn, ds.id)
+            yaml_outputs.append(yaml_text)
+            hits.append(SchemaHit(id=ds.id, name=ds.name, display_name=ds.display_name))
+            
+        final_context = "\n---\n".join(yaml_outputs)
+        return StandardResponse(data=SchemaResponse(
+            schema_context=final_context,
+            hits=hits,
+            provider="local",
+            logs=trace_logs
+        ))

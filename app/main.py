@@ -65,6 +65,13 @@ async def lifespan(app: FastAPI):
         await MemoryIndexService.ensure_index()
     except Exception as e:
         logging.warning("Memory RediSearch index init skipped: %s", e)
+
+    try:
+        from app.services.ai.metadata_index_service import MetadataIndexService
+        await MetadataIndexService.ensure_index()
+        await MetadataIndexService.sync_all_datasets()
+    except Exception as e:
+        logging.warning("Metadata RediSearch index/sync init skipped: %s", e)
     
     yield
     # Shutdown

@@ -222,6 +222,14 @@ class MetadataService:
         await db.commit()
         await db.refresh(dataset)
         await AgentConfigProvider.refresh_dataset_menu()
+
+        # 同步本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            await MetadataIndexService.sync_local_redis_vector(dataset.id)
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to trigger sync in create_dataset: %s", ex)
+
         return dataset
         
     @staticmethod
@@ -269,6 +277,14 @@ class MetadataService:
             )
         
         await db.commit()
+
+        # 同步本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            await MetadataIndexService.sync_local_redis_vector(dataset_id)
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to trigger sync in update_dataset: %s", ex)
+
         return await MetadataService.get_dataset_by_id(db, dataset_id, is_admin=True)
 
     @staticmethod
@@ -310,6 +326,14 @@ class MetadataService:
         
         await db.commit()
         await AgentConfigProvider.refresh_dataset_menu()
+
+        # 级联删除本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            import asyncio
+            asyncio.create_task(MetadataIndexService.delete_dataset_vectors(dataset_id))
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to delete dataset vectors: %s", ex)
 
         # 5. Cascade Delete RAGFlow KB (Background or Fire-and-forget)
         if rag_kb_id:
@@ -451,6 +475,14 @@ class MetadataService:
         )
         
         await db.commit()
+
+        # 同步本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            await MetadataIndexService.sync_local_redis_vector(dataset_id)
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to trigger sync in save_table_metadata: %s", ex)
+
         # Reload with columns
         result = await db.execute(
             select(MetaTable)
@@ -509,6 +541,14 @@ class MetadataService:
             )
 
         await db.commit()
+
+        # 同步本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            await MetadataIndexService.sync_local_redis_vector(dataset_id)
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to trigger sync in delete_table_metadata: %s", ex)
+
         await AgentConfigProvider.refresh_dataset_menu()
 
 
@@ -536,6 +576,14 @@ class MetadataService:
             await MetadataService._mark_dataset_as_modified(db, dataset_id)
             await db.commit()
             await db.refresh(existing_metric)
+
+            # 同步本地 Redis 向量
+            try:
+                from app.services.ai.metadata_index_service import MetadataIndexService
+                await MetadataIndexService.sync_local_redis_vector(dataset_id)
+            except Exception as ex:
+                logger.warning("[Local Redis Sync] Failed to trigger sync in create_metric (existing): %s", ex)
+
             return existing_metric
 
         # Create New
@@ -565,6 +613,14 @@ class MetadataService:
         
         await db.commit()
         await db.refresh(metric)
+
+        # 同步本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            await MetadataIndexService.sync_local_redis_vector(dataset_id)
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to trigger sync in create_metric: %s", ex)
+
         return metric
 
     @staticmethod
@@ -621,7 +677,15 @@ class MetadataService:
             await MetadataService._mark_dataset_as_modified(db, dataset_id)
             
         await db.commit()
-        
+
+        # 同步本地 Redis 向量
+        if dataset_id:
+            try:
+                from app.services.ai.metadata_index_service import MetadataIndexService
+                await MetadataIndexService.sync_local_redis_vector(dataset_id)
+            except Exception as ex:
+                logger.warning("[Local Redis Sync] Failed to trigger sync in update_metric: %s", ex)
+
         result = await db.execute(select(MetaMetric).where(MetaMetric.id == metric_id))
         return result.scalar_one_or_none()
 
@@ -663,6 +727,14 @@ class MetadataService:
 
         await db.commit()
 
+        # 同步本地 Redis 向量
+        if dataset_id:
+            try:
+                from app.services.ai.metadata_index_service import MetadataIndexService
+                await MetadataIndexService.sync_local_redis_vector(dataset_id)
+            except Exception as ex:
+                logger.warning("[Local Redis Sync] Failed to trigger sync in delete_metric: %s", ex)
+
     # --- Relationships CRUD ---
 
     @staticmethod
@@ -694,6 +766,14 @@ class MetadataService:
         
         await db.commit()
         await db.refresh(rel)
+
+        # 同步本地 Redis 向量
+        try:
+            from app.services.ai.metadata_index_service import MetadataIndexService
+            await MetadataIndexService.sync_local_redis_vector(dataset_id)
+        except Exception as ex:
+            logger.warning("[Local Redis Sync] Failed to trigger sync in create_relationship: %s", ex)
+
         return rel
 
     @staticmethod
@@ -769,6 +849,14 @@ class MetadataService:
 
         await db.commit()
 
+        # 同步本地 Redis 向量
+        if dataset_id:
+            try:
+                from app.services.ai.metadata_index_service import MetadataIndexService
+                await MetadataIndexService.sync_local_redis_vector(dataset_id)
+            except Exception as ex:
+                logger.warning("[Local Redis Sync] Failed to trigger sync in update_relationship: %s", ex)
+
         result = await db.execute(select(MetaRelationship).where(MetaRelationship.id == rel_id))
         return result.scalar_one_or_none()
 
@@ -813,6 +901,14 @@ class MetadataService:
             await MetadataService._mark_dataset_as_modified(db, dataset_id)
 
         await db.commit()
+
+        # 同步本地 Redis 向量
+        if dataset_id:
+            try:
+                from app.services.ai.metadata_index_service import MetadataIndexService
+                await MetadataIndexService.sync_local_redis_vector(dataset_id)
+            except Exception as ex:
+                logger.warning("[Local Redis Sync] Failed to trigger sync in delete_relationship: %s", ex)
 
     # --- YAML Export Logic ---
 

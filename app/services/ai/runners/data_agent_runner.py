@@ -1112,7 +1112,7 @@ class DataAgentRunner(BaseExecutor):
         )
         try:
             model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
-            response = await model.ainvoke([SystemMessage(content=prompt)])
+            response = await model.ainvoke([HumanMessage(content=prompt)])
             tokens = extract_tokens_from_message(response)
             self.record_llm_token_usage(
                 prompt_tokens=tokens["prompt_tokens"],
@@ -1304,7 +1304,7 @@ class DataAgentRunner(BaseExecutor):
 
         try:
             model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
-            response = await model.ainvoke([SystemMessage(content=prompt)])
+            response = await model.ainvoke([HumanMessage(content=prompt)])
             tokens = extract_tokens_from_message(response)
             self.record_llm_token_usage(
                 prompt_tokens=tokens["prompt_tokens"],

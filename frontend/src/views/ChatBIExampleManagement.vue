@@ -337,7 +337,7 @@ onMounted(async () => {
           </template>
           <template v-else>
             <span>当前 知识库引擎(RAGFlow)：</span>
-            <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" class="font-mono text-primary bg-gray-100 px-1.5 py-0.5 rounded hover:underline">{{ ragflowApiUrl }}</a>
+            <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" :title="ragflowApiUrl" class="font-mono text-primary bg-gray-100 px-1.5 py-0.5 rounded hover:underline truncate max-w-[200px] sm:max-w-[300px] inline-block align-bottom">{{ ragflowApiUrl }}</a>
             <span v-if="ragflowConfig && !ragflowConfig.api_key_configured" class="ml-2 text-amber-600 font-medium">⚠️ API Key 未配置</span>
           </template>
         </p>
@@ -374,7 +374,7 @@ onMounted(async () => {
         <div class="font-semibold text-amber-900">RAGFlow 服务连通性故障</div>
         <div class="mt-1 text-amber-800/90">{{ friendlyRagFlowError }}</div>
         <div class="mt-2 text-xs font-mono text-amber-700 bg-amber-100/50 p-2 rounded-lg">
-          <div>连接地址: <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ ragflowApiUrl }}</a></div>
+          <div>连接地址: <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" :title="ragflowApiUrl" class="hover:underline truncate max-w-[200px] sm:max-w-[300px] inline-block align-bottom">{{ ragflowApiUrl }}</a></div>
           <div class="mt-0.5">错误日志: {{ errorMessage }}</div>
         </div>
       </div>

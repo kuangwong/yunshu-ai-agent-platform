@@ -149,7 +149,7 @@ onMounted(fetchRagFlowConfig)
         <p class="text-sm text-gray-500 mt-1">直接调用 RAGFlow Retrieval API，验证知识库 chunk 命中质量。</p>
         <p class="text-xs text-gray-400 mt-1.5">
           当前 RAGFlow 地址：
-          <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" class="font-mono text-primary hover:underline">{{ ragflowApiUrl }}</a>
+          <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" :title="ragflowApiUrl" class="font-mono text-primary hover:underline truncate max-w-[200px] sm:max-w-[300px] inline-block align-bottom">{{ ragflowApiUrl }}</a>
           <span v-if="ragflowConfig && !ragflowConfig.api_key_configured" class="ml-2 text-amber-600">API Key 未配置</span>
         </p>
       </div>
@@ -245,7 +245,7 @@ onMounted(fetchRagFlowConfig)
           <div class="font-semibold">RAGFlow 暂时不可用</div>
           <div class="mt-1">{{ friendlyRagFlowError }}</div>
           <div class="mt-2 text-xs text-amber-700">
-            配置地址：<a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" class="font-mono hover:underline">{{ ragflowApiUrl }}</a>
+            配置地址：<a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" :title="ragflowApiUrl" class="font-mono hover:underline truncate max-w-[200px] sm:max-w-[300px] inline-block align-bottom">{{ ragflowApiUrl }}</a>
           </div>
           <div class="mt-1 text-xs text-amber-600">原始错误：{{ errorMessage }}</div>
         </div>

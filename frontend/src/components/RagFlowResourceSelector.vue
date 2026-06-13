@@ -202,8 +202,9 @@ const formatDate = (ts?: number | string) => {
           ></span>
           <span class="font-medium whitespace-nowrap">{{ engineStatusText }}</span>
           <span class="text-gray-400">|</span>
-          <span class="truncate">
-            RAGFlow 地址：<span class="font-mono">{{ ragflowApiUrl }}</span>
+          <span class="flex items-center gap-1 min-w-0">
+            <span>RAGFlow 地址：</span>
+            <span :title="ragflowApiUrl" class="font-mono truncate max-w-[150px] sm:max-w-[250px] inline-block align-bottom">{{ ragflowApiUrl }}</span>
           </span>
         </div>
         <span
@@ -265,7 +266,7 @@ const formatDate = (ts?: number | string) => {
         <h3 class="text-lg font-bold text-gray-800">知识库引擎未连接</h3>
         <p class="text-sm text-gray-500 mt-1 max-w-md">{{ friendlyErrorMsg }}</p>
         <p class="text-xs text-gray-400 mt-3 max-w-md">
-          当前配置地址：<span class="font-mono">{{ ragflowApiUrl }}</span>
+          当前配置地址：<span :title="ragflowApiUrl" class="font-mono truncate max-w-[200px] sm:max-w-[300px] inline-block align-bottom">{{ ragflowApiUrl }}</span>
         </p>
         <p class="text-xs text-gray-400 mt-1 max-w-md">原始错误：{{ errorMsg }}</p>
         <button

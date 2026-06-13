@@ -403,14 +403,72 @@ const getCategoryTip = (key: string) => {
     'ragflow_api_url': '对接的 RAGFlow 语义检索平台后端 API 服务地址。',
     'ragflow_api_key': '用于与 RAGFlow 进行安全 API 调用的身份验证令牌（API Key）。',
     'ragflow_dataset_ids': '与当前数据平台关联绑定的 RAGFlow 知识库 ID（可多选），用于通过语义搜索表/字段的匹配描述。',
-    'ragflow_similarity_threshold': 'RAG 检索时的向量相似度阈值（0.0 至 1.0）。数值越高，检索出的元数据与提问的相关性要求越严苛，建议为 0.4。',
-    'ragflow_vector_weight': '检索时的向量相似度权重占比（0.0 至 1.0），其余权重为全文关键词检索。值为 0.85 表示偏向于向量语义匹配。',
+    'ragflow_similarity_threshold': `【相似度阈值 (ragflow_similarity_threshold)】
+这个参数是一个过滤器（门槛），用来决定什么样的表/字段元数据片段“足够相关”，可以被送给大模型。
+
+在 RAGFlow（或者大多数先进的 RAG 检索系统）中，混合检索（Hybrid Search）通常结合了全文检索（Sparse Retrieval，如 BM25）和向量检索（Dense Retrieval，如 Vector Embeddings）。这个参数就是用来控制如何筛选这两种检索结果的核心阈值。
+
+* 原理：系统计算出元数据和用户提问的相似度分数（如余弦相似度）后，只有分数大于或等于该阈值的片段才会被保留，低于该分数的全部被丢弃。
+* 取值范围：0.0 到 1.0 之间。
+* 通俗解释：
+  - 0.0：没有任何门槛。系统会把检索出的相关表结构描述全部喂给大模型，不管它们是否相关。（容易引入大量不相关干扰信息，导致大模型混淆或胡说八道）。
+  - 0.9：门槛极高。只有和问题中表述极其相似、几乎一模一样的元数据描述才能通过。（极易导致大模型找不到任何参考表结构，回答“无法获取相关信息”）。
+
+💡 调优建议：
+* 一般推荐设置在 0.4 到 0.6 之间作为起步（平台默认建议 0.40）。
+* 如果发现大模型经常瞎编不存在的表或字段名，说明阈值太低了混入了杂音，需要调高。
+* 如果发现大模型经常明明有对应的表，却回答“找不到相关表结构”，说明门槛太高了，需要调低。`,
+    'ragflow_vector_weight': `【向量权重 (ragflow_vector_weight)】
+该参数决定了在进行元数据混合检索时，向量语义检索结果所占的分数权重。
+
+在 RAGFlow（或者大多数先进的 RAG 检索系统）中，混合检索（Hybrid Search）通常结合了全文检索（Sparse Retrieval，如 BM25）和向量检索（Dense Retrieval，如 Vector Embeddings）。这个参数就是用来平衡这两种检索结果的核心权重。
+
+* 原理：混合检索的最终得分通常是通过公式计算的：
+  最终得分 = (向量检索得分 * vector_weight) + (全文检索得分 * (1 - vector_weight))
+* 取值范围：0.0 到 1.0 之间。
+* 通俗解释：
+  - 1.0：只看语义相关度（向量检索），完全忽略关键词的完全匹配。
+  - 0.0：只看关键词匹配（全文检索），完全忽略同义词或相近语义的理解。
+  - 0.70 / 0.85（默认值）：代表系统更倾向于语义理解，但同时保留 15%~30% 的权重给精确的关键词/表名匹配。
+
+💡 调优建议：
+* 如果你的数据集多为行业术语、字母缩写、特定型号、人名或股票代码等需要精准字面匹配的场景，调低该值（如 0.3 ~ 0.4）。
+* 如果用户提问多为口语化日常表达、长句描述，或包含大量同义词（如“查找”与“搜索”），调高该值（如 0.7 ~ 0.85）。`,
     'ragflow_metadata_top_k': '检索数据库表/字段描述时，最大召回的候选文档数量。值越大，召回的内容越多，但会增加 Token 消耗。',
     'sql_execution_mode': '控制生成的 SQL 查询的执行位置。remote 表示通过安全的远程微服务沙箱执行，local 表示直连本地配置好的数据源连接池执行。',
     'chatbi_sample_knowledge_base': 'ChatBI 经验库在 RAGFlow 中自动创建和同步对应的知识库 ID（由系统自动校验与测试连接生成，不可手动修改）。',
     'chatbi_sample_top_k': '检索用户提问时召回的最相似问答案例（Few-shot）最大限制条数。值越大参考条数越多，但会占据更多的 Prompt 上下文。',
-    'chatbi_sample_similarity_threshold': '匹配用户提问与 ChatBI 历史案例时的相似度过滤阈值，推荐配置为 0.65，过滤不相关的参考案例。',
-    'chatbi_sample_vector_similarity_weight': '案例匹配时向量语义距离的权重（推荐 0.85），可与关键词全文检索进行混合比例平衡。',
+    'chatbi_sample_similarity_threshold': `【匹配相似度阈值 (chatbi_sample_similarity_threshold)】
+这个参数是一个过滤器（门槛），用来决定什么样的历史查数案例（Few-shot）“足够相似”，可以用来参考。
+
+在 RAGFlow（或者大多数先进的 RAG 检索系统）中，混合检索（Hybrid Search）通常结合了全文检索（Sparse Retrieval，如 BM25）和向量检索（Dense Retrieval，如 Vector Embeddings）。这个参数就是用来控制如何筛选这两种检索结果的核心阈值。
+
+* 原理：计算当前提问与历史案例的相似度后，只有相似度大于或等于该阈值的案例才会被作为 Prompt 参考样本提供给大模型。
+* 取值范围：0.0 到 1.0 之间。
+* 通俗解释：
+  - 0.0：无任何过滤。无论是否相关，最相似的几个案例都会全部作为 Few-shot 喂给大模型。（可能误导大模型套用错误模板，引入大量噪音导致大模型胡说八道）。
+  - 0.9：门槛极高。只有和历史案例极其吻合的提问才能匹配上，参考难度极大。（容易导致大模型找不到任何参考案例）。
+
+💡 调优建议：
+* 一般推荐设置在 0.5 到 0.7 之间作为起步（平台默认建议 0.65，在本地模式下建议 0.40）。
+* 若大模型经常乱套用历史案例的 SQL 模板，说明阈值太低了混入了杂音，需要调高。
+* 若明明有相似案例大模型却无法参考，说明门槛太高了，需要调低。`,
+    'chatbi_sample_vector_similarity_weight': `【案例向量权重 (chatbi_sample_vector_similarity_weight)】
+此权重用于控制匹配 ChatBI 案例时，向量语义相似度分数的占比权重。
+
+在 RAGFlow（或者大多数先进的 RAG 检索系统）中，混合检索（Hybrid Search）通常结合了全文检索（Sparse Retrieval，如 BM25）和向量检索（Dense Retrieval，如 Vector Embeddings）。这个参数就是用来平衡这两种检索结果的核心权重。
+
+* 原理：混合检索的最终得分通常是通过公式计算的：
+  最终得分 = (向量检索得分 * vector_weight) + (全文检索得分 * (1 - vector_weight))
+* 取值范围：0.0 到 1.0 之间。
+* 通俗解释：
+  - 1.0：只以语义相似度进行案例搜索（向量检索），完全忽略关键词的精确字面匹配。
+  - 0.0：只以字面关键词匹配进行案例搜索（全文检索），完全忽略同义词或相近语义的理解。
+  - 0.85（默认值）：更倾向于语义匹配，保证在追问或同义表达时仍能稳定匹配到相应的查数案例（保留 15% 权重给关键词精确匹配）。
+
+💡 调优建议：
+* 如果案例中包含大量行业术语、人名、股票代码或特定型号等需要精准字面匹配的词，调低该值（如 0.3 ~ 0.5）。
+* 如果用户提问多为日常用语、描述性问题或包含大量同义词，调高该值（如 0.7 ~ 0.85）。`,
     'embedchat_watermark_enabled': '开启后，将在嵌入式对话界面（EmbedChat）背景中平铺渲染防止信息截屏泄露的安全审计水印。',
     'embedchat_watermark_style': '水印的文字样式方案。可以选择【用户名 + 时间戳】或【自定义文字 + 时间戳】（两者均会自动附加当前时间戳）。',
     'embedchat_watermark_text': '当水印样式为【自定义文字 + 时间戳】时，在对话背景中平铺显示的自定义文本，末尾会自动追加时间戳。',
@@ -423,8 +481,37 @@ const getCategoryTip = (key: string) => {
     'knowledge_ragflow_api_url': '对接的 RAGFlow 语义检索平台后端 API 服务地址，用于常规智能体的知识库问答检索。',
     'knowledge_ragflow_api_key': '用于与 RAGFlow 知识库服务进行安全 API 调用的身份验证令牌（API Key）。',
     'knowledge_ragflow_dataset_ids': '当前系统关联绑定的默认知识库 ID（可多选），用于为智能体问答检索背景文档和常识参考。',
-    'knowledge_ragflow_similarity_threshold': '知识库问答检索时的最低相似度阈值（0.0 至 1.0），过滤相关性低于该设定的文档片段。建议为 0.20。',
-    'knowledge_ragflow_vector_weight': '知识库问答检索时向量相似度的权重比例（0.0 至 1.0），其余为全文关键词检索。值为 0.30 表示混合偏向关键词组合。',
+    'knowledge_ragflow_similarity_threshold': `【相似度阈值 (knowledge_ragflow_similarity_threshold)】
+这个参数是一个过滤器（门槛），用来决定什么样的知识库文档片段“足够相关”，可以被送给大模型。
+
+在 RAGFlow（或者大多数先进的 RAG 检索系统）中，混合检索（Hybrid Search）通常结合了全文检索（Sparse Retrieval，如 BM25）和向量检索（Dense Retrieval，如 Vector Embeddings）。这个参数就是用来控制如何筛选这两种检索结果的核心阈值。
+
+* 原理：系统计算出文档和用户问题的相似度分数（如余弦相似度）后，只有分数大于或等于该阈值的文档片段才会被保留，低于该分数的全部被丢弃。
+* 取值范围：0.0 到 1.0 之间。
+* 通俗解释：
+  - 0.0：没有任何门槛。系统会把检索出的所有文档段落全部喂给大模型，不管它们是否真的相关。（容易引入大量噪音，导致大模型胡说八道）。
+  - 0.9：门槛极高。只有和提问几乎一模一样的文档段落才能通过。（极易导致大模型找不到任何参考资料，回答“不知道”）。
+
+💡 调优建议：
+* 一般推荐设置在 0.2 到 0.4 之间作为起步（平台默认建议 0.20）。
+* 如果发现大模型经常瞎编无关事实，说明阈值太低了混入了杂音，需要调高。
+* 如果发现大模型经常明明有对应的知识，却回答“知识库中没有相关信息”，说明门槛太高了，需要调低。`,
+    'knowledge_ragflow_vector_weight': `【向量权重 (knowledge_ragflow_vector_weight)】
+该参数决定了在进行知识库混合检索时，向量语义检索结果所占的分数权重。
+
+在 RAGFlow（或者大多数先进的 RAG 检索系统）中，混合检索（Hybrid Search）通常结合了全文检索（Sparse Retrieval，如 BM25）和向量检索（Dense Retrieval，如 Vector Embeddings）。这个参数就是用来平衡这两种检索结果的核心权重。
+
+* 原理：混合检索的最终得分通常是通过公式计算的：
+  最终得分 = (向量检索得分 * vector_weight) + (全文检索得分 * (1 - vector_weight))
+* 取值范围：0.0 到 1.0 之间。
+* 通俗解释：
+  - 1.0：只看语义相关度（向量检索），完全忽略关键词的精确字面匹配。
+  - 0.0：只看关键词匹配（全文检索），完全忽略同义词或相近语义的理解。
+  - 0.30（默认值）：代表知识库检索更倾向于全文关键词匹配（占 70% 权重），对精准度要求较高。
+
+💡 调优建议：
+* 如果知识库多为技术文档、规格手册或包含大量专业代号，调低该值（如 0.2 ~ 0.3）。
+* 如果问题比较多样化、偏口语表述，调高该值（如 0.6 ~ 0.7）以强化语义召回。`,
     'knowledge_ragflow_metadata_top_k': '知识库问答检索时，最大召回匹配的候选文档片段数。值越大参考条数越多，但会消耗更多的模型 Token。'
   }
   return tips[key] || ''
@@ -1326,9 +1413,19 @@ onMounted(() => {
                                         class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary disabled:opacity-50"
                                       />
                                       <div class="flex justify-between text-xs text-gray-400 mt-1 font-mono">
-                                          <span class="flex items-center">0.0<span v-if="item.key === 'llm_temperature'" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(更严谨/精准)</span></span>
+                                          <span class="flex items-center">
+                                            0.0
+                                            <span v-if="item.key === 'llm_temperature'" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(更严谨/精准)</span>
+                                            <span v-else-if="['ragflow_similarity_threshold', 'chatbi_sample_similarity_threshold', 'knowledge_ragflow_similarity_threshold'].includes(item.key)" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(无门槛)</span>
+                                            <span v-else-if="['ragflow_vector_weight', 'chatbi_sample_vector_similarity_weight', 'knowledge_ragflow_vector_weight'].includes(item.key)" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(只看关键词)</span>
+                                          </span>
                                           <span>0.5</span>
-                                          <span class="flex items-center">1.0<span v-if="item.key === 'llm_temperature'" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(更随机/发散)</span></span>
+                                          <span class="flex items-center">
+                                            1.0
+                                            <span v-if="item.key === 'llm_temperature'" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(更随机/发散)</span>
+                                            <span v-else-if="['ragflow_similarity_threshold', 'chatbi_sample_similarity_threshold', 'knowledge_ragflow_similarity_threshold'].includes(item.key)" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(极高门槛)</span>
+                                            <span v-else-if="['ragflow_vector_weight', 'chatbi_sample_vector_similarity_weight', 'knowledge_ragflow_vector_weight'].includes(item.key)" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(只看语义)</span>
+                                          </span>
                                       </div>
                                   </div>
                                   <div class="w-16">
@@ -1588,9 +1685,9 @@ onMounted(() => {
 
     <!-- Generic Config Explanation Modal -->
     <div v-if="activeExplanationItem" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" @click.self="activeExplanationItem = null">
-      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 transition-all duration-200 border border-gray-100 flex flex-col">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[85vh] overflow-hidden scale-100 transition-all duration-200 border border-gray-100 flex flex-col">
         <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+        <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
           <div class="flex items-center space-x-2.5">
             <div class="p-2 bg-primary/10 rounded-xl text-primary">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
@@ -1609,10 +1706,10 @@ onMounted(() => {
           </button>
         </div>
         <!-- Content -->
-        <div class="p-6 space-y-4 text-sm text-gray-600">
+        <div class="p-6 space-y-4 text-sm text-gray-600 overflow-y-auto custom-scrollbar flex-1">
           <div class="space-y-2">
             <span class="text-xs font-bold text-gray-400 uppercase tracking-wider font-mono">功能描述</span>
-            <p class="text-gray-700 leading-relaxed bg-gray-50 p-4 rounded-xl border border-gray-100">
+            <p class="text-gray-700 leading-relaxed bg-gray-50 p-4 rounded-xl border border-gray-100 whitespace-pre-wrap">
               {{ activeExplanationItem.description || '暂无描述信息。' }}
             </p>
           </div>
@@ -1620,13 +1717,13 @@ onMounted(() => {
           <!-- Category specific tips -->
           <div class="space-y-2" v-if="getCategoryTip(activeExplanationItem.key)">
             <span class="text-xs font-bold text-gray-400 uppercase tracking-wider font-mono">使用建议</span>
-            <p class="text-xs text-gray-600 leading-relaxed bg-indigo-50/50 p-4 rounded-xl border border-indigo-100/50 text-indigo-950">
+            <p class="text-xs text-gray-600 leading-relaxed bg-indigo-50/50 p-4 rounded-xl border border-indigo-100/50 text-indigo-950 whitespace-pre-wrap">
               {{ getCategoryTip(activeExplanationItem.key) }}
             </p>
           </div>
         </div>
         <!-- Footer -->
-        <div class="bg-gray-50 px-6 py-4 flex justify-end border-t border-gray-100">
+        <div class="bg-gray-50 px-6 py-4 flex justify-end border-t border-gray-100 shrink-0">
           <button 
             @click="activeExplanationItem = null" 
             type="button" 

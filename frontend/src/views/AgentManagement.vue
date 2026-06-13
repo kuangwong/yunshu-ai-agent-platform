@@ -1085,7 +1085,17 @@ const formatDate = (dateStr: string) => {
   <div class="p-4 sm:p-6 max-w-7xl mx-auto space-y-4 sm:space-y-6">
     <div class="flex justify-between items-center">
       <div>
-        <h1 class="text-xl sm:text-2xl font-bold text-gray-900">智能体管理</h1>
+        <div class="flex items-center space-x-3">
+          <h1 class="text-xl sm:text-2xl font-bold text-gray-900">智能体管理</h1>
+          <!-- 「？」帮助按钮 -->
+          <button 
+            @click="showHelp = true"
+            class="flex items-center justify-center w-7 h-7 rounded-full bg-white text-blue-600 border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm"
+            title="智能体调度与托管说明"
+          >
+            <span class="font-bold text-sm">?</span>
+          </button>
+        </div>
         <p v-if="!isMobile" class="text-gray-500 mt-1">
           管理并配置系统中的 AI 智能体及其运行策略
         </p>
@@ -1111,41 +1121,6 @@ const formatDate = (dateStr: string) => {
         </svg>
         新建智能体
       </button>
-    </div>
-
-    <!-- Collapsible Help Section -->
-    <div class="bg-blue-50/50 border border-blue-100 rounded-xl overflow-hidden transition-all duration-300">
-      <button
-        @click="showHelp = !showHelp"
-        class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-blue-800 hover:bg-blue-100/50 transition-colors"
-      >
-        <div class="flex items-center">
-          <svg class="w-5 h-5 mr-2 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          💡 智能体调度与托管说明
-        </div>
-        <svg
-          class="w-4 h-4 text-blue-500 transition-transform duration-200"
-          :class="showHelp ? 'rotate-180' : ''"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      <div v-show="showHelp" class="px-4 pb-4 text-sm text-blue-700/80 space-y-2 border-t border-blue-100/50 pt-3">
-        <div class="flex items-start">
-          <span class="mr-2 mt-0.5 text-blue-500 font-bold">1.</span>
-          <span>状态为 <span class="font-bold text-blue-800">启用</span> 且为 <span class="font-bold text-blue-800">SYSTEM</span> 的智能体才会被自动路由到。非 SYSTEM 的且是自己创建的智能体可以手动 <span class="font-mono bg-blue-100 px-1.5 py-0.5 rounded text-blue-800 text-xs">@</span> 访问。</span>
-        </div>
-        <div class="flex items-start">
-           <span class="mr-2 mt-0.5 text-blue-500 font-bold">2.</span>
-           <span>托管模式的智能体仅进行代理访问，具体智能体的编排开发要在 <span class="font-bold text-blue-800">RAGFlow</span> 中进行。</span>
-        </div>
-      </div>
     </div>
 
     <!-- Filters & Toolbar -->
@@ -2808,6 +2783,29 @@ const formatDate = (dateStr: string) => {
         >
           知道了
         </button>
+      </div>
+    </Modal>
+
+    <!-- 智能体调度与托管说明 Modal -->
+    <Modal
+      v-if="showHelp"
+      title="智能体调度与托管说明"
+      @close="showHelp = false"
+      size="max-w-lg"
+    >
+      <div class="space-y-4 text-sm text-gray-650 leading-relaxed py-1">
+        <div class="flex items-start">
+          <span class="mr-2.5 mt-0.5 text-blue-600 font-bold">1.</span>
+          <span>
+            状态为 <span class="font-bold text-gray-900">启用</span> 且为 <span class="font-bold text-gray-900">SYSTEM</span> 的智能体才会被自动路由到。非 SYSTEM 的且是自己创建的智能体可以手动 <span class="font-mono bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded text-blue-600 text-xs font-semibold">@</span> 访问。
+          </span>
+        </div>
+        <div class="flex items-start">
+          <span class="mr-2.5 mt-0.5 text-blue-600 font-bold">2.</span>
+          <span>
+            托管模式的智能体仅进行代理访问，具体智能体的编排开发要在 <span class="font-bold text-gray-900">RAGFlow</span> 中进行。
+          </span>
+        </div>
       </div>
     </Modal>
   </div>

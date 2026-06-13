@@ -507,7 +507,14 @@ const tempTopK = ref(5)
 const tempThreshold = ref(0.2)
 const tempVectorWeight = ref(0.3)
 
-const showRagParams = computed(() => tempProvider.value === 'ragflow' || tempProvider.value === 'default')
+const actualProvider = computed(() => {
+  if (tempProvider.value === 'default') {
+    return (ragflowConfig.value?.metadata_provider === 'local') ? 'local' : 'ragflow'
+  }
+  return tempProvider.value
+})
+
+const showVectorWeight = computed(() => actualProvider.value === 'ragflow')
 
 const newDataset = ref({
   name: '',
@@ -910,14 +917,14 @@ onMounted(async () => {
           class="bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 px-4 py-2 rounded-lg transition-all flex items-center gap-2 font-medium"
         >
           <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          检索测试
+          测试
         </button>
         <button 
           @click="showSpecModal = true"
           class="border border-purple-200 text-purple-600 hover:bg-purple-50 px-4 py-2 rounded-lg transition-all flex items-center gap-2 font-medium"
         >
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 17.5 5s3.332.477 4.5 1.253v13C20.832 18.477 19.246 18 17.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
-          设计规范
+          规范
         </button>
         <button 
           v-has-perm="'element:metadata:import'"
@@ -1423,13 +1430,13 @@ onMounted(async () => {
                 </div>
 
                 <!-- Top K -->
-                <div v-if="showRagParams" class="flex items-center gap-3">
+                <div class="flex items-center gap-3">
                   <span class="w-24 text-gray-600 font-medium shrink-0 flex items-center gap-1">
                     Top K 数量:
                     <span class="group relative cursor-pointer text-gray-400 hover:text-gray-600">
                       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                       <span class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block w-48 bg-slate-900 text-white text-[10px] p-2 rounded shadow-xl leading-normal z-50">
-                        RAGFlow 元数据检索时返回的 Top K 数量，控制 AI 可感知的表结构上限
+                        元数据检索时返回的 Top K 数量，控制 AI 可感知的表结构上限 (对应配置: ragflow_metadata_top_k)
                       </span>
                     </span>
                   </span>
@@ -1444,13 +1451,13 @@ onMounted(async () => {
                 </div>
 
                 <!-- Similarity Threshold -->
-                <div v-if="showRagParams" class="flex items-center gap-3">
+                <div class="flex items-center gap-3">
                   <span class="w-24 text-gray-600 font-medium shrink-0 flex items-center gap-1">
                     相似度阈值:
                     <span class="group relative cursor-pointer text-gray-400 hover:text-gray-600">
                       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                       <span class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block w-48 bg-slate-900 text-white text-[10px] p-2 rounded shadow-xl leading-normal z-50">
-                        RAGFlow 语义检索的最低相似度阈值 (0-1)，越低召回率越高但越不精准
+                        语义检索的最低相似度阈值 (0-1)，低于此阈值的匹配项将被忽略，越低召回率越高但越不精准 (对应配置: ragflow_similarity_threshold)
                       </span>
                     </span>
                   </span>
@@ -1465,13 +1472,13 @@ onMounted(async () => {
                 </div>
 
                 <!-- Vector Weight -->
-                <div v-if="showRagParams" class="flex items-center gap-3">
+                <div v-if="showVectorWeight" class="flex items-center gap-3">
                   <span class="w-24 text-gray-600 font-medium shrink-0 flex items-center gap-1">
                     向量检索权重:
                     <span class="group relative cursor-pointer text-gray-400 hover:text-gray-600">
                       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                       <span class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block w-48 bg-slate-900 text-white text-[10px] p-2 rounded shadow-xl leading-normal z-50">
-                        RAGFlow 混合检索中向量检索的权重 (0-1)，剩余为全文检索权重
+                        RAGFlow 混合检索中向量检索的权重 (0-1)，剩余为全文检索权重 (对应配置: ragflow_vector_weight)
                       </span>
                     </span>
                   </span>

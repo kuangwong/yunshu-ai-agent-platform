@@ -90,6 +90,30 @@ DATA_REPAIR_BUDGETS = {
     "missing_schema": 1,
     "missing_sql": 2,
 }
+SCHEMA_RETRY_STOPWORDS = (
+    "帮我",
+    "请",
+    "查询",
+    "查",
+    "看",
+    "看看",
+    "统计",
+    "分析",
+    "一下",
+    "所有",
+    "全部",
+    "列表",
+    "清单",
+    "今天",
+    "昨天",
+    "前天",
+    "本周",
+    "上周",
+    "本月",
+    "上月",
+    "最近",
+)
+SCHEMA_RETRY_SUFFIXES = ("列表", "清单", "明细", "统计")
 _SQL_RESULT_DISPLAY_MAX_ROWS = 15
 _SQL_RESULT_ROW_KEYS = ("items", "rows", "data", "records")
 _SQL_TOOL_RESULT_DELIMITER = "--- 结果 ---"
@@ -169,6 +193,9 @@ class _DataRunState:
     tool_loop_fuse_reason: str = ""
     schema_miss_count: int = 0           # 累计 schema_miss 次数（含 prefetch + ReAct 内）
     repair_attempts: dict[str, int] = field(default_factory=dict)
+    last_schema_keywords: str = ""
+    controlled_schema_retry_keywords: str = ""
+    last_applied_schema_retry_keywords: str = ""
 
     @property
     def has_successful_nonempty_sql(self) -> bool:
@@ -409,6 +436,139 @@ class DataAgentRunner(BaseExecutor):
                 "系统判断继续执行大概率只会消耗步数。"
             )
 
+    @staticmethod
+    def _schema_keywords_from_args(tool_args: dict[str, Any] | None) -> str:
+        if not isinstance(tool_args, dict):
+            return ""
+        raw = tool_args.get("keywords") or tool_args.get("query") or tool_args.get("input")
+        if isinstance(raw, list):
+            return " ".join(str(item).strip() for item in raw if str(item).strip())
+        return str(raw or "").strip()
+
+    def _record_schema_keywords(
+        self,
+        state: _DataRunState,
+        tool_args: dict[str, Any] | None,
+    ) -> None:
+        keywords = str(state.last_applied_schema_retry_keywords or "").strip()
+        if not keywords:
+            keywords = self._schema_keywords_from_args(tool_args)
+        if keywords:
+            state.last_schema_keywords = keywords
+
+    @staticmethod
+    def _append_unique_keyword(tokens: list[str], keyword: str) -> None:
+        normalized = " ".join(str(keyword or "").strip().split())
+        if normalized and normalized not in tokens:
+            tokens.append(normalized)
+
+    @staticmethod
+    def _clean_schema_retry_phrase(text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?", " ", cleaned)
+        cleaned = re.sub(r"\d{1,2}月\d{0,2}日?", " ", cleaned)
+        for word in SCHEMA_RETRY_STOPWORDS:
+            cleaned = cleaned.replace(word, " ")
+        cleaned = re.sub(r"[?？!！。；;：:，,、\[\]（）(){}<>《》\"'`]+", " ", cleaned)
+        return " ".join(cleaned.split())
+
+    def _schema_retry_core_terms(self, *sources: Any) -> list[str]:
+        terms: list[str] = []
+        preserved_phrases: list[str] = []
+        requested_suffixes: list[str] = []
+        for source in sources:
+            source_text = str(source or "").strip()
+            if not source_text:
+                continue
+            for phrase in re.split(r"[\s,，、;；]+", source_text):
+                phrase = phrase.strip()
+                if not phrase:
+                    continue
+                if phrase in SCHEMA_RETRY_SUFFIXES:
+                    self._append_unique_keyword(requested_suffixes, phrase)
+                    continue
+                compact_metric = False
+                for suffix in SCHEMA_RETRY_SUFFIXES:
+                    if phrase.endswith(suffix) and len(phrase) > len(suffix):
+                        stem = phrase[: -len(suffix)].strip()
+                        if re.search(r"[A-Za-z]", stem):
+                            compact_metric = True
+                            self._append_unique_keyword(preserved_phrases, phrase)
+                        else:
+                            self._append_unique_keyword(requested_suffixes, suffix)
+                        break
+                if compact_metric:
+                    continue
+                cleaned = self._clean_schema_retry_phrase(phrase)
+                if cleaned:
+                    for term in cleaned.split():
+                        self._append_unique_keyword(terms, term)
+                    if (
+                        cleaned != phrase
+                        and len(phrase) <= 16
+                        and phrase.startswith(("所有", "全部"))
+                    ):
+                        self._append_unique_keyword(preserved_phrases, phrase)
+        return [
+            *terms,
+            *[f"__phrase__{phrase}" for phrase in preserved_phrases],
+            *[f"__suffix__{suffix}" for suffix in requested_suffixes],
+        ]
+
+    def _build_controlled_schema_retry_keywords(self, *sources: Any) -> str:
+        terms_and_markers = self._schema_retry_core_terms(*sources)
+        if not terms_and_markers:
+            return ""
+        requested_suffixes = [
+            value.removeprefix("__suffix__")
+            for value in terms_and_markers
+            if value.startswith("__suffix__")
+        ]
+        preserved_phrases = [
+            value.removeprefix("__phrase__")
+            for value in terms_and_markers
+            if value.startswith("__phrase__")
+        ]
+        core_terms = [
+            value
+            for value in terms_and_markers
+            if not value.startswith("__suffix__") and not value.startswith("__phrase__")
+        ]
+        if not core_terms and not preserved_phrases:
+            return ""
+
+        tokens: list[str] = []
+        for term in core_terms:
+            self._append_unique_keyword(tokens, term)
+        for phrase in preserved_phrases:
+            self._append_unique_keyword(tokens, phrase)
+        base_terms = [
+            term
+            for term in core_terms
+            if len(term) <= 12 and not any(term.endswith(suffix) for suffix in SCHEMA_RETRY_SUFFIXES)
+        ]
+        if len(base_terms) >= 2 and not requested_suffixes:
+            self._append_unique_keyword(tokens, "".join(base_terms[:2]))
+        for term in base_terms[:4]:
+            for suffix in requested_suffixes:
+                self._append_unique_keyword(tokens, f"{term}{suffix}")
+        return " ".join(tokens[:32])
+
+    def _prepare_controlled_schema_retry_keywords(
+        self,
+        state: _DataRunState,
+        user_question: str = "",
+    ) -> None:
+        retry_keywords = self._build_controlled_schema_retry_keywords(
+            state.last_schema_keywords,
+            self._schema_search_keywords,
+            self._standalone_query,
+            user_question,
+        )
+        state.controlled_schema_retry_keywords = retry_keywords
+
     def _tool_call_made_progress(self, state: _DataRunState, tool_name: str) -> bool:
         if tool_name == "get_dataset_schema":
             return (
@@ -441,6 +601,24 @@ class DataAgentRunner(BaseExecutor):
 
         wrapped: list[RuntimeToolSpec] = []
         for spec in tools:
+            if spec.name == "get_dataset_schema":
+                original_callable = spec.callable
+
+                async def invoke_schema_controlled(*, _original=original_callable, **kwargs: Any) -> Any:
+                    controlled_keywords = str(state.controlled_schema_retry_keywords or "").strip()
+                    if state.schema_miss and controlled_keywords:
+                        kwargs["keywords"] = controlled_keywords
+                        state.last_applied_schema_retry_keywords = controlled_keywords
+                    else:
+                        state.last_applied_schema_retry_keywords = ""
+                    result = _original(**kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result
+
+                wrapped.append(replace(spec, callable=invoke_schema_controlled))
+                continue
+
             if spec.name != "execute_sql_query":
                 wrapped.append(spec)
                 continue
@@ -839,7 +1017,15 @@ class DataAgentRunner(BaseExecutor):
         state.requires_fresh_data = turn_cls.requires_fresh_data
         state.requires_sql_plan = False
         if prefetched_schema_output is not None:
+            state.last_schema_keywords = (
+                self._schema_search_keywords
+                or self._standalone_query
+                or user_question
+                or ""
+            ).strip()
             self._apply_schema_tool_result(state, prefetched_schema_output)
+            if state.schema_miss:
+                self._prepare_controlled_schema_retry_keywords(state, user_question)
             if self._is_schema_fatal(state):
                 async for chunk in self._yield_schema_fatal_abort(state, prefetched_schema_output):
                     yield chunk
@@ -871,6 +1057,7 @@ class DataAgentRunner(BaseExecutor):
         stream_meta = {
             "system_content": system_content,
             "max_steps": max_steps,
+            "user_question": user_question,
         }
         interrupted = False
         initial_tool_choice = self._resolve_initial_tool_choice(state)
@@ -903,6 +1090,12 @@ class DataAgentRunner(BaseExecutor):
             async for chunk in self._yield_schema_fatal_abort(state):
                 yield chunk
             return
+        if state.full_content and self._current_repair_kind(state):
+            async for chunk in self._retract_provisional_content_before_repair(
+                state,
+                reason="main-loop content followed by a repair condition",
+            ):
+                yield chunk
         if state.full_content:
             deduped = collapse_repeated_reply(state.full_content)
             if deduped != state.full_content:
@@ -989,6 +1182,12 @@ class DataAgentRunner(BaseExecutor):
                 return
             if state.sql_fatal_error:
                 return
+            if state.full_content and self._current_repair_kind(state):
+                async for chunk in self._retract_provisional_content_before_repair(
+                    state,
+                    reason="repair-loop content followed by a repair condition",
+                ):
+                    yield chunk
             if state.full_content:
                 deduped = collapse_repeated_reply(state.full_content)
                 if deduped != state.full_content:
@@ -1800,7 +1999,13 @@ class DataAgentRunner(BaseExecutor):
             output = state.tool_outputs.get(tool_id, "")
             duration_ms = (time.time() - state.tool_started_at.get(tool_id, time.time())) * 1000
             if tool_name == "get_dataset_schema":
+                self._record_schema_keywords(state, tool_args)
                 self._apply_schema_tool_result(state, output)
+                if state.schema_miss:
+                    self._prepare_controlled_schema_retry_keywords(
+                        state,
+                        str(stream_meta.get("user_question") or ""),
+                    )
             elif tool_name == "execute_sql_query":
                 parsed_output, should_save_followup = self._apply_sql_tool_result(
                     state,
@@ -2068,6 +2273,28 @@ class DataAgentRunner(BaseExecutor):
             "status": "error",
         }
 
+    async def _retract_provisional_content_before_repair(
+        self,
+        state: _DataRunState,
+        *,
+        reason: str,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        if not state.full_content:
+            return
+        logger.info(
+            "[DataAgentRunner] Retracting provisional content before continuing repair: %s",
+            reason,
+        )
+        state.full_content = ""
+        state.content_emitted = False
+        state.current_text_block_emitted = False
+        state.text_blocks_emitted_since_last_tool = 0
+        yield {
+            "type": "retraction",
+            "content": "",
+            "final": False,
+        }
+
     def _current_repair_kind(self, state: _DataRunState) -> str:
         if self._is_schema_fatal(state):
             return ""
@@ -2136,10 +2363,17 @@ class DataAgentRunner(BaseExecutor):
                 "在获得有效 schema 前禁止生成或执行 SQL，也禁止直接回答用户。"
             )
         if state.schema_miss and not state.no_authorized_schema:
+            controlled_hint = ""
+            if state.controlled_schema_retry_keywords:
+                controlled_hint = (
+                    f"本次重试必须使用平台受控重试 keywords：{state.controlled_schema_retry_keywords}。"
+                    "禁止另行发挥或改写为无关业务关键词。"
+                )
             return (
                 "【Schema 重试要求】上一轮 get_dataset_schema 未命中相关数据集定义。"
-                "请换用更宽泛的业务关键词重新调用 get_dataset_schema，关键词应包含用户问题中的业务对象、指标、维度，"
-                "并可追加：数据集 表 字段 指标 维度 物理表 业务口径。"
+                f"{controlled_hint}"
+                "请仅基于用户原问题中的业务对象、指标或维度重新调用 get_dataset_schema，"
+                "禁止追加与业务对象无关的通用元数据词或其他系统关键词。"
                 "在获得有效 schema 前禁止生成或执行 SQL，也禁止直接回答用户。"
             )
         if state.schema_needs_refinement:
@@ -2473,6 +2707,11 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] SQL 执行异常: {error_message[:500]}"
         if tool_name == "get_dataset_schema" and state.schema_miss:
             details = f"{details}\n\n[系统检测] 未命中相关数据集定义。"
+        if tool_name == "get_dataset_schema" and state.last_applied_schema_retry_keywords:
+            details = (
+                f"{details}\n\n[系统检测] 本次重试使用受控重试关键词："
+                f"{state.last_applied_schema_retry_keywords}"
+            )
         if tool_name == "get_dataset_schema" and state.schema_needs_refinement:
             details = f"{details}\n\n[系统检测] Schema 检索结果相关性不足，将换关键词重试。"
         if tool_name == "get_dataset_schema" and state.schema_ambiguous:

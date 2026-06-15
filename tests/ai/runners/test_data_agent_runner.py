@@ -1858,6 +1858,67 @@ def test_schema_success_after_misses_recovers_schema_state(data_config):
     assert runner._resolve_force_execute_sql_tool_choice(state).mode == "execute_sql_query"
 
 
+def test_controlled_schema_retry_keywords_recombine_core_business_terms(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-keyword-expand", trace_buffer=[])
+
+    retry_keywords = runner._build_controlled_schema_retry_keywords("所有机房 列表")
+
+    assert retry_keywords.split() == ["机房", "所有机房", "机房列表"]
+    assert "数据集" not in retry_keywords
+    assert "字段" not in retry_keywords
+    assert "物理表" not in retry_keywords
+    assert "用户" not in retry_keywords
+    assert "角色" not in retry_keywords
+
+    system_retry_keywords = runner._build_controlled_schema_retry_keywords("业务系统 告警")
+    assert system_retry_keywords.split() == ["业务系统", "告警", "业务系统告警"]
+    assert "数据集" not in system_retry_keywords
+
+
+def test_controlled_schema_retry_keywords_drop_action_words(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-keyword-actions", trace_buffer=[])
+
+    retry_keywords = runner._build_controlled_schema_retry_keywords("帮我查询昨天用户列表")
+
+    assert "用户" in retry_keywords
+    assert "用户列表" in retry_keywords
+    assert "帮我" not in retry_keywords
+    assert "查询" not in retry_keywords
+    assert "昨天" not in retry_keywords
+
+
+def test_controlled_schema_retry_keywords_keep_original_compound_terms(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-keyword-compound", trace_buffer=[])
+
+    retry_keywords = runner._build_controlled_schema_retry_keywords("PUE统计")
+
+    assert retry_keywords == "PUE统计"
+
+
+def test_controlled_schema_retry_keywords_are_source_bound(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-keyword-source-bound", trace_buffer=[])
+
+    retry_keywords = runner._build_controlled_schema_retry_keywords("所有机房 列表")
+
+    assert "所有机房" in retry_keywords
+    assert "列表" in retry_keywords
+    assert "数据集" not in retry_keywords
+    assert "物理表" not in retry_keywords
+    assert "业务口径" not in retry_keywords
+    assert "数据中心" not in retry_keywords
+    assert "IDC" not in retry_keywords
+    assert "业务系统" not in retry_keywords
+    assert "业务系统" in runner._build_controlled_schema_retry_keywords("业务系统 告警")
+
+
 def test_diagnostic_sql_success_requires_final_sql_before_answer(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
@@ -3512,6 +3573,154 @@ async def test_data_agent_runner_execute_rechecks_empty_sql_before_final_answer(
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_execute_continues_repair_when_late_empty_sql_follows_text(
+    data_config,
+    monkeypatch,
+):
+    from agentscope.credential import CredentialBase
+    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.agent_service import _accumulate_stream_content
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.calls = 0
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_schema",
+                            name="get_dataset_schema",
+                            input='{"keywords": "demo"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            if self.calls == 2:
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_simple_empty_sql",
+                            name="execute_sql_query",
+                            input='{"sql": "SELECT id FROM demo WHERE id=-1 LIMIT 10", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            if self.calls == 3:
+                return ChatResponse(
+                    content=[
+                        TextBlock(text="查询结果为空，让我进一步检查。"),
+                        ToolCallBlock(
+                            id="call_late_empty_sql",
+                            name="execute_sql_query",
+                            input='{"sql": "SELECT room, COUNT(*) AS total_count FROM demo WHERE id=-1 GROUP BY room", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+                        ),
+                    ],
+                    is_last=True,
+                )
+            if self.calls == 4:
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_final_sql",
+                            name="execute_sql_query",
+                            input='{"sql": "SELECT room, COUNT(*) AS total_count FROM demo WHERE id=1 GROUP BY room", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            return ChatResponse(
+                content=[TextBlock(text="复查后结果是 1")],
+                is_last=True,
+            )
+
+    async def fake_load_context_config():
+        return None
+
+    async def fake_build_model_config(**kwargs):
+        return None
+
+    async def fake_config_get(key):
+        return "6"
+
+    fake_model = FakeModel(
+        credential=FakeCredential(),
+        model="fake-native-data",
+        parameters=FakeModel.Parameters(),
+        stream=False,
+        max_retries=0,
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=fake_model,
+        model_name="fake-native-data",
+        temperature=0.0,
+        streaming=True,
+    )
+
+    async def fake_get_configured_llm(**kwargs):
+        return handle
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.load_context_config",
+        fake_load_context_config,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.build_model_config",
+        fake_build_model_config,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.ConfigService.get",
+        fake_config_get,
+    )
+
+    async def fake_schema(keywords=None):
+        return "table_name: demo\ncolumns: id, room"
+
+    async def fake_sql(sql, data_source, dataset_name):
+        if "id=1" in sql:
+            return {"rows": [{"room": "A", "total_count": 1}], "total": 1}
+        return {"rows": [], "total": 0}
+
+    from app.services.ai.tools.registry import ToolRegistry
+
+    monkeypatch.setitem(ToolRegistry._registry, "get_dataset_schema", fake_schema)
+    monkeypatch.setitem(ToolRegistry._registry, "execute_sql_query", fake_sql)
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-late-empty-repair", trace_buffer=[])
+
+    content = ""
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "查 demo 机房列表"}]):
+        events.append(chunk)
+        content = _accumulate_stream_content(content, chunk)
+
+    assert "查询结果为空，让我进一步检查。" not in content
+    assert "复查后结果是 1" in content
+    assert any(event.get("type") == "retraction" for event in events if isinstance(event, dict))
+    assert any(event.get("id") == "call_final_sql" for event in events if isinstance(event, dict))
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_execute_retries_schema_miss_before_sql(
     data_config,
     monkeypatch,
@@ -3652,6 +3861,41 @@ async def test_data_agent_runner_execute_retries_schema_miss_before_sql(
     assert "schema 重试后结果是 1" in content
     assert schema_calls == 3
     assert any(event.get("title") == "重试检索数据集定义" for event in events if isinstance(event, dict))
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords(
+    data_config,
+):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    observed_keywords = []
+
+    async def fake_schema(**kwargs):
+        observed_keywords.append(kwargs.get("keywords"))
+        return "table_name: room_assets\ncolumns: room_name"
+
+    spec = RuntimeToolSpec(
+        name="get_dataset_schema",
+        description="schema",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_schema,
+        permission_scope="read",
+    )
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_miss=True,
+    )
+    state.last_schema_keywords = "所有机房 列表"
+    state.controlled_schema_retry_keywords = "机房 所有机房 机房列表"
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-synonym-retry", trace_buffer=[])
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    await wrapped.invoke({"keywords": "业务系统 告警"})
+
+    assert observed_keywords == ["机房 所有机房 机房列表"]
 
 
 @pytest.mark.asyncio

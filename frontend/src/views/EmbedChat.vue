@@ -4730,8 +4730,9 @@ const sendMessage = async () => {
             }
           } else if (data.type === "retraction") {
             agentMsg.value.content = data.content;
-            agentMsg.value.isThinking = false;
-            (agentMsg.value as any).status = "error";
+            if (data.final !== false) {
+              agentMsg.value.isThinking = false;
+            }
           } else if (data.type === "error") {
             agentMsg.value.isThinking = false;
             (agentMsg.value as any).status = "error";

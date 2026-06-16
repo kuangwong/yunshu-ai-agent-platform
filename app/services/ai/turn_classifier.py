@@ -13,6 +13,7 @@ from app.services.ai.intent_service import (
     intent_service,
     looks_like_compound_query_with_viz,
     looks_like_context_action,
+    looks_like_greeting,
     looks_like_knowledge_query,
     looks_like_meta_action,
     looks_like_pure_result_followup,
@@ -128,6 +129,14 @@ def classify_turn_heuristic(
         return TurnClassification(
             turn_type=TurnType.CONTEXT_ACTION,
             reasoning="检测到对已有上下文/结果的动作（保存/导出/记住等）",
+            skip_intent_llm=True,
+            intent=IntentType.GENERAL,
+        )
+
+    if looks_like_greeting(q):
+        return TurnClassification(
+            turn_type=TurnType.GENERAL,
+            reasoning="检测到问候/寒暄（启发式短路，跳过意图识别）",
             skip_intent_llm=True,
             intent=IntentType.GENERAL,
         )

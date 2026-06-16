@@ -1789,16 +1789,16 @@ def test_build_repair_message_empty_when_no_blocked_content(data_config):
     assert runner._build_repair_message(state) == ""
 
 
-def test_low_confidence_schema_prefetch_requests_refinement(data_config):
+def test_schema_hit_below_configured_threshold_requests_refinement(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-schema-refine", trace_buffer=[])
-    runner._schema_similarity_threshold = 0.2
+    runner._schema_similarity_threshold = 0.55
     state = _DataRunState(requires_fresh_data=True)
 
     runner._apply_schema_tool_result(
         state,
-        "[置信度: 0.22]\n--- Source: unknown.md ---\n字段片段较弱",
+        "[置信度: 0.54]\n--- Source: unknown.md ---\n字段片段较弱",
     )
 
     assert state.schema_completed is False
@@ -1808,8 +1808,8 @@ def test_low_confidence_schema_prefetch_requests_refinement(data_config):
     assert "相关性不足" in runner._build_repair_message(state)
 
 
-def test_marginal_schema_hit_below_strong_threshold_requests_refinement(data_config):
-    """向量刚过 ragflow_similarity_threshold 但低于 strong 阈值时视为弱命中。"""
+def test_schema_hit_above_configured_threshold_is_accepted(data_config):
+    """Schema 置信度达到 ragflow_similarity_threshold 即可继续查数。"""
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-schema-marginal", trace_buffer=[])
@@ -1822,10 +1822,10 @@ def test_marginal_schema_hit_below_strong_threshold_requests_refinement(data_con
         "table_name: ai_agent_scheduler_jobs\n",
     )
 
-    assert state.schema_completed is False
-    assert state.schema_needs_refinement is True
+    assert state.schema_completed is True
+    assert state.schema_needs_refinement is False
     assert state.schema_miss is False
-    assert state.schema_miss_count == 1
+    assert state.schema_miss_count == 0
 
 
 def test_two_schema_misses_or_weak_hits_trigger_fatal(data_config):
@@ -1838,7 +1838,7 @@ def test_two_schema_misses_or_weak_hits_trigger_fatal(data_config):
     runner._apply_schema_tool_result(state, "No relevant schema info found for '机房 列表'.")
     runner._apply_schema_tool_result(
         state,
-        "[置信度: 0.56]\n--- Source: ai_agent_scheduler_jobs.txt ---\n表: scheduler",
+        "[置信度: 0.54]\n--- Source: ai_agent_scheduler_jobs.txt ---\n表: scheduler",
     )
 
     assert state.schema_miss_count == 2

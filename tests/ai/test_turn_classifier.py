@@ -119,6 +119,38 @@ def test_classify_turn_from_intent_keeps_knowledge_when_bound():
     assert result.turn_type == TurnType.KNOWLEDGE
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "你好",
+        "您好",
+        "hello",
+        "你是谁",
+        "谢谢",
+    ],
+)
+def test_greeting_routes_to_general_without_intent_llm(query):
+    result = classify_turn_heuristic(query, can_do_data=False, has_last_data_result=False)
+    assert result is not None
+    assert result.turn_type == TurnType.GENERAL
+    assert result.skip_intent_llm is True
+    assert result.intent == IntentType.GENERAL
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "你好，查一下机房列表",
+        "您好，高温告警处理流程是什么",
+    ],
+)
+def test_greeting_compound_not_short_circuited(query):
+    result = classify_turn_heuristic(query, can_do_data=False, has_last_data_result=False)
+    assert result is None or not (
+        result.skip_intent_llm and result.reasoning and "问候" in result.reasoning
+    )
+
+
 def test_reuse_previous_result_requires_cached_result():
     result = classify_turn_heuristic(
         "把刚才的结果画成柱状图",

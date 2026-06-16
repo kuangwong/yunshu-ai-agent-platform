@@ -278,8 +278,8 @@ class DataAgentRunner(BaseExecutor):
 
     @staticmethod
     def _schema_strong_confidence_threshold(similarity_threshold: float) -> float:
-        """向量检索过线但低于此值视为弱命中，不可进入 SQL。"""
-        return max(float(similarity_threshold) + 0.12, 0.65)
+        """Schema 置信度达到配置的 ragflow_similarity_threshold 即可进入 SQL。"""
+        return float(similarity_threshold)
 
     @staticmethod
     def _extract_schema_confidence_values(tool_output: Any) -> list[float]:

@@ -160,6 +160,40 @@ def looks_like_business_data_request(user_question: str) -> bool:
     return any(sig in q for sig in _DATA_QUERY_SIGNALS)
 
 
+_GREETING_CORE_PHRASES = frozenset({
+    "你好", "您好", "你好呀", "你好啊", "您好呀", "你好吗",
+    "hi", "hello", "hey",
+    "早上好", "下午好", "晚上好", "中午好",
+    "你是谁", "你是哪位", "你能做什么", "你能干嘛",
+    "介绍一下自己", "介绍一下你自己",
+    "谢谢", "感谢", "多谢", "辛苦了", "thanks",
+})
+# 问候短路时若同时出现这些词，视为复合业务请求而非纯寒暄
+_GREETING_COMPOUND_BLOCKERS = [
+    *_DATA_QUERY_SIGNALS,
+    "搜索", "搜一下", "流程", "规范", "手册", "怎么办", "如何", "怎么",
+    "联网", "新闻", "资讯", "机房", "告警", "数据", "报表", "查询",
+]
+
+
+def looks_like_greeting(user_question: str) -> bool:
+    """纯问候/寒暄/自我介绍/致谢，无业务诉求。用于路由与意图 LLM 短路。"""
+    q = (user_question or "").strip()
+    if not q or len(q) > 32:
+        return False
+    q_lower = q.lower()
+    if any(sig in q_lower for sig in _GREETING_COMPOUND_BLOCKERS):
+        return False
+    q_core = re.sub(r"[\s!！?？。．,，~～]+", "", q_lower)
+    if q_core in _GREETING_CORE_PHRASES:
+        return True
+    if re.fullmatch(r"(你好|您好)(吗|呀|啊)?", q_core):
+        return True
+    if re.fullmatch(r"(hi|hello|hey)", q_core):
+        return True
+    return False
+
+
 # 联网/外部搜索信号：明确指向公网/实时外部信息，应走通用助手 + web_search 工具，
 # 而非内部知识库（KNOWLEDGE_BASE）。与“内部文档/制度/SOP”严格区分。
 # 注意：这里刻意只保留强外部语义的词，避免与查数语句（如“查一下目前的库存”）混淆。

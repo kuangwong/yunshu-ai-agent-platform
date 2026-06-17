@@ -1134,6 +1134,7 @@
         @select-knowledge-base="showKnowledgeBaseSelector = true"
         @select-local-fs="showFileBrowserModal = true"
         @select-memory="openMemorySelector"
+        @system-command="handleSystemCommand"
       >
       </ChatInput>
     </div>
@@ -2183,6 +2184,81 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+    <!-- 数据门户右侧抽屉 Drawer -->
+    <div
+      v-show="showPortalDrawer"
+      class="fixed inset-0 z-50 overflow-hidden"
+    >
+      <!-- 背景遮罩 (Overlay) -->
+      <transition
+        enter-active-class="ease-out duration-300"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="ease-in duration-200"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
+      >
+        <div 
+          v-show="showPortalDrawer"
+          class="absolute inset-0 bg-gray-500/30 backdrop-blur-xs transition-opacity" 
+          @click="showPortalDrawer = false"
+        ></div>
+      </transition>
+
+      <!-- 抽屉面板 (Drawer Panel) -->
+      <div class="absolute inset-y-0 right-0 pl-10 max-w-full flex">
+        <transition
+          enter-active-class="transform transition ease-in-out duration-300"
+          enter-from-class="translate-x-full"
+          enter-to-class="translate-x-0"
+          leave-active-class="transform transition ease-in-out duration-300"
+          leave-from-class="translate-x-0"
+          leave-to-class="translate-x-full"
+        >
+          <div 
+            v-show="showPortalDrawer"
+            class="w-screen max-w-md bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col h-full relative z-10"
+          >
+            <!-- 抽屉头部 -->
+            <div class="px-4 py-4 border-b border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between">
+              <span class="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-1.5 select-none">
+                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4zM14 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-4z" />
+                </svg>
+                数据门户导航
+              </span>
+              <button 
+                type="button" 
+                class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
+                @click="showPortalDrawer = false"
+              >
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <!-- 抽屉内容 -->
+            <div class="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-900/60">
+              <DatasetCapabilityMenu
+                v-slot="{ payload: navPayload }"
+                v-if="portalNavigationPayload"
+                :payload="portalNavigationPayload"
+                @quick-question="handlePortalQuickQuestion"
+                @record-question-click="(payload) => recordDatasetMenuQuestionClick(portalNavigationPayload, payload)"
+                @refresh="refreshPortalNavigation"
+              />
+              <div v-else class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 text-xs">
+                <svg class="w-8 h-8 animate-spin text-primary mb-3" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>正在加载数据门户，请稍候...</span>
+              </div>
+            </div>
+          </div>
+        </transition>
       </div>
     </div>
     </div>
@@ -4084,10 +4160,54 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
   } catch (error) {
     console.warn("Failed to refresh dataset menu navigation", error);
     showToast("刷新数据门户失败，请稍后重试", "error");
+    if (msg.datasetNavigation) {
+      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
+    }
   } finally {
     datasetMenuLoading.value = false;
     isProcessing.value = false;
   }
+};
+
+const showPortalDrawer = ref(false);
+const portalNavigationPayload = ref<any>(null);
+const portalLoading = ref(false);
+
+const openPortalDrawer = async () => {
+  showPortalDrawer.value = true;
+  await lockToDataQueryAgentForDatasetMenu();
+  if (!portalNavigationPayload.value) {
+    await fetchPortalNavigationData();
+  }
+};
+
+const fetchPortalNavigationData = async (refresh = false) => {
+  if (portalLoading.value) return;
+  portalLoading.value = true;
+  try {
+    const payload = await fetchDatasetMenuNavigationPayload(refresh);
+    portalNavigationPayload.value = payload;
+    if (refresh) {
+      showToast("数据门户刷新成功", "success");
+    }
+  } catch (error) {
+    console.warn("Failed to load portal navigation data", error);
+    showToast(refresh ? "刷新数据门户失败，请稍后重试" : "加载数据门户失败，请稍后重试", "error");
+    if (refresh && portalNavigationPayload.value) {
+      portalNavigationPayload.value = { ...portalNavigationPayload.value, _failed_at: new Date().toISOString() };
+    }
+  } finally {
+    portalLoading.value = false;
+  }
+};
+
+const refreshPortalNavigation = async () => {
+  await fetchPortalNavigationData(true);
+};
+
+const handlePortalQuickQuestion = (query: string) => {
+  showPortalDrawer.value = false;
+  handleQuickQuestion(query);
 };
 
 const showDatasetMenuNavigation = async () => {
@@ -4165,16 +4285,20 @@ const showDatasetMenuNavigation = async () => {
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   switch (cmd) {
     case "/dataset_menu":
-      await showDatasetMenuNavigation();
+      userInput.value = "";
+      await openPortalDrawer();
       return true;
     case "/history":
+      userInput.value = "";
       showHistorySidebar.value = !showHistorySidebar.value;
       return true;
     case "/settings":
+      userInput.value = "";
       showSettings.value = true;
       return true;
     case "/new":
     case "/clear": // legacy alias
+      userInput.value = "";
       showConfirmModal.value = true;
       return true;
   }

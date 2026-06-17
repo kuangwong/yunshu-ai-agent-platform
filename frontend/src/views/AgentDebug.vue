@@ -1760,6 +1760,9 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
   } catch (error) {
     console.warn("Failed to refresh dataset menu navigation", error);
     showToast("刷新数据门户失败，请稍后重试", "error");
+    if (msg.datasetNavigation) {
+      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
+    }
   } finally {
     datasetMenuLoading.value = false;
     isProcessing.value = false;
@@ -1769,16 +1772,20 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   switch (cmd) {
     case "/dataset_menu":
+      userInput.value = "";
       await showDatasetMenuNavigation();
       return true;
     case "/history":
+      userInput.value = "";
       showHistorySidebar.value = !showHistorySidebar.value;
       return true;
     case "/settings":
+      userInput.value = "";
       showConfigPanel.value = !showConfigPanel.value;
       return true;
     case "/new":
     case "/clear":
+      userInput.value = "";
       generateNewConversation(true);
       return true;
   }
@@ -3732,6 +3739,7 @@ onUnmounted(() => {
             @select-knowledge-base="showKnowledgeBaseSelector = true"
             @select-local-fs="showFileBrowserModal = true"
             @select-memory="openMemorySelector"
+            @system-command="handleSystemCommand"
           >
           </ChatInput>
         </div>

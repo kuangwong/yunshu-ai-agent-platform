@@ -53,6 +53,7 @@ const emit = defineEmits<{
   (e: 'update:selectedModel', val: string): void;
   (e: 'send'): void;
   (e: 'stop'): void;
+  (e: 'system-command', cmd: string): void;
   (e: 'toggle-shortcuts'): void;
   (e: 'open-command-manager'): void;
   (e: 'upload-image'): void;
@@ -206,10 +207,16 @@ const handleKeydown = (e: KeyboardEvent) => {
 };
 
 const selectCommand = (cmd: any) => {
-  if (props.isProcessing) return;
-  emit('update:modelValue', cmd.command);
-  showCommandMenu.value = false;
-  emit('send');
+  if (props.isProcessing || !cmd) return;
+  if (String(cmd.id).startsWith('sys_')) {
+    emit('system-command', cmd.command);
+    emit('update:modelValue', '');
+    showCommandMenu.value = false;
+  } else {
+    emit('update:modelValue', cmd.command);
+    showCommandMenu.value = false;
+    emit('send');
+  }
 };
 
 const handleMentionSelect = (agent: any) => {
@@ -230,8 +237,13 @@ const handleMentionSelect = (agent: any) => {
 
 const handleShortcutClick = (cmd: any) => {
     if (props.isProcessing || !cmd) return;
-    emit('update:modelValue', cmd.command);
-    emit('send');
+    if (String(cmd.id).startsWith('sys_')) {
+        emit('system-command', cmd.command);
+        emit('update:modelValue', '');
+    } else {
+        emit('update:modelValue', cmd.command);
+        emit('send');
+    }
 };
 
 import axios from "@/utils/axios";

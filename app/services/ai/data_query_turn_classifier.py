@@ -329,15 +329,15 @@ async def _classify_with_llm(
 
 请结合最近对话、当前用户问题，以及是否存在上一轮结构化查询结果，判断当前请求属于以下哪一类：
 
-1. new_data_query：需要重新查询业务数据，例如查询新的列表、指标、时间范围、筛选条件、对比维度，或同一句里要求查数并分析/可视化。
+1. new_data_query：需要重新查询业务数据，或**对当前有权访问的数据集结构、表结构、可查询字段、分析口径、元数据信息的探索提问**（例如“说明智能体有哪些字段”、“支持查询哪些指标”、“列名有啥”）。
 2. reuse_previous_result：不需要重新查库，只是基于上一轮结构化查询结果做展示、格式化、分析、总结、可视化、改列格式、排序说明等。
 3. context_action：对已有上下文或上一轮结果执行保存、导出、发送、记住、沉淀为技能等动作。
 4. skill_execution：显式要求使用/执行某个技能。
-5. clarification_or_non_data：当前不是明确查数请求，或指代过于模糊，需要先请用户补充业务数据对象、时间范围、指标/维度等信息。
+5. clarification_or_non_data：当前不是明确查数或元数据探索请求，或指代过于模糊，需要先请用户补充业务数据对象、时间范围、指标/维度等信息。
 
 约束：
 - 如果选择 reuse_previous_result，必须确认“存在上一轮结构化查询结果”为 true。
-- 如果用户提出新的查询对象、时间范围、筛选条件或要求重新查数据，选择 new_data_query。
+- 如果用户提出新的查询对象、时间范围、筛选条件，或提问元数据字段/分析口径，选择 new_data_query。
 - 只返回 JSON，不要解释，不要 Markdown。
 
 JSON 格式：
@@ -375,6 +375,18 @@ JSON 格式：
         return None
 
 
+def looks_like_metadata_query(q: str) -> bool:
+    """识别诸如 '说明智能体数据集里有哪些可查询字段和适合的分析口径'、'字段说明'、'有什么字段' 等元数据/分析口径的探索提问，
+    这些提问虽然不直接查询业务数据，但应该直接交给 AI 结合提示词中的数据集 Schema 进行回答，不应拦截为澄清。
+    """
+    q_clean = q.lower().strip()
+    metadata_keywords = [
+        "字段说明", "有什么字段", "有哪些字段", "可查询字段", 
+        "字段定义", "分析口径", "字段列表", "口径说明"
+    ]
+    return any(kw in q_clean for kw in metadata_keywords)
+
+
 async def resolve_data_query_turn_classification(
     user_query: str,
     messages: Optional[List[Dict[str, str]]],
@@ -393,6 +405,20 @@ async def resolve_data_query_turn_classification(
     has_last_data_result = bool(has_last_data_result)
 
     q = (user_query or "").strip()
+    if looks_like_metadata_query(q):
+        classification = _classification_for_turn_type(
+            DataQueryTurnType.NEW_DATA_QUERY,
+            "检测到元数据或分析口径探索意图，直接放行让 AI 回答",
+            skip_intent_llm=True,
+        )
+        intent_info = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=1.0,
+            reasoning=classification.reasoning,
+            entities=[],
+        )
+        return classification, intent_info, 0.0
+
     if _looks_like_general_chat_or_unsupported(
         q,
         has_last_data_result=has_last_data_result,
@@ -464,10 +490,17 @@ async def resolve_data_query_turn_classification(
             messages,
             has_last_data_result=has_last_data_result,
         ):
-            classification = _classification_for_clarification(
-                "当前会话没有可复用的上一轮结构化查询结果，且最近对话中也未展示可查数结果",
-                skip_intent_llm=False,
-            )
+            if _looks_like_explicit_new_data_query(q):
+                classification = _classification_for_turn_type(
+                    DataQueryTurnType.NEW_DATA_QUERY,
+                    "无法复用上一轮结果，但当前问题包含明确新数据查询诉求，修正为新数据查询",
+                    skip_intent_llm=False,
+                )
+            else:
+                classification = _classification_for_clarification(
+                    "当前会话没有可复用的上一轮结构化查询结果，且最近对话中也未展示可查数结果",
+                    skip_intent_llm=False,
+                )
         elif not _recent_history_supports_reuse(messages):
             if _looks_like_explicit_new_data_query(q):
                 classification = _classification_for_turn_type(

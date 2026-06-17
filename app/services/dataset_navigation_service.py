@@ -256,6 +256,97 @@ class DatasetNavigationService:
             logger.warning("Dataset navigation click stats write failed: %s", e)
 
     @staticmethod
+    def parse_groups_from_markdown(
+        markdown: str,
+        static_groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """从 LLM 生成的 markdown 文本中，动态解析出各个场景下的推荐问题和继续追问，
+        并与静态分析的 static_groups 进行合并。
+        """
+        if not markdown or not static_groups:
+            return static_groups
+
+        import copy
+        groups = copy.deepcopy(static_groups)
+
+        parts = markdown.split("#### ")
+        if len(parts) <= 1:
+            return groups
+
+        def clean_str(s: str) -> str:
+            return re.sub(r"[^\w]", "", s).lower()
+
+        pattern = r"-\s*\[(?:[^\]]*🙋\s*)?([^\]]+)\]\(quick:([^\)]+)\)"
+
+        for part in parts[1:]:
+            lines = part.splitlines()
+            if not lines:
+                continue
+            title = lines[0].strip()
+            if not title:
+                continue
+
+            matched_group = None
+            clean_title = clean_str(title)
+            for g in groups:
+                clean_g_title = clean_str(g.get("title") or "")
+                if clean_title == clean_g_title or clean_title in clean_g_title or clean_g_title in clean_title:
+                    matched_group = g
+                    break
+
+            if not matched_group:
+                continue
+
+            lower_part = part.lower()
+            split_term = "**继续追问：**".lower()
+            split_idx = lower_part.find(split_term)
+
+            if split_idx != -1:
+                questions_part = part[:split_idx]
+                followups_part = part[split_idx:]
+            else:
+                questions_part = part
+                followups_part = ""
+
+            dynamic_questions = []
+            for match in re.finditer(pattern, questions_part):
+                label = match.group(1).strip()
+                query = match.group(2).strip()
+                if "/dataset_menu" in query or "重新查看" in label:
+                    continue
+                dynamic_questions.append({
+                    "label": label,
+                    "query": query,
+                    "type": "dynamic",
+                })
+
+            dynamic_followups = []
+            for match in re.finditer(pattern, followups_part):
+                label = match.group(1).strip()
+                query = match.group(2).strip()
+                if "/dataset_menu" in query or "重新查看" in label:
+                    continue
+                dynamic_followups.append({
+                    "label": label,
+                    "query": query,
+                })
+
+            summary_lines = []
+            for line in lines[1:]:
+                stripped = line.strip()
+                if stripped.startswith(">"):
+                    summary_lines.append(stripped.lstrip(">").strip())
+
+            if dynamic_questions:
+                matched_group["questions"] = dynamic_questions
+            if dynamic_followups:
+                matched_group["followups"] = dynamic_followups
+            if summary_lines:
+                matched_group["summary"] = "\n".join(summary_lines)
+
+        return groups
+
+    @staticmethod
     async def build_navigation_for_user(
         db: AsyncSession,
         *,
@@ -273,17 +364,22 @@ class DatasetNavigationService:
         menu_hash = hashlib.md5(dataset_menu.encode("utf-8")).hexdigest()[:12]
         user_key = _user_cache_key(user_id=user_id, is_admin=is_admin)
         groups = DataQueryPrompts.build_dataset_navigation_groups(dataset_menu)
-        click_stats = await DatasetNavigationService._load_question_click_stats(
-            user_key=user_key,
-            dataset_menu_hash=menu_hash,
-        )
-        groups = DatasetNavigationService._apply_question_click_stats(groups, click_stats)
         cache_key = f"agent:dataset_navigation:{user_key}:{menu_hash}:{_NAV_PROMPT_VERSION}"
 
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if not markdown:
             markdown = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
             await DatasetNavigationService._save_cached_navigation(cache_key, markdown)
+
+        # 动态解析 markdown 中的场景和推荐问题
+        groups = DatasetNavigationService.parse_groups_from_markdown(markdown, groups)
+
+        # 应用用户点击的偏好排序
+        click_stats = await DatasetNavigationService._load_question_click_stats(
+            user_key=user_key,
+            dataset_menu_hash=menu_hash,
+        )
+        groups = DatasetNavigationService._apply_question_click_stats(groups, click_stats)
 
         return {
             "dataset_count": dataset_count,

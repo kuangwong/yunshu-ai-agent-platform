@@ -288,3 +288,63 @@ async def test_record_question_click_stores_redis_rank_and_metadata():
     redis.zincrby.assert_awaited_once()
     redis.hset.assert_awaited_once()
     assert redis.expire.await_count == 2
+
+
+@pytest.mark.no_infrastructure
+def test_parse_groups_from_markdown_success():
+    static_groups = [
+        {
+            "id": "ai_agent_meta_智能体运行分析",
+            "title": "智能体运行分析",
+            "summary": "静态描述",
+            "questions": [{"label": "静态问题", "query": "静态查询"}],
+            "followups": [{"label": "静态追问", "query": "静态追问查询"}],
+        }
+    ]
+    markdown = (
+        "### 📚 我的数据门户\n"
+        "---\n"
+        "> 整体描述\n"
+        "\n"
+        "#### 智能体运行分析\n"
+        "> 这是动态生成的智能体分析摘要，帮助分析性能。\n"
+        "\n"
+        "**你可以这样问：**\n"
+        "- [🙋 访问热度](quick:分析智能体访问次数最高的记录)\n"
+        "- [🙋 调用失败率](quick:统计最近10天报错的智能体执行日志)\n"
+        "\n"
+        "**相关数据：**\n"
+        "- 智能体访问日志\n"
+        "\n"
+        "**继续追问：**\n"
+        "- [🙋 性能分析](quick:说明智能体响应时长的分布)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+    )
+
+    parsed = DatasetNavigationService.parse_groups_from_markdown(markdown, static_groups)
+    assert len(parsed) == 1
+    group = parsed[0]
+    assert group["title"] == "智能体运行分析"
+    assert group["summary"] == "这是动态生成的智能体分析摘要，帮助分析性能。"
+    assert len(group["questions"]) == 2
+    assert group["questions"][0]["label"] == "访问热度"
+    assert group["questions"][0]["query"] == "分析智能体访问次数最高的记录"
+    assert group["questions"][0]["type"] == "dynamic"
+    assert len(group["followups"]) == 1
+    assert group["followups"][0]["label"] == "性能分析"
+    assert group["followups"][0]["query"] == "说明智能体响应时长的分布"
+
+
+@pytest.mark.no_infrastructure
+def test_parse_groups_from_markdown_fallback_on_invalid():
+    static_groups = [
+        {
+            "id": "test",
+            "title": "测试场景",
+            "summary": "静态描述",
+            "questions": [{"label": "静态问题", "query": "静态"}],
+        }
+    ]
+    # 无匹配的#### 场景块
+    parsed = DatasetNavigationService.parse_groups_from_markdown("### 📚 只有标题", static_groups)
+    assert parsed == static_groups

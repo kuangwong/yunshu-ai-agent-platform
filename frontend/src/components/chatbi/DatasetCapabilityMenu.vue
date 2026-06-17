@@ -1,7 +1,7 @@
 <template>
   <section class="space-y-4">
     <!-- Header -->
-    <div class="bg-gray-50/40 dark:bg-gray-800/10 backdrop-blur-sm border border-gray-150 dark:border-gray-800/80 rounded-xl p-3 flex flex-wrap justify-between items-center gap-3">
+    <div class="bg-gray-50/40 dark:bg-gray-800/10 backdrop-blur-sm border border-gray-150 dark:border-gray-800/80 rounded-xl p-3 flex flex-col sm:flex-row justify-between sm:items-center gap-3">
       <div class="flex items-center gap-2.5">
         <div class="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-600 dark:bg-blue-500 text-white shadow-sm flex-shrink-0">
           <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -32,166 +32,191 @@
       </div>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs font-semibold text-gray-600 dark:text-gray-300 shadow-sm transition-all hover:bg-gray-50 dark:hover:bg-gray-700/50 hover:border-gray-300 dark:hover:border-gray-600 active:scale-95"
+        class="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg border border-transparent bg-gray-100 hover:bg-gray-200/70 dark:bg-gray-800 dark:hover:bg-gray-750 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-all active:scale-90 cursor-pointer"
+        title="刷新数据门户"
         @click="handleRefreshClick"
       >
         <svg 
-          class="w-3.5 h-3.5 transition-transform duration-700"
+          class="w-4 h-4 transition-transform duration-700"
           :class="{ 'animate-spin': isRefreshing }"
           fill="none" stroke="currentColor" viewBox="0 0 24 24"
         >
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
         </svg>
-        刷新
       </button>
     </div>
 
-    <!-- Cards Grid -->
-    <div class="grid gap-4">
-      <article
-        v-for="(group, idx) in props.payload.groups || []"
-        :key="group.id || group.title"
-        class="group/card rounded-xl border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900/30 p-4 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300"
+    <!-- Cards Grid Container with Loading Overlay -->
+    <div class="relative">
+      <!-- Loading Overlay -->
+      <transition
+        enter-active-class="transition-opacity duration-200"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="transition-opacity duration-200"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
       >
-        <!-- Card Title -->
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex items-start gap-3 min-w-0">
-            <!-- Icon -->
-            <div 
-              class="flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-lg shadow-sm border"
-              :class="[
-                getGroupVisuals(idx, group.title).bg,
-                getGroupVisuals(idx, group.title).text,
-                getGroupVisuals(idx, group.title).border
-              ]"
-              v-html="getGroupVisuals(idx, group.title).icon"
-            ></div>
-            <div class="min-w-0">
-              <h4 class="text-sm font-bold text-gray-900 dark:text-gray-100 leading-normal flex items-center gap-1.5">
-                {{ group.title }}
-              </h4>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 leading-normal">
-                {{ group.summary }}
-              </p>
+        <div 
+          v-if="isRefreshing" 
+          class="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[2px] z-20 rounded-xl flex items-start justify-center pt-24 pointer-events-auto"
+        >
+          <div class="flex flex-col items-center gap-2">
+            <svg class="w-8 h-8 animate-spin text-blue-600 dark:text-blue-500" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span class="text-xs font-bold text-gray-500 dark:text-gray-400 select-none animate-pulse">正在刷新数据门户...</span>
+          </div>
+        </div>
+      </transition>
+
+      <div class="grid gap-4" :class="{ 'pointer-events-none select-none': isRefreshing }">
+        <article
+          v-for="(group, idx) in props.payload.groups || []"
+          :key="group.id || group.title"
+          class="group/card rounded-xl border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900/30 p-3.5 sm:p-4 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300"
+        >
+          <!-- Card Title -->
+          <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5">
+            <div class="flex items-start gap-2.5 min-w-0">
+              <!-- Icon -->
+              <div 
+                class="flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-lg shadow-sm border"
+                :class="[
+                  getGroupVisuals(idx, group.title).bg,
+                  getGroupVisuals(idx, group.title).text,
+                  getGroupVisuals(idx, group.title).border
+                ]"
+                v-html="getGroupVisuals(idx, group.title).icon"
+              ></div>
+              <div class="min-w-0">
+                <h4 class="text-sm font-bold text-gray-900 dark:text-gray-100 leading-normal flex items-center gap-1.5">
+                  {{ group.title }}
+                </h4>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 leading-normal">
+                  {{ group.summary }}
+                </p>
+              </div>
+            </div>
+            
+            <!-- Tags -->
+            <div v-if="group.tags?.length" class="flex flex-wrap gap-1 mt-1 sm:mt-0 sm:justify-end flex-shrink-0 ml-10.5 sm:ml-0">
+              <span
+                v-for="tag in group.tags.slice(0, 3)"
+                :key="tag"
+                class="rounded-full bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700/60 px-2 py-0.5 text-[9px] font-bold text-gray-500 dark:text-gray-400"
+              >
+                {{ tag }}
+              </span>
             </div>
           </div>
-          
-          <!-- Tags -->
-          <div v-if="group.tags?.length" class="flex flex-wrap justify-end gap-1 flex-shrink-0">
-            <span
-              v-for="tag in group.tags.slice(0, 3)"
-              :key="tag"
-              class="rounded-full bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700/60 px-2 py-0.5 text-[9px] font-bold text-gray-500 dark:text-gray-400"
-            >
-              {{ tag }}
-            </span>
-          </div>
-        </div>
 
-        <!-- You Can Ask Section -->
-        <div v-if="group.questions?.length" class="mt-4">
-          <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
-            <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            你可以这样问
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              v-for="question in group.questions"
-              :key="question.query"
-              type="button"
-              class="group/btn relative inline-flex items-center gap-1.5 rounded-lg border border-blue-100 dark:border-blue-900/30 bg-blue-50/30 dark:bg-blue-950/20 px-3 py-2 text-left text-xs font-semibold text-blue-700 dark:text-blue-300 transition-all hover:bg-blue-50 hover:border-blue-300/60 dark:hover:bg-blue-900/40 hover:-translate-y-0.5 active:translate-y-0 shadow-sm"
-              @click="handleQuestionClick(question, group)"
-            >
-              <svg class="w-3.5 h-3.5 text-blue-400/80 group-hover/btn:text-blue-500 dark:text-blue-400/60 dark:group-hover/btn:text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+          <!-- You Can Ask Section -->
+          <div v-if="group.questions?.length" class="mt-4">
+            <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
+              <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
               </svg>
-              <span>{{ question.label }}</span>
-              <span 
-                v-if="question.click_count" 
-                class="ml-1 inline-flex items-center px-1 py-0.5 rounded bg-amber-500/10 text-[9px] font-bold text-amber-600 border border-amber-500/20 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30 shadow-sm"
+              你可以这样问
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="question in group.questions"
+                :key="question.query"
+                type="button"
+                class="group/btn relative inline-flex items-center gap-1.5 rounded-lg border border-blue-100 dark:border-blue-900/30 bg-blue-50/30 dark:bg-blue-950/20 px-3 py-2 text-left text-xs font-semibold text-blue-700 dark:text-blue-300 transition-all hover:bg-blue-50 hover:border-blue-300/60 dark:hover:bg-blue-900/40 hover:-translate-y-0.5 active:translate-y-0 shadow-sm"
+                @click="handleQuestionClick(question, group)"
               >
-                🔥 常用 {{ question.click_count }}
-              </span>
-            </button>
+                <svg class="w-3.5 h-3.5 text-blue-400/80 group-hover/btn:text-blue-500 dark:text-blue-400/60 dark:group-hover/btn:text-blue-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                </svg>
+                <span>{{ question.label }}</span>
+                <span 
+                  v-if="question.click_count" 
+                  class="ml-1 inline-flex items-center px-1 py-0.5 rounded bg-amber-500/10 text-[9px] font-bold text-amber-600 border border-amber-500/20 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30 shadow-sm"
+                >
+                  🔥 常用 {{ question.click_count }}
+                </span>
+              </button>
+            </div>
           </div>
-        </div>
 
-        <!-- Related Data Section -->
-        <div v-if="group.related_data?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
-          <button
-            type="button"
-            class="flex items-center justify-between w-full text-left text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider hover:text-gray-600 dark:hover:text-gray-300 transition-colors select-none"
-            @click="toggleGroup(group.id || group.title)"
-          >
-            <span class="flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
-              </svg>
-              相关数据
-            </span>
-            <svg
-              class="w-3.5 h-3.5 transform transition-transform duration-300"
-              :class="{ 'rotate-180': expandedGroups[group.id || group.title] }"
-              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+          <!-- Related Data Section -->
+          <div v-if="group.related_data?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
+            <button
+              type="button"
+              class="flex items-center justify-between w-full text-left text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider hover:text-gray-600 dark:hover:text-gray-300 transition-colors select-none"
+              @click="toggleGroup(group.id || group.title)"
             >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          
-          <div 
-            class="grid transition-all duration-300 ease-in-out overflow-hidden"
-            :class="expandedGroups[group.id || group.title] ? 'grid-rows-[1fr] opacity-100 mt-2.5' : 'grid-rows-[0fr] opacity-0'"
-          >
-            <div class="overflow-hidden">
-              <div class="space-y-3 bg-gray-50/50 dark:bg-gray-950/20 rounded-xl p-3 border border-gray-100 dark:border-gray-800">
-                <div v-for="related in group.related_data" :key="related.dataset || related.display_name" class="space-y-1.5">
-                  <div class="text-[11px] font-bold text-gray-500 dark:text-gray-400 flex items-center gap-1 select-none">
-                    <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2z"/>
-                    </svg>
-                    {{ related.display_name || related.dataset }}
-                  </div>
-                  <div class="flex flex-wrap gap-1.5">
-                    <span
-                      v-for="table in related.tables || []"
-                      :key="table"
-                      class="inline-flex items-center gap-1 rounded bg-white dark:bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/60 shadow-sm hover:scale-102 hover:shadow-xs transition-all duration-200 cursor-default"
-                    >
-                      <svg class="w-2.5 h-2.5 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+              <span class="flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+                </svg>
+                相关数据
+              </span>
+              <svg
+                class="w-3.5 h-3.5 transform transition-transform duration-300"
+                :class="{ 'rotate-180': expandedGroups[group.id || group.title] }"
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            
+            <div 
+              class="grid transition-all duration-300 ease-in-out overflow-hidden"
+              :class="expandedGroups[group.id || group.title] ? 'grid-rows-[1fr] opacity-100 mt-2.5' : 'grid-rows-[0fr] opacity-0'"
+            >
+              <div class="overflow-hidden">
+                <div class="space-y-3 bg-gray-50/50 dark:bg-gray-950/20 rounded-xl p-3 border border-gray-100 dark:border-gray-800">
+                  <div v-for="related in group.related_data" :key="related.dataset || related.display_name" class="space-y-1.5">
+                    <div class="text-[11px] font-bold text-gray-500 dark:text-gray-400 flex items-center gap-1 select-none">
+                      <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2z"/>
                       </svg>
-                      {{ table }}
-                    </span>
+                      {{ related.display_name || related.dataset }}
+                    </div>
+                    <div class="flex flex-wrap gap-1.5">
+                      <span
+                        v-for="table in related.tables || []"
+                        :key="table"
+                        class="inline-flex items-center gap-1 rounded bg-white dark:bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/60 shadow-sm hover:scale-102 hover:shadow-xs transition-all duration-200 cursor-default"
+                      >
+                        <svg class="w-2.5 h-2.5 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                        </svg>
+                        {{ table }}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- Follow-ups Section -->
-        <div v-if="group.followups?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
-          <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
-            <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
-            </svg>
-            继续追问
+          <!-- Follow-ups Section -->
+          <div v-if="group.followups?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
+            <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
+              <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
+              </svg>
+              继续追问
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="followup in group.followups"
+                :key="followup.query"
+                type="button"
+                class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors bg-gray-50/50 dark:bg-gray-800/20 hover:bg-blue-50/30 dark:hover:bg-blue-900/20 border border-gray-200/50 dark:border-gray-700 hover:border-blue-100 dark:hover:border-blue-900/40 rounded-lg shadow-xs active:scale-95 font-medium"
+                @click="emitQuickQuestion(followup.query)"
+              >
+                <span>{{ followup.label }}</span>
+              </button>
+            </div>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              v-for="followup in group.followups"
-              :key="followup.query"
-              type="button"
-              class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors bg-gray-50/50 dark:bg-gray-800/20 hover:bg-blue-50/30 dark:hover:bg-blue-900/20 border border-gray-200/50 dark:border-gray-700 hover:border-blue-100 dark:hover:border-blue-900/40 rounded-lg shadow-xs active:scale-95 font-medium"
-              @click="emitQuickQuestion(followup.query)"
-            >
-              <span>{{ followup.label }}</span>
-            </button>
-          </div>
-        </div>
-      </article>
+        </article>
+      </div>
     </div>
   </section>
 </template>
@@ -258,7 +283,7 @@ const handleRefreshClick = () => {
   // 防御性安全重置
   setTimeout(() => {
     isRefreshing.value = false;
-  }, 5000);
+  }, 30000);
 };
 
 // 监听 payload 的变化重置刷新动画

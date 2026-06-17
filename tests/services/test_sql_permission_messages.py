@@ -64,6 +64,7 @@ async def test_dataset_table_consistency_validation_failed(monkeypatch):
 
     class FakeDataset:
         def __init__(self, name, tables):
+            self.id = 1
             self.name = name
             self.tables = tables
             self.enable_data_perm = False
@@ -85,9 +86,15 @@ async def test_dataset_table_consistency_validation_failed(monkeypatch):
         return None
     monkeypatch.setattr(sql_service, "enforce_physical_table_permissions_for_select", fake_enforce)
 
+    from unittest.mock import MagicMock
+    mock_session = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.scalars.return_value.all.return_value = ["allowed_table_1", "allowed_table_2"]
+    mock_session.execute.return_value = mock_res
+
     # 1. 正常场景：查询的表完全在当前数据集中
     result_ok = await sql_service.execute_sql_query_core(
-        AsyncMock(),
+        mock_session,
         sql="SELECT * FROM allowed_table_1",
         data_source="clickhouse_datasource",
         dataset_name="test_dataset",
@@ -100,7 +107,7 @@ async def test_dataset_table_consistency_validation_failed(monkeypatch):
 
     # 2. 异常场景：查询的表不属于当前数据集
     result_fail = await sql_service.execute_sql_query_core(
-        AsyncMock(),
+        mock_session,
         sql="SELECT * FROM other_table",
         data_source="clickhouse_datasource",
         dataset_name="test_dataset",
@@ -111,4 +118,5 @@ async def test_dataset_table_consistency_validation_failed(monkeypatch):
     )
     assert "[Validation Failed]" in result_fail
     assert "表 'other_table' 不属于当前指定的数据集 'test_dataset'" in result_fail
+
 

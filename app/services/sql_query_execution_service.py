@@ -264,7 +264,13 @@ async def execute_sql_query_core(
             if err_ref:
                 return f"[Validation Failed] {err_ref}"
             if refs:
-                dataset_tables = {tb.physical_name.lower() for tb in ds.tables if tb.status == 1}
+                t_stmt = select(MetaTable.physical_name).where(
+                    MetaTable.dataset_id == ds.id,
+                    MetaTable.status == 1
+                )
+                t_res = await session.execute(t_stmt)
+                dataset_tables = {str(x).lower() for x in t_res.scalars().all() if x}
+
                 for lk, display in refs.items():
                     if lk not in dataset_tables:
                         return f"[Validation Failed] 表 '{display}' 不属于当前指定的数据集 '{dataset_name}'。请重新通过 get_dataset_schema 确认该数据集下的有效表定义，严禁跨数据集或凭空猜表！"

@@ -2360,6 +2360,7 @@ interface DatasetNavigationPayload {
     followups?: DatasetCapabilityQuestion[];
   }>;
   markdown?: string;
+  is_fallback?: boolean;
 }
 interface Message {
   id: number;
@@ -2388,6 +2389,7 @@ interface Message {
   pendingExternalExecution?: PendingExternalExecution;
   toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
   datasetNavigation?: DatasetNavigationPayload;
+  _hasSilentlyRefreshed?: boolean;
 }
 // Helper: Check Role
 const checkRole = (msg: Message, role: string): boolean => {
@@ -4173,34 +4175,69 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
 const showPortalDrawer = ref(false);
 const portalNavigationPayload = ref<any>(null);
 const portalLoading = ref(false);
+const hasSilentlyRefreshed = ref(false);
+let silentRefreshTimer: any = null;
 
 const openPortalDrawer = async () => {
   showPortalDrawer.value = true;
+  hasSilentlyRefreshed.value = false;
+  if (silentRefreshTimer) {
+    clearTimeout(silentRefreshTimer);
+    silentRefreshTimer = null;
+  }
   await lockToDataQueryAgentForDatasetMenu();
   if (!portalNavigationPayload.value) {
     await fetchPortalNavigationData();
+  } else if (portalNavigationPayload.value.is_fallback) {
+    // 如果已有本地缓存但它是 fallback 兜底数据，也可以立即触发一次静默刷新
+    await fetchPortalNavigationData(false, false);
   }
 };
 
-const fetchPortalNavigationData = async (refresh = false) => {
-  if (portalLoading.value) return;
-  portalLoading.value = true;
+const fetchPortalNavigationData = async (refresh = false, silent = false) => {
+  if (!silent) {
+    if (portalLoading.value) return;
+    portalLoading.value = true;
+  }
   try {
     const payload = await fetchDatasetMenuNavigationPayload(refresh);
     portalNavigationPayload.value = payload;
-    if (refresh) {
+    
+    // 如果获取的数据为降级兜底数据，且当前不是主动刷新、也不是静默刷新，且本轮还未发生过静默刷新
+    if (payload?.is_fallback && !refresh && !silent && !hasSilentlyRefreshed.value) {
+      hasSilentlyRefreshed.value = true;
+      if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
+      silentRefreshTimer = setTimeout(async () => {
+        if (showPortalDrawer.value) {
+          await fetchPortalNavigationData(true, true);
+        }
+      }, 3000);
+    }
+    
+    if (refresh && !silent) {
       showToast("数据门户刷新成功", "success");
     }
   } catch (error) {
     console.warn("Failed to load portal navigation data", error);
-    showToast(refresh ? "刷新数据门户失败，请稍后重试" : "加载数据门户失败，请稍后重试", "error");
+    if (!silent) {
+      showToast(refresh ? "刷新数据门户失败，请稍后重试" : "加载数据门户失败，请稍后重试", "error");
+    }
     if (refresh && portalNavigationPayload.value) {
       portalNavigationPayload.value = { ...portalNavigationPayload.value, _failed_at: new Date().toISOString() };
     }
   } finally {
-    portalLoading.value = false;
+    if (!silent) {
+      portalLoading.value = false;
+    }
   }
 };
+
+watch(showPortalDrawer, (val) => {
+  if (!val && silentRefreshTimer) {
+    clearTimeout(silentRefreshTimer);
+    silentRefreshTimer = null;
+  }
+});
 
 const refreshPortalNavigation = async () => {
   await fetchPortalNavigationData(true);

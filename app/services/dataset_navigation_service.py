@@ -435,6 +435,11 @@ class DatasetNavigationService:
             ttl = 15 if (is_fallback and has_datasets) else _NAV_CACHE_TTL_SECONDS
             await DatasetNavigationService._save_cached_navigation(cache_key, markdown, ttl=ttl)
 
+        # 始终检测当前是否为降级兜底状态
+        fallback_raw = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+        fallback_md = finalize_visible_reply(fallback_raw, collapse_duplicates=False)
+        is_fallback = (markdown == fallback_md)
+
         # 动态解析 markdown 中的场景和推荐问题
         groups = DatasetNavigationService.parse_groups_from_markdown(markdown, groups)
 
@@ -487,4 +492,5 @@ class DatasetNavigationService:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "groups": groups,
             "markdown": markdown,
+            "is_fallback": is_fallback,
         }

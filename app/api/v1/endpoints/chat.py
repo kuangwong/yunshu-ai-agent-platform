@@ -97,6 +97,7 @@ class DatasetNavigationResponse(BaseModel):
     generated_at: str = Field(..., description="本次导航生成时间")
     groups: List[Dict[str, Any]] = Field(default_factory=list, description="按标签分组的数据集导航")
     markdown: str = Field(..., description="含 quick 按钮的 Markdown 导航内容")
+    is_fallback: bool = Field(..., description="标记当前是否是降级到兜底模板的数据")
 
 
 class DatasetMenuClickRequest(BaseModel):

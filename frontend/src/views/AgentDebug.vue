@@ -750,6 +750,7 @@ interface DatasetNavigationPayload {
     followups?: DatasetCapabilityQuestion[];
   }>;
   markdown?: string;
+  is_fallback?: boolean;
 }
 
 interface Message {
@@ -781,6 +782,7 @@ interface Message {
   datasetNavigation?: DatasetNavigationPayload;
   prompt_tokens?: number;
   completion_tokens?: number;
+  _hasSilentlyRefreshed?: boolean;
 }
 
 // --- Debug Config State ---
@@ -1724,6 +1726,16 @@ const showDatasetMenuNavigation = async () => {
     navMsg.value.datasetNavigation = payload;
     const markdown = payload?.markdown || "";
     navMsg.value.content = markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+
+    // 静默自愈刷新：若获取到的是兜底数据，且该消息未曾静默刷新过，则 3 秒后静默触发一次大模型刷新
+    if (payload?.is_fallback && !navMsg.value._hasSilentlyRefreshed) {
+      navMsg.value._hasSilentlyRefreshed = true;
+      setTimeout(async () => {
+        if (navMsg.value.datasetNavigation?.is_fallback) {
+          await silentlyRefreshDatasetMenuNavigation(navMsg.value);
+        }
+      }, 3000);
+    }
   } catch (error) {
     console.warn("Failed to load dataset menu navigation", error);
     navMsg.value.content = (
@@ -1741,6 +1753,18 @@ const showDatasetMenuNavigation = async () => {
     isProcessing.value = false;
     await nextTick();
     scrollToBottom(true);
+  }
+};
+
+const silentlyRefreshDatasetMenuNavigation = async (msg: Message) => {
+  try {
+    const payload = await fetchDatasetMenuNavigationPayload(true);
+    msg.datasetNavigation = payload;
+    msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+    await nextTick();
+    scrollToBottom(true);
+  } catch (error) {
+    console.warn("Failed to silently refresh dataset menu navigation", error);
   }
 };
 
@@ -2191,6 +2215,17 @@ const sendMessage = async () => {
                 thoughtTimer = null;
               }
             }
+            // Handle Retraction Event
+            else if (data.type === "retraction") {
+              agentMsg.value.content = data.content;
+              if (data.final !== false) {
+                agentMsg.value.isThinking = false;
+                if (thoughtTimer) {
+                  clearInterval(thoughtTimer);
+                  thoughtTimer = null;
+                }
+              }
+            }
             // Handle Content Stream
             else if (data.content) {
               const piece = sanitizeStreamContent(String(data.content));
@@ -2459,6 +2494,15 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
     msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
+  } else if (data.type === "retraction") {
+    msg.content = data.content;
+    if (data.final !== false) {
+      msg.isThinking = false;
+      if (thoughtTimer) {
+        clearInterval(thoughtTimer);
+        thoughtTimer = null;
+      }
+    }
   } else if (data.content) {
     const piece = sanitizeStreamContent(String(data.content));
     if (piece) {

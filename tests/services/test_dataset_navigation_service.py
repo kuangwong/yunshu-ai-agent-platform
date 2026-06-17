@@ -200,6 +200,7 @@ async def test_build_navigation_for_user_uses_dataset_menu_and_cache():
     assert payload["generated_at"]
     assert payload["groups"]
     assert payload["groups"][0]["questions"]
+    assert payload["is_fallback"] is False
     load_cache.assert_awaited_once()
     save_cache.assert_awaited_once()
 
@@ -372,10 +373,11 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
         "_save_cached_navigation",
         AsyncMock(),
     ) as save_cache:
-        await DatasetNavigationService.build_navigation_for_user(
+        payload = await DatasetNavigationService.build_navigation_for_user(
             AsyncMock(),
             user_id=7,
             is_admin=False,
         )
     
+    assert payload["is_fallback"] is True
     save_cache.assert_awaited_once_with(ANY, fallback_markdown, ttl=15)

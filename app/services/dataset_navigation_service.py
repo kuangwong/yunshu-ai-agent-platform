@@ -77,11 +77,15 @@ class DatasetNavigationService:
         return None
 
     @staticmethod
-    async def _save_cached_navigation(cache_key: str, markdown: str) -> None:
+    async def _save_cached_navigation(
+        cache_key: str,
+        markdown: str,
+        ttl: int = _NAV_CACHE_TTL_SECONDS,
+    ) -> None:
         try:
             redis = await get_redis()
             if redis:
-                await redis.set(cache_key, markdown, ex=_NAV_CACHE_TTL_SECONDS)
+                await redis.set(cache_key, markdown, ex=ttl)
         except Exception as e:
             logger.warning("Dataset navigation cache write failed: %s", e)
 
@@ -347,6 +351,58 @@ class DatasetNavigationService:
         return groups
 
     @staticmethod
+    async def _fetch_columns_for_groups(
+        db: AsyncSession,
+        groups: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """为所有 groups 中的表术语 (table term) 批量拉取字段数据字典定义"""
+        table_terms = []
+        for g in groups:
+            for r in g.get("related_data") or []:
+                for t in r.get("tables") or []:
+                    if t:
+                        table_terms.append(str(t).strip())
+
+        if not table_terms:
+            return {}
+
+        from sqlalchemy import select
+        from app.models.metadata import MetaTable, MetaColumn
+
+        try:
+            stmt = (
+                select(
+                    MetaTable.term.label("table_term"),
+                    MetaColumn.physical_name,
+                    MetaColumn.term.label("column_term"),
+                    MetaColumn.type,
+                    MetaColumn.description,
+                )
+                .join(MetaColumn, MetaTable.id == MetaColumn.table_id)
+                .where(MetaTable.term.in_(table_terms))
+                .where(MetaTable.status == 1)
+                .order_by(MetaColumn.id.asc())
+            )
+            res = await db.execute(stmt)
+            rows = res.all()
+
+            table_to_columns = {}
+            for row in rows:
+                t_term = str(row.table_term).strip()
+                if t_term not in table_to_columns:
+                    table_to_columns[t_term] = []
+                table_to_columns[t_term].append({
+                    "name": row.physical_name,
+                    "term": row.column_term,
+                    "type": row.type or "",
+                    "description": row.description or "",
+                })
+            return table_to_columns
+        except Exception as e:
+            logger.warning("Failed to fetch metadata columns for navigation: %s", e)
+            return {}
+
+    @staticmethod
     async def build_navigation_for_user(
         db: AsyncSession,
         *,
@@ -354,7 +410,6 @@ class DatasetNavigationService:
         is_admin: bool,
         force_refresh: bool = False,
     ) -> Dict[str, Any]:
-        del db  # 与 ChatBI 一致，数据集目录来自 AgentConfigProvider.get_dataset_menu
         dataset_menu = await DatasetNavigationService._get_dataset_menu(
             user_id=user_id,
             is_admin=is_admin,
@@ -369,10 +424,55 @@ class DatasetNavigationService:
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if not markdown:
             markdown = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
-            await DatasetNavigationService._save_cached_navigation(cache_key, markdown)
+            
+            # 检测是否因大模型报错或生成失败而降级到了兜底模板
+            fallback_raw = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+            fallback_md = finalize_visible_reply(fallback_raw, collapse_duplicates=False)
+            is_fallback = (markdown == fallback_md)
+            has_datasets = menu_has_authorized_datasets(dataset_menu)
+            
+            # 如果是异常兜底（有授权数据集但生成了兜底文本），只缓存 15 秒，避免长期卡在兜底状态；如果是正常情况则缓存 10 分钟
+            ttl = 15 if (is_fallback and has_datasets) else _NAV_CACHE_TTL_SECONDS
+            await DatasetNavigationService._save_cached_navigation(cache_key, markdown, ttl=ttl)
 
         # 动态解析 markdown 中的场景和推荐问题
         groups = DatasetNavigationService.parse_groups_from_markdown(markdown, groups)
+
+        # 批量拉取数据表下的列名字典释义
+        table_to_columns = await DatasetNavigationService._fetch_columns_for_groups(db, groups)
+
+        # 批量拉取物理表名映射
+        table_physical_names = {}
+        try:
+            from sqlalchemy import select
+            from app.models.metadata import MetaTable
+            all_table_terms = []
+            for g in groups:
+                for r in g.get("related_data") or []:
+                    for t in r.get("tables") or []:
+                        if t:
+                            all_table_terms.append(str(t).strip())
+            if all_table_terms:
+                t_stmt = select(MetaTable.term, MetaTable.physical_name).where(
+                    MetaTable.term.in_(all_table_terms),
+                    MetaTable.status == 1
+                )
+                t_res = await db.execute(t_stmt)
+                for t_row in t_res.all():
+                    table_physical_names[str(t_row.term).strip()] = str(t_row.physical_name).strip()
+        except Exception as e:
+            logger.warning("Failed to fetch table physical names: %s", e)
+
+        for g in groups:
+            for r in g.get("related_data") or []:
+                r["table_columns"] = {
+                    t: table_to_columns.get(t, [])
+                    for t in r.get("tables") or []
+                }
+                r["table_physical_names"] = {
+                    t: table_physical_names.get(t, "")
+                    for t in r.get("tables") or []
+                }
 
         # 应用用户点击的偏好排序
         click_stats = await DatasetNavigationService._load_question_click_stats(

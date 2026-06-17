@@ -1,5 +1,5 @@
 <template>
-  <section class="space-y-4">
+  <section ref="menuContainer" class="space-y-4">
     <!-- Header -->
     <div class="bg-gray-50/40 dark:bg-gray-800/10 backdrop-blur-sm border border-gray-150 dark:border-gray-800/80 rounded-xl p-3 flex flex-col sm:flex-row justify-between sm:items-center gap-3">
       <div class="flex items-center gap-2.5">
@@ -46,6 +46,60 @@
       </button>
     </div>
 
+    <!-- Search and Filter Bar -->
+    <div class="space-y-2.5">
+      <!-- Search Input -->
+      <div class="relative">
+        <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400 dark:text-gray-500">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </span>
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="搜索场景、表名或指标..."
+          class="w-full pl-9 pr-8 py-1.5 text-xs rounded-xl border border-gray-150 dark:border-gray-800 bg-white dark:bg-gray-900/30 text-gray-850 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all shadow-xs"
+        />
+        <button
+          v-if="searchQuery"
+          type="button"
+          class="absolute inset-y-0 right-0 flex items-center pr-2.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+          @click="searchQuery = ''"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Scrollable Tags Filter -->
+      <div v-if="allTags.length" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 -mx-0.5">
+        <button
+          type="button"
+          class="px-2.5 py-1 text-[10px] font-bold rounded-lg border transition-all whitespace-nowrap cursor-pointer active:scale-95"
+          :class="selectedTag === 'All'
+            ? 'bg-blue-600 border-transparent text-white shadow-xs'
+            : 'bg-gray-50 dark:bg-gray-800/40 border-gray-150 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+          @click="selectedTag = 'All'"
+        >
+          全部
+        </button>
+        <button
+          v-for="tag in allTags"
+          :key="tag"
+          type="button"
+          class="px-2.5 py-1 text-[10px] font-bold rounded-lg border transition-all whitespace-nowrap cursor-pointer active:scale-95"
+          :class="selectedTag === tag
+            ? 'bg-blue-600 border-transparent text-white shadow-xs'
+            : 'bg-gray-50 dark:bg-gray-800/40 border-gray-150 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+          @click="selectedTag = tag"
+        >
+          {{ tag }}
+        </button>
+      </div>
+    </div>
+
     <!-- Cards Grid Container with Loading Overlay -->
     <div class="relative">
       <!-- Loading Overlay -->
@@ -73,7 +127,7 @@
 
       <div class="grid gap-4" :class="{ 'pointer-events-none select-none': isRefreshing }">
         <article
-          v-for="(group, idx) in props.payload.groups || []"
+          v-for="(group, idx) in filteredGroups"
           :key="group.id || group.title"
           class="group/card rounded-xl border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900/30 p-3.5 sm:p-4 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300"
         >
@@ -165,10 +219,10 @@
             </button>
             
             <div 
-              class="grid transition-all duration-300 ease-in-out overflow-hidden"
-              :class="expandedGroups[group.id || group.title] ? 'grid-rows-[1fr] opacity-100 mt-2.5' : 'grid-rows-[0fr] opacity-0'"
+              class="grid transition-all duration-300 ease-in-out"
+              :class="expandedGroups[group.id || group.title] ? 'grid-rows-[1fr] opacity-100 mt-2.5 overflow-visible' : 'grid-rows-[0fr] opacity-0 overflow-hidden'"
             >
-              <div class="overflow-hidden">
+              <div class="min-h-0 overflow-visible">
                 <div class="space-y-3 bg-gray-50/50 dark:bg-gray-950/20 rounded-xl p-3 border border-gray-100 dark:border-gray-800">
                   <div v-for="related in group.related_data" :key="related.dataset || related.display_name" class="space-y-1.5">
                     <div class="text-[11px] font-bold text-gray-500 dark:text-gray-400 flex items-center gap-1 select-none">
@@ -177,17 +231,102 @@
                       </svg>
                       {{ related.display_name || related.dataset }}
                     </div>
-                    <div class="flex flex-wrap gap-1.5">
-                      <span
+                    <div class="flex flex-wrap gap-1.5 overflow-visible">
+                      <div
                         v-for="table in related.tables || []"
                         :key="table"
-                        class="inline-flex items-center gap-1 rounded bg-white dark:bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/60 shadow-sm hover:scale-102 hover:shadow-xs transition-all duration-200 cursor-default"
+                        class="relative inline-block overflow-visible"
+                        @mouseenter="handleMouseEnter($event, `${group.id || group.title}_${related.dataset || related.display_name || ''}_${table}`)"
+                        @mouseleave="handleMouseLeave"
                       >
-                        <svg class="w-2.5 h-2.5 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                        </svg>
-                        {{ table }}
-                      </span>
+                        <span
+                          class="inline-flex items-center gap-1 rounded bg-white dark:bg-gray-800 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/60 shadow-sm hover:scale-102 hover:shadow-xs transition-all duration-200 cursor-pointer select-none active:scale-95"
+                          @click.stop="handleClick($event, `${group.id || group.title}_${related.dataset || related.display_name || ''}_${table}`)"
+                        >
+                          <svg class="w-2.5 h-2.5 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                          </svg>
+                          {{ table }}
+                        </span>
+
+                        <!-- Popover Data Dictionary -->
+                        <transition
+                          enter-active-class="transition-all duration-200 ease-out"
+                          enter-from-class="opacity-0 translate-y-1 scale-95"
+                          enter-to-class="opacity-100 translate-y-0 scale-100"
+                          leave-active-class="transition-all duration-150 ease-in"
+                          leave-from-class="opacity-100 translate-y-0 scale-100"
+                          leave-to-class="opacity-0 translate-y-1 scale-95"
+                        >
+                          <div 
+                            v-if="(activeTableDictionary === `${group.id || group.title}_${related.dataset || related.display_name || ''}_${table}` || pinnedTableDictionary === `${group.id || group.title}_${related.dataset || related.display_name || ''}_${table}`) && related.table_columns?.[table]?.length" 
+                            class="absolute z-45 bottom-full mb-2 w-72 bg-white dark:bg-gray-850 border border-gray-150 dark:border-gray-750 rounded-xl p-3 shadow-xl text-left select-none ring-1 ring-black/5"
+                            :style="popoverStyles[`${group.id || group.title}_${related.dataset || related.display_name || ''}_${table}`] || { left: '50%', transform: 'translateX(-50%)' }"
+                            @click.stop
+                          >
+                            <h5 class="text-[10px] font-bold text-gray-800 dark:text-gray-250 mb-2 border-b border-gray-100 dark:border-gray-750 pb-1 flex items-center justify-between">
+                              <span class="flex items-center gap-1 truncate">
+                                <svg class="w-3.5 h-3.5 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+                                </svg>
+                                <span class="truncate">{{ table }} 字段字典</span>
+                              </span>
+                              <button 
+                                type="button" 
+                                class="text-gray-400 hover:text-gray-650 dark:hover:text-gray-200 w-4 h-4 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors flex-shrink-0 cursor-pointer"
+                                @click.stop="pinnedTableDictionary = null; activeTableDictionary = null"
+                              >
+                                &times;
+                              </button>
+                            </h5>
+                            <div class="max-h-48 overflow-y-auto no-scrollbar space-y-2 pr-0.5">
+                              <div 
+                                v-for="col in related.table_columns[table]" 
+                                :key="col.name" 
+                                class="flex flex-col border-b border-gray-50/50 dark:border-gray-750/30 pb-1.5 last:border-0 last:pb-0"
+                              >
+                                <div class="flex items-center justify-between gap-2">
+                                  <span class="font-mono text-[9px] font-bold text-blue-600 dark:text-blue-400 truncate">{{ col.name }}</span>
+                                  <span class="text-[8px] bg-gray-100 dark:bg-gray-700/80 px-1 rounded text-gray-500 dark:text-gray-400 font-bold uppercase">{{ col.type }}</span>
+                                </div>
+                                <div class="text-[9px] text-gray-500 dark:text-gray-450 mt-0.5 font-medium leading-normal">
+                                  {{ col.term }}
+                                  <span v-if="col.description && col.description !== col.term" class="text-gray-400 dark:text-gray-500 ml-1 text-[8.5px] font-normal">
+                                    ({{ col.description }})
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                            <!-- 快捷提问按钮组 -->
+                            <div class="mt-2.5 pt-2.5 border-t border-gray-100 dark:border-gray-750 flex items-center justify-between gap-1">
+                              <button
+                                type="button"
+                                class="flex-1 flex items-center justify-center gap-0.5 py-1 px-1.5 text-[9px] font-bold rounded bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/30 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 border border-blue-100/50 dark:border-blue-900/30 transition-all cursor-pointer active:scale-95 whitespace-nowrap"
+                                title="分析表结构和字段口径"
+                                @click.stop="handleQuickQuestionClick('structure', table, related)"
+                              >
+                                <span>📖 结构说明</span>
+                              </button>
+                              <button
+                                type="button"
+                                class="flex-1 flex items-center justify-center gap-0.5 py-1 px-1.5 text-[9px] font-bold rounded bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:hover:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30 transition-all cursor-pointer active:scale-95 whitespace-nowrap"
+                                title="查询最近100条明细数据"
+                                @click.stop="handleQuickQuestionClick('query', table, related)"
+                              >
+                                <span>📊 查询明细</span>
+                              </button>
+                              <button
+                                type="button"
+                                class="flex-1 flex items-center justify-center gap-0.5 py-1 px-1.5 text-[9px] font-bold rounded bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-400 border border-amber-100/50 dark:border-amber-900/30 transition-all cursor-pointer active:scale-95 whitespace-nowrap"
+                                title="推荐业务分析问题"
+                                @click.stop="handleQuickQuestionClick('recommend', table, related)"
+                              >
+                                <span>💡 推荐提问</span>
+                              </button>
+                            </div>
+                          </div>
+                        </transition>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -217,12 +356,27 @@
           </div>
         </article>
       </div>
+
+      <!-- Empty State -->
+      <div
+        v-if="filteredGroups.length === 0"
+        class="bg-gray-50/20 dark:bg-gray-900/10 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl p-8 flex flex-col items-center justify-center text-center space-y-2 select-none"
+      >
+        <div class="text-gray-300 dark:text-gray-600">
+          <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <h4 class="text-xs font-bold text-gray-500 dark:text-gray-400">未找到相关数据场景</h4>
+        <p class="text-[10px] text-gray-400 dark:text-gray-500 max-w-[200px]">尝试精简搜索词，或切换其他分类标签</p>
+      </div>
+
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from "vue";
+import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 
 interface DatasetCapabilityQuestion {
   label: string;
@@ -232,11 +386,20 @@ interface DatasetCapabilityQuestion {
   last_clicked_at?: string;
 }
 
+interface DatasetColumnInfo {
+  name: string;
+  term: string;
+  type: string;
+  description: string;
+}
+
 interface DatasetCapabilityRelatedData {
   dataset?: string;
   display_name?: string;
   tables?: string[];
   table_descriptions?: Array<{ name: string; description?: string }>;
+  table_columns?: Record<string, DatasetColumnInfo[]>;
+  table_physical_names?: Record<string, string>;
 }
 
 interface DatasetCapabilityGroup {
@@ -267,8 +430,168 @@ const emit = defineEmits<{
   (event: "refresh"): void;
 }>();
 
+const menuContainer = ref<HTMLElement | null>(null);
 const isRefreshing = ref(false);
 const expandedGroups = ref<Record<string, boolean>>({});
+const activeTableDictionary = ref<string | null>(null);
+const pinnedTableDictionary = ref<string | null>(null);
+const popoverStyles = ref<Record<string, Record<string, string>>>({});
+
+const toggleTablePin = (uniqueId: string) => {
+  if (pinnedTableDictionary.value === uniqueId) {
+    pinnedTableDictionary.value = null;
+  } else {
+    pinnedTableDictionary.value = uniqueId;
+  }
+};
+
+const handleGlobalClick = () => {
+  pinnedTableDictionary.value = null;
+};
+
+const updatePopoverStyle = (badgeEl: HTMLElement, uniqueId: string) => {
+  if (!badgeEl) {
+    console.error("updatePopoverStyle fail: badgeEl is null");
+    return;
+  }
+  if (!menuContainer.value) {
+    console.error("updatePopoverStyle fail: menuContainer.value is null");
+    return;
+  }
+  
+  const badgeRect = badgeEl.getBoundingClientRect();
+  const containerRect = menuContainer.value.getBoundingClientRect();
+  
+  const popoverWidth = 288; // w-72 is 288px
+  const badgeCenterRelative = (badgeRect.left + badgeRect.width / 2) - containerRect.left;
+  
+  let left = badgeCenterRelative - popoverWidth / 2;
+  const minLeft = 8;
+  if (left < minLeft) {
+    left = minLeft;
+  }
+  
+  const maxLeft = containerRect.width - popoverWidth - 8;
+  if (left > maxLeft) {
+    left = maxLeft;
+  }
+  
+  const badgeLeftRelative = badgeRect.left - containerRect.left;
+  const popoverLeftOffset = left - badgeLeftRelative;
+  
+  console.error("updatePopoverStyle SUCCESS:", {
+    uniqueId,
+    badgeRectLeft: badgeRect.left,
+    badgeWidth: badgeRect.width,
+    containerRectLeft: containerRect.left,
+    containerRectWidth: containerRect.width,
+    badgeCenterRelative,
+    left,
+    badgeLeftRelative,
+    popoverLeftOffset
+  });
+  
+  popoverStyles.value[uniqueId] = {
+    left: `${popoverLeftOffset}px`,
+    transform: 'none',
+  };
+};
+
+const handleMouseEnter = (event: MouseEvent, uniqueId: string) => {
+  activeTableDictionary.value = uniqueId;
+  const target = event.currentTarget as HTMLElement;
+  if (target) {
+    updatePopoverStyle(target, uniqueId);
+  }
+};
+
+const handleMouseLeave = () => {
+  activeTableDictionary.value = null;
+};
+
+const handleClick = (event: MouseEvent, uniqueId: string) => {
+  toggleTablePin(uniqueId);
+  const target = event.currentTarget as HTMLElement;
+  if (target) {
+    updatePopoverStyle(target, uniqueId);
+  }
+};
+
+onMounted(() => {
+  document.addEventListener("click", handleGlobalClick);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("click", handleGlobalClick);
+});
+
+const searchQuery = ref("");
+const selectedTag = ref("All");
+
+// 动态去重提取出当前有权访问的所有卡片 tags
+const allTags = computed(() => {
+  const tagsSet = new Set<string>();
+  const groups = props.payload.groups || [];
+  for (const group of groups) {
+    if (group.tags) {
+      for (const tag of group.tags) {
+        const cleaned = String(tag || "").trim();
+        if (cleaned) {
+          tagsSet.add(cleaned);
+        }
+      }
+    }
+  }
+  return Array.from(tagsSet);
+});
+
+// 计算属性：联合搜索与过滤
+const filteredGroups = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  const tag = selectedTag.value;
+  const groups = props.payload.groups || [];
+
+  return groups.filter((group) => {
+    // 1. Tag 过滤
+    if (tag !== "All") {
+      const groupTags = group.tags || [];
+      if (!groupTags.some((t) => String(t).trim() === tag)) {
+        return false;
+      }
+    }
+
+    // 2. 搜索框过滤
+    if (query) {
+      const title = (group.title || "").toLowerCase();
+      const summary = (group.summary || "").toLowerCase();
+      const matchTitleOrSummary = title.includes(query) || summary.includes(query);
+      if (matchTitleOrSummary) return true;
+
+      // 匹配关联物理表
+      const relatedData = group.related_data || [];
+      const matchTable = relatedData.some((related) => {
+        const dataset = (related.dataset || "").toLowerCase();
+        const displayName = (related.display_name || "").toLowerCase();
+        const tables = (related.tables || []).some((t) => t.toLowerCase().includes(query));
+        return dataset.includes(query) || displayName.includes(query) || tables;
+      });
+      if (matchTable) return true;
+
+      // 匹配推荐问题
+      const questions = group.questions || [];
+      const matchQuestion = questions.some((q) => {
+        const label = (q.label || "").toLowerCase();
+        const queryText = (q.query || "").toLowerCase();
+        return label.includes(query) || queryText.includes(query);
+      });
+      if (matchQuestion) return true;
+
+      return false;
+    }
+
+    return true;
+  });
+});
 
 const formattedGeneratedAt = computed(() => {
   if (!props.payload.generated_at) return "";
@@ -286,11 +609,15 @@ const handleRefreshClick = () => {
   }, 30000);
 };
 
-// 监听 payload 的变化重置刷新动画
+// 监听 payload 的变化重置刷新动画与过滤状态
 watch(
   () => props.payload,
   () => {
     isRefreshing.value = false;
+    searchQuery.value = "";
+    selectedTag.value = "All";
+    activeTableDictionary.value = null;
+    pinnedTableDictionary.value = null;
   },
   { deep: true }
 );
@@ -315,6 +642,29 @@ const handleQuestionClick = (question: DatasetCapabilityQuestion, group: Dataset
     group_id: group.id,
   });
   emitQuickQuestion(query);
+};
+
+// 数据表数据字典快捷提问处理器
+const handleQuickQuestionClick = (type: 'structure' | 'query' | 'recommend', table: string, related: DatasetCapabilityRelatedData) => {
+  const physicalName = related.table_physical_names?.[table] || "";
+  const tableWithPhysical = physicalName ? `‘${table}’（物理表名：${physicalName}）` : `‘${table}’`;
+
+  let queryText = "";
+  if (type === 'structure') {
+    queryText = `说明数据表${tableWithPhysical}的字段结构和分析口径`;
+  } else if (type === 'query') {
+    queryText = `查询数据表${tableWithPhysical}最近10条明细数据`;
+  } else if (type === 'recommend') {
+    queryText = `根据数据表${tableWithPhysical}的字段定义，推荐 3 个最适合的业务分析提问。生成的问题以 \`- [🙋 推荐问题描述](quick:提问具体指令)\` 的格式输出这 3 个问题，以便我一键点击触发提问。`;
+  }
+  
+  if (queryText) {
+    emitQuickQuestion(queryText);
+  }
+  
+  // 收起浮窗
+  pinnedTableDictionary.value = null;
+  activeTableDictionary.value = null;
 };
 
 // 图标与视觉渐变定义辅助函数

@@ -745,6 +745,7 @@ interface DatasetNavigationPayload {
       display_name?: string;
       tables?: string[];
       table_descriptions?: Array<{ name: string; description?: string }>;
+      table_physical_names?: Record<string, string>;
     }>;
     followups?: DatasetCapabilityQuestion[];
   }>;

@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -348,3 +348,34 @@ def test_parse_groups_from_markdown_fallback_on_invalid():
     # 无匹配的#### 场景块
     parsed = DatasetNavigationService.parse_groups_from_markdown("### 📚 只有标题", static_groups)
     assert parsed == static_groups
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
+    fallback_markdown = DataQueryPrompts.build_dataset_navigation_fallback(SAMPLE_MENU)
+    
+    with patch.object(
+        DatasetNavigationService,
+        "_get_dataset_menu",
+        AsyncMock(return_value=SAMPLE_MENU),
+    ), patch.object(
+        DatasetNavigationService,
+        "_load_cached_navigation",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        DatasetNavigationService,
+        "_generate_navigation_markdown",
+        AsyncMock(return_value=fallback_markdown),
+    ), patch.object(
+        DatasetNavigationService,
+        "_save_cached_navigation",
+        AsyncMock(),
+    ) as save_cache:
+        await DatasetNavigationService.build_navigation_for_user(
+            AsyncMock(),
+            user_id=7,
+            is_admin=False,
+        )
+    
+    save_cache.assert_awaited_once_with(ANY, fallback_markdown, ttl=15)

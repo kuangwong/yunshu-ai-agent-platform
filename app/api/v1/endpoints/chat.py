@@ -110,6 +110,10 @@ class DatasetMenuClickRequest(BaseModel):
 class DatasetGroupRefreshRequest(BaseModel):
     group_title: str = Field(..., description="业务场景卡片标题")
     tables: List[str] = Field(..., description="关联的数据表术语列表")
+    purpose: str = Field(
+        default="questions",
+        description="刷新目标：questions=推荐问题，followups=继续追问",
+    )
 
 
 class DatasetTableColumnInfo(BaseModel):
@@ -239,11 +243,19 @@ async def refresh_group_questions(
 ):
     from app.services.dataset_navigation_service import DatasetNavigationService
 
-    questions = await DatasetNavigationService.refresh_group_questions(
-        db,
-        group_title=request.group_title,
-        tables=request.tables,
-    )
+    purpose = str(request.purpose or "questions").strip().lower()
+    if purpose == "followups":
+        questions = await DatasetNavigationService.refresh_group_followups(
+            db,
+            group_title=request.group_title,
+            tables=request.tables,
+        )
+    else:
+        questions = await DatasetNavigationService.refresh_group_questions(
+            db,
+            group_title=request.group_title,
+            tables=request.tables,
+        )
     return StandardResponse(data=DatasetGroupRefreshResponse(questions=questions))
 
 

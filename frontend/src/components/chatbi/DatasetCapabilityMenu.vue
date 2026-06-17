@@ -191,7 +191,7 @@
 
       <div class="grid gap-4" :class="{ 'pointer-events-none select-none': showRefreshBusy }">
         <article
-          v-for="{ group, visuals } in displayGroups"
+          v-for="{ group, visuals } in visibleDisplayGroups"
           :key="group.id || group.title"
           class="group/card relative overflow-hidden rounded-xl border p-3.5 sm:p-4 shadow-sm hover:shadow-lg hover:-translate-y-0.5 transition-all duration-300"
           :class="[visuals.card, visuals.cardBorder, visuals.cardHover]"
@@ -489,25 +489,77 @@
 
           <!-- Follow-ups Section -->
           <div v-if="group.followups?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
-            <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
-              <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
-              </svg>
-              继续追问
+            <div class="mb-2 flex items-center justify-between select-none">
+              <span class="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
+                </svg>
+                继续追问
+              </span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 text-[10px] font-bold text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 transition-all px-2 py-0.5 rounded-md border border-gray-200/80 dark:border-gray-700 disabled:opacity-50"
+                :disabled="refreshingFollowupGroupIds[group.id || group.title]"
+                @click.stop="handleRefreshGroupFollowups(group)"
+              >
+                <svg
+                  class="w-3 h-3"
+                  :class="{ 'animate-spin': refreshingFollowupGroupIds[group.id || group.title] }"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span>换一批</span>
+              </button>
             </div>
-            <div class="flex flex-wrap gap-2">
+            <div v-if="refreshingFollowupGroupIds[group.id || group.title]" class="flex flex-wrap gap-2 animate-pulse-slow">
+              <div
+                v-for="i in 2"
+                :key="`followup-sk-${i}`"
+                class="inline-flex h-7 w-28 rounded-lg border border-gray-200/60 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-800/30"
+              />
+            </div>
+            <div v-else class="flex flex-wrap gap-2">
               <button
                 v-for="followup in group.followups"
                 :key="followup.query"
                 type="button"
                 class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors bg-gray-50/50 dark:bg-gray-800/20 hover:bg-blue-50/30 dark:hover:bg-blue-900/20 border border-gray-200/50 dark:border-gray-700 hover:border-blue-100 dark:hover:border-blue-900/40 rounded-lg shadow-xs active:scale-95 font-medium"
-                @click="emitQuickQuestion(followup.query)"
+                @click="handleFollowupClick(followup, group)"
               >
                 <span>{{ followup.label }}</span>
               </button>
             </div>
           </div>
         </article>
+      </div>
+
+      <div
+        v-if="hiddenPortalCardCount > 0"
+        class="mt-3 flex justify-center"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100/80 dark:hover:bg-gray-800/50 transition-colors"
+          @click="portalCardsExpanded = true"
+        >
+          <span>还有 {{ hiddenPortalCardCount }} 个数据集未展示</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      </div>
+      <div
+        v-else-if="portalCardsExpanded && displayGroups.length > PORTAL_DEFAULT_VISIBLE_CARDS && !isFilteringPortal"
+        class="mt-2 flex justify-center"
+      >
+        <button
+          type="button"
+          class="text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-primary transition-colors"
+          @click="portalCardsExpanded = false"
+        >
+          收起部分数据集
+        </button>
       </div>
 
       <!-- Empty State -->
@@ -626,6 +678,7 @@ const clearRefreshBusy = () => {
 };
 const expandedGroups = ref<Record<string, boolean>>({});
 const refreshingGroupIds = ref<Record<string, boolean>>({});
+const refreshingFollowupGroupIds = ref<Record<string, boolean>>({});
 const pinnedTableDictionary = ref<string | null>(null);
 const popoverStyles = ref<Record<string, Record<string, string>>>({});
 const tableRecommendState = ref<Record<string, {
@@ -716,10 +769,18 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleGlobalClick);
+  if (upgradedBannerTimer) {
+    clearTimeout(upgradedBannerTimer);
+    upgradedBannerTimer = null;
+  }
 });
 
 const searchQuery = ref("");
 const selectedTag = ref("All");
+const PORTAL_DEFAULT_VISIBLE_CARDS = 5;
+const portalCardsExpanded = ref(false);
+const upgradedFromFallback = ref(false);
+let upgradedBannerTimer: ReturnType<typeof setTimeout> | null = null;
 
 const groupPopularityScore = (group: DatasetCapabilityGroup): number => {
   const questions = group.questions || [];
@@ -748,9 +809,18 @@ const formattedGeneratedAt = computed(() => {
   return date.toLocaleString();
 });
 
-const showReadyBanner = computed(() => false);
+const showReadyBanner = computed(
+  () => upgradedFromFallback.value && portalStatus.value === "ready",
+);
+
+const isFilteringPortal = computed(
+  () => !!searchQuery.value.trim() || selectedTag.value !== "All",
+);
 
 const statusBannerClass = computed(() => {
+  if (showReadyBanner.value) {
+    return "border-emerald-100 bg-emerald-50/70 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200";
+  }
   switch (portalStatus.value) {
     case "loading":
       return "border-blue-100 bg-blue-50/70 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/30 dark:text-blue-200";
@@ -770,6 +840,9 @@ const statusBannerIcon = computed(() => {
 });
 
 const statusBannerText = computed(() => {
+  if (showReadyBanner.value) {
+    return "完整 AI 场景卡片已生成，推荐问题与摘要已更新，可直接点击提问。";
+  }
   switch (portalStatus.value) {
     case "loading":
       return "正在生成数据门户，首次加载约需 15–30 秒，请稍候…";
@@ -1059,6 +1132,34 @@ const displayGroups = computed(() => {
   }));
 });
 
+const hiddenPortalCardCount = computed(() => {
+  if (isFilteringPortal.value || portalCardsExpanded.value) return 0;
+  return Math.max(0, displayGroups.value.length - PORTAL_DEFAULT_VISIBLE_CARDS);
+});
+
+const visibleDisplayGroups = computed(() => {
+  if (isFilteringPortal.value || portalCardsExpanded.value) {
+    return displayGroups.value;
+  }
+  if (displayGroups.value.length <= PORTAL_DEFAULT_VISIBLE_CARDS) {
+    return displayGroups.value;
+  }
+  return displayGroups.value.slice(0, PORTAL_DEFAULT_VISIBLE_CARDS);
+});
+
+const collectGroupTables = (group: DatasetCapabilityGroup): string[] => {
+  const tables: string[] = [];
+  for (const related of group.related_data || []) {
+    for (const table of related.tables || []) {
+      const term = String(table || "").trim();
+      if (term && !tables.includes(term)) {
+        tables.push(term);
+      }
+    }
+  }
+  return tables;
+};
+
 const handleRefreshClick = () => {
   if (refreshDisabled.value) return;
   isRefreshing.value = true;
@@ -1082,24 +1183,14 @@ const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
   const uniqueId = group.id || group.title;
   if (refreshingGroupIds.value[uniqueId]) return;
 
-  const tables: string[] = [];
-  if (group.related_data) {
-    for (const related of group.related_data) {
-      if (related.tables) {
-        for (const t of related.tables) {
-          if (t && !tables.includes(t)) {
-            tables.push(t);
-          }
-        }
-      }
-    }
-  }
+  const tables = collectGroupTables(group);
 
   refreshingGroupIds.value[uniqueId] = true;
   try {
     const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
       group_title: group.title,
-      tables: tables,
+      tables,
+      purpose: "questions",
     });
     if (res.data?.code === 200 && res.data?.data?.questions) {
       group.questions = res.data.data.questions;
@@ -1110,6 +1201,30 @@ const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
     console.error("Failed to refresh group questions:", error);
   } finally {
     refreshingGroupIds.value[uniqueId] = false;
+  }
+};
+
+const handleRefreshGroupFollowups = async (group: DatasetCapabilityGroup) => {
+  const uniqueId = group.id || group.title;
+  if (refreshingFollowupGroupIds.value[uniqueId]) return;
+
+  const tables = collectGroupTables(group);
+  refreshingFollowupGroupIds.value[uniqueId] = true;
+  try {
+    const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
+      group_title: group.title,
+      tables,
+      purpose: "followups",
+    });
+    if (res.data?.code === 200 && res.data?.data?.questions?.length) {
+      group.followups = res.data.data.questions;
+    } else {
+      console.warn("Invalid refresh followups response:", res.data);
+    }
+  } catch (error) {
+    console.error("Failed to refresh group followups:", error);
+  } finally {
+    refreshingFollowupGroupIds.value[uniqueId] = false;
   }
 };
 
@@ -1129,7 +1244,22 @@ watch(
     }
     pinnedTableDictionary.value = null;
     refreshingGroupIds.value = {};
+    refreshingFollowupGroupIds.value = {};
     tableRecommendState.value = {};
+    portalCardsExpanded.value = false;
+  },
+);
+
+watch(
+  () => props.payload?.is_fallback,
+  (isFallback, wasFallback) => {
+    if (wasFallback === true && isFallback === false) {
+      upgradedFromFallback.value = true;
+      if (upgradedBannerTimer) clearTimeout(upgradedBannerTimer);
+      upgradedBannerTimer = setTimeout(() => {
+        upgradedFromFallback.value = false;
+      }, 8000);
+    }
   },
 );
 
@@ -1152,6 +1282,12 @@ const handleQuestionClick = (question: DatasetCapabilityQuestion, group: Dataset
     label: question.label,
     group_id: group.id,
   });
+  emitQuickQuestion(query);
+};
+
+const handleFollowupClick = (followup: DatasetCapabilityQuestion, group: DatasetCapabilityGroup) => {
+  const query = String(followup.query || "").trim();
+  if (!query) return;
   emitQuickQuestion(query);
 };
 

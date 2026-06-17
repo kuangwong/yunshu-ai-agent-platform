@@ -4327,6 +4327,7 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
     portalSilentRefreshing.value = true;
   }
   try {
+    const wasFallback = portalNavigationPayload.value?.is_fallback === true;
     const payload = await fetchDatasetMenuNavigationPayload(refresh);
     portalNavigationPayload.value = payload;
     
@@ -4339,6 +4340,10 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
           await fetchPortalNavigationData(true, true);
         }
       }, 3000);
+    }
+
+    if (silent && wasFallback && payload && !payload.is_fallback) {
+      showToast("数据门户已更新为完整 AI 推荐", "success");
     }
     
     if (refresh && !silent) {

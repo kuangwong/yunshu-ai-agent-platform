@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _NAV_CACHE_TTL_SECONDS = 600
 _NAV_PROMPT_VERSION = "v4"
+_NAV_CACHE_GEN_KEY = "agent:dataset_navigation:cache_generation"
 _CLICK_STATS_TTL_SECONDS = 90 * 24 * 60 * 60
 
 
@@ -63,6 +64,28 @@ class DatasetNavigationService:
         is_admin: bool,
     ) -> str:
         return await AgentConfigProvider.get_dataset_menu(user_id=user_id, is_admin=is_admin)
+
+    @staticmethod
+    async def _get_navigation_cache_generation() -> str:
+        try:
+            redis = await get_redis()
+            if redis:
+                cached = await redis.get(_NAV_CACHE_GEN_KEY)
+                if cached is not None:
+                    return str(cached)
+        except Exception as e:
+            logger.warning("Dataset navigation cache generation read failed: %s", e)
+        return "0"
+
+    @staticmethod
+    async def bump_navigation_cache_generation() -> None:
+        """元数据变更后递增，使门户 Markdown 缓存失效。"""
+        try:
+            redis = await get_redis()
+            if redis:
+                await redis.incr(_NAV_CACHE_GEN_KEY)
+        except Exception as e:
+            logger.warning("Dataset navigation cache generation bump failed: %s", e)
 
     @staticmethod
     async def _load_cached_navigation(cache_key: str) -> Optional[str]:
@@ -456,8 +479,11 @@ class DatasetNavigationService:
 
         menu_hash = hashlib.md5(dataset_menu.encode("utf-8")).hexdigest()[:12]
         user_key = _user_cache_key(user_id=user_id, is_admin=is_admin)
+        cache_gen = await DatasetNavigationService._get_navigation_cache_generation()
         groups = DataQueryPrompts.build_dataset_navigation_groups(dataset_menu)
-        cache_key = f"agent:dataset_navigation:{user_key}:{menu_hash}:{_NAV_PROMPT_VERSION}"
+        cache_key = (
+            f"agent:dataset_navigation:{user_key}:{menu_hash}:{_NAV_PROMPT_VERSION}:{cache_gen}"
+        )
 
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if not markdown:
@@ -550,6 +576,24 @@ class DatasetNavigationService:
             table_physical_names=table_physical_names,
         )
         return await DatasetNavigationService._generate_questions_via_llm(prompt)
+
+    @staticmethod
+    async def refresh_group_followups(
+        db: AsyncSession,
+        *,
+        group_title: str,
+        tables: list[str],
+    ) -> list[dict[str, Any]]:
+        """针对场景卡片生成 2 条「继续追问」探索性问题。"""
+        table_physical_names, table_to_columns = await DatasetNavigationService._load_table_metadata(db, tables)
+        prompt = DataQueryPrompts.build_group_followups_refresh_prompt(
+            group_title=group_title,
+            tables=tables,
+            table_to_columns=table_to_columns,
+            table_physical_names=table_physical_names,
+        )
+        questions = await DatasetNavigationService._generate_questions_via_llm(prompt)
+        return questions[:2]
 
     @staticmethod
     def _parse_quick_questions_from_llm(content: str) -> list[dict[str, Any]]:

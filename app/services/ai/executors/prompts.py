@@ -329,7 +329,41 @@ class DataQueryPrompts:
             f"【输出格式要求】：\n"
             f"生成的问题要具体、贴合上述字段设计。以 `- [🙋 推荐问题描述](quick:提问具体指令)` 的格式输出这 3 个问题，以便我一键点击触发提问。例如：\n"
             f"- [🙋 统计最近7天的每日请求次数趋势](quick:请展示最近7天各智能体的每日请求次数趋势)\n\n"
+            f"问题中优先使用中文表术语与业务表述，不要在 quick 中输出物理表名。\n"
             f"不要输出任何前言、总结或无关的 Markdown 标题，只输出这 3 行问题格式。"
+        )
+
+    @staticmethod
+    def build_group_followups_refresh_prompt(
+        *,
+        group_title: str,
+        tables: list[str],
+        table_to_columns: dict[str, list[dict[str, Any]]],
+        table_physical_names: dict[str, str],
+    ) -> str:
+        ctx = ""
+        for t in tables:
+            physical = table_physical_names.get(t)
+            cols = table_to_columns.get(t, [])
+            physical_str = f"（物理表名：{physical}）" if physical else ""
+            ctx += f"- 数据表 '{t}'{physical_str}:\n"
+            if cols:
+                for c in cols[:8]:
+                    desc_str = f" ({c['description']})" if c.get("description") else ""
+                    ctx += f"  * {c['name']} ({c['term']}){desc_str} - 类型: {c['type']}\n"
+            else:
+                ctx += "  * (暂无字段定义)\n"
+            ctx += "\n"
+
+        return (
+            f"你是一个专业的 ChatBI 数据分析专家。\n"
+            f"请针对业务场景「{group_title}」，生成 2 条**继续探索**型追问，帮助用户在该场景下延伸分析。\n\n"
+            f"【关联数据表结构】：\n{ctx}\n"
+            f"【输出要求】：\n"
+            f"- 2 条追问应偏「还能问什么 / 字段口径 / 关联维度」，不要与常见统计明细重复。\n"
+            f"- 使用列表项格式：`- [🙋 简短标签](quick:完整可发送问题)`。\n"
+            f"- 问题中优先使用中文表术语，不要在 quick 中输出物理表名。\n"
+            f"- 只输出 2 行，不要前言或 Markdown 标题。"
         )
 
     @staticmethod

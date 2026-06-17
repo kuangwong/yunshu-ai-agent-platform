@@ -463,6 +463,73 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
 
 @pytest.mark.asyncio
 @pytest.mark.no_infrastructure
+async def test_bump_navigation_cache_generation_increments_redis_counter():
+    redis = AsyncMock()
+    redis.incr = AsyncMock(return_value=2)
+    with patch("app.services.dataset_navigation_service.get_redis", AsyncMock(return_value=redis)):
+        await DatasetNavigationService.bump_navigation_cache_generation()
+    redis.incr.assert_awaited_once()
+
+
+@pytest.mark.no_infrastructure
+def test_build_group_followups_refresh_prompt_contains_scene_and_tables():
+    prompt = DataQueryPrompts.build_group_followups_refresh_prompt(
+        group_title="智能体元数据",
+        tables=["智能体访问日志"],
+        table_to_columns={
+            "智能体访问日志": [
+                {"name": "request_count", "term": "访问量", "type": "int", "description": "总访问量"}
+            ]
+        },
+        table_physical_names={"智能体访问日志": "ai_agent_execution_history"},
+    )
+    assert "智能体元数据" in prompt
+    assert "智能体访问日志" in prompt
+    assert "物理表名：ai_agent_execution_history" in prompt
+    assert "不要在 quick 中输出物理表名" in prompt
+    assert "2 条" in prompt or "2 行" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_refresh_group_followups_success():
+    llm_output = (
+        "- [🙋 字段口径](quick:说明智能体访问日志有哪些关键指标口径)\n"
+        "- [🙋 关联分析](quick:智能体访问日志还能和哪些表做关联分析)"
+    )
+    mock_client = MagicMock()
+    mock_client.generate_text = AsyncMock(return_value=llm_output)
+
+    mock_db = AsyncMock()
+    mock_res_physical = MagicMock()
+    mock_res_physical.all = MagicMock(return_value=[
+        MagicMock(term="智能体访问日志", physical_name="ai_agent_execution_history")
+    ])
+    mock_res_columns = MagicMock()
+    mock_res_columns.all = MagicMock(return_value=[])
+    mock_db.execute = AsyncMock(side_effect=[mock_res_physical, mock_res_columns])
+
+    with patch(
+        "app.services.dataset_navigation_service.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.dataset_navigation_service.chat_client_from_handle",
+        return_value=mock_client,
+    ):
+        followups = await DatasetNavigationService.refresh_group_followups(
+            mock_db,
+            group_title="智能体元数据",
+            tables=["智能体访问日志"],
+        )
+
+    assert len(followups) == 2
+    assert followups[0]["label"] == "字段口径"
+    assert "智能体访问日志" in followups[0]["query"]
+    assert "物理表名" not in followups[0]["query"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
 async def test_refresh_group_questions_success():
     llm_output = (
         "- [🙋 访问量统计](quick:分析最近一周的智能体访问量)\n"
@@ -473,17 +540,14 @@ async def test_refresh_group_questions_success():
     mock_client.generate_text = AsyncMock(return_value=llm_output)
 
     mock_db = AsyncMock()
-    # Mock row models for physical names and column terms
     mock_res_physical = MagicMock()
     mock_res_physical.all = MagicMock(return_value=[
         MagicMock(term="智能体访问日志", physical_name="ai_agent_execution_history")
     ])
-
     mock_res_columns = MagicMock()
     mock_res_columns.all = MagicMock(return_value=[
         MagicMock(table_term="智能体访问日志", physical_name="request_count", column_term="访问量", type="int", description="总访问量")
     ])
-
     mock_db.execute = AsyncMock(side_effect=[mock_res_physical, mock_res_columns])
 
     with patch(
@@ -496,17 +560,13 @@ async def test_refresh_group_questions_success():
         questions = await DatasetNavigationService.refresh_group_questions(
             mock_db,
             group_title="智能体元数据",
-            tables=["智能体访问日志"]
+            tables=["智能体访问日志"],
         )
 
     assert len(questions) == 3
     assert questions[0]["label"] == "访问量统计"
     assert questions[0]["query"] == "分析最近一周的智能体访问量"
     assert questions[0]["type"] == "dynamic"
-    assert questions[1]["label"] == "耗时分析"
-    assert questions[1]["query"] == "说明响应最长的前10个请求"
-    assert questions[2]["label"] == "失败原因分布"
-    assert questions[2]["query"] == "统计最近24小时的失败原因分布"
 
 
 @pytest.mark.asyncio

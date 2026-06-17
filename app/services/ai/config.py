@@ -279,11 +279,15 @@ class AgentConfigProvider:
         Should be called when datasets or tables are modified.
         """
         from app.core.redis import get_redis
+        from app.services.dataset_navigation_service import DatasetNavigationService
+
         try:
-            content = await AgentConfigProvider._generate_dataset_menu_content()
             redis = await get_redis()
             if redis:
-                await redis.set("agent:dataset_menu", content, ex=600)
-                logger.info("Dataset menu cache refreshed.")
+                async for key in redis.scan_iter(match="agent:dataset_menu:*", count=200):
+                    await redis.delete(key)
+                await redis.delete("agent:dataset_menu")
+            await DatasetNavigationService.bump_navigation_cache_generation()
+            logger.info("Dataset menu and navigation caches invalidated.")
         except Exception as e:
             logger.error(f"Failed to refresh dataset menu cache: {e}")

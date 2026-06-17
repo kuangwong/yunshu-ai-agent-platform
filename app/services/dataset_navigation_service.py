@@ -293,10 +293,15 @@ class DatasetNavigationService:
             matched_group = None
             clean_title = clean_str(title)
             for g in groups:
-                clean_g_title = clean_str(g.get("title") or "")
-                if clean_title == clean_g_title or clean_title in clean_g_title or clean_g_title in clean_title:
+                if clean_str(g.get("title") or "") == clean_title:
                     matched_group = g
                     break
+            if not matched_group:
+                for g in groups:
+                    clean_g_title = clean_str(g.get("title") or "")
+                    if clean_title == clean_g_title or clean_title in clean_g_title or clean_g_title in clean_title:
+                        matched_group = g
+                        break
 
             if not matched_group:
                 continue

@@ -381,50 +381,84 @@ class DataQueryPrompts:
 
     @classmethod
     def build_dataset_navigation_groups(cls, dataset_menu: str) -> list[dict[str, Any]]:
-        groups: list[dict[str, Any]] = []
+        """按业务场景标题合并数据集，避免多个数据集命中同一场景时出现重复卡片。"""
+        grouped_blocks: dict[str, list[dict[str, Any]]] = {}
+        group_order: list[str] = []
+
         for block in cls._parse_dataset_blocks(dataset_menu):
-            tables = [t for t in (block.get("tables") or []) if str(t.get("term") or "").strip()]
-            metrics = [str(m).strip() for m in (block.get("metrics") or []) if str(m).strip()]
-            scene = cls._infer_dataset_scene(block)
-            name = str(block.get("name") or "").strip()
-            display_name = str(block.get("display_name") or "").strip() or name or "未命名数据集"
-            scene_id = cls._slugify_scene_id(f"{name}_{scene['title']}")
-            table_terms = [str(t.get("term") or "").strip() for t in tables if str(t.get("term") or "").strip()]
-            table_descriptions = [
-                {
-                    "name": str(t.get("term") or "").strip(),
-                    "description": str(t.get("desc") or "").strip(),
-                }
-                for t in tables
-                if str(t.get("term") or "").strip()
-            ]
+            scene_title = cls._infer_dataset_scene(block)["title"]
+            if scene_title not in grouped_blocks:
+                grouped_blocks[scene_title] = []
+                group_order.append(scene_title)
+            grouped_blocks[scene_title].append(block)
+
+        groups: list[dict[str, Any]] = []
+        for scene_title in group_order:
+            blocks = grouped_blocks[scene_title]
+            scene = cls._infer_dataset_scene(blocks[0])
+
+            merged_tables: list[dict[str, Any]] = []
+            seen_table_terms: set[str] = set()
+            merged_metrics: list[str] = []
+            seen_metrics: set[str] = set()
+            related_data: list[dict[str, Any]] = []
+
+            for block in blocks:
+                name = str(block.get("name") or "").strip()
+                display_name = str(block.get("display_name") or "").strip() or name or "未命名数据集"
+                tables = [t for t in (block.get("tables") or []) if str(t.get("term") or "").strip()]
+                metrics = [str(m).strip() for m in (block.get("metrics") or []) if str(m).strip()]
+
+                table_terms: list[str] = []
+                table_descriptions: list[dict[str, str]] = []
+                for table in tables:
+                    term = str(table.get("term") or "").strip()
+                    if not term or term in seen_table_terms:
+                        continue
+                    seen_table_terms.add(term)
+                    merged_tables.append(table)
+                    table_terms.append(term)
+                    table_descriptions.append(
+                        {
+                            "name": term,
+                            "description": str(table.get("desc") or "").strip(),
+                        }
+                    )
+
+                for metric in metrics:
+                    if metric not in seen_metrics:
+                        seen_metrics.add(metric)
+                        merged_metrics.append(metric)
+
+                related_data.append(
+                    {
+                        "dataset": name,
+                        "display_name": display_name,
+                        "tables": table_terms,
+                        "table_descriptions": table_descriptions,
+                    }
+                )
+
             groups.append(
                 {
-                    "id": scene_id,
-                    "title": scene["title"],
+                    "id": cls._slugify_scene_id(scene_title),
+                    "title": scene_title,
                     "summary": scene["summary"],
                     "tags": scene["tags"],
                     "questions": cls._question_templates_for_group(
-                        scene_title=scene["title"],
-                        tables=tables,
-                        metrics=metrics,
+                        scene_title=scene_title,
+                        tables=merged_tables,
+                        metrics=merged_metrics,
                     ),
-                    "related_data": [
-                        {
-                            "dataset": name,
-                            "display_name": display_name,
-                            "tables": table_terms,
-                            "table_descriptions": table_descriptions,
-                        }
-                    ],
+                    "related_data": related_data,
                     "followups": [
                         {
                             "label": "更多问题",
-                            "query": f"围绕{scene['title']}，推荐我还能问哪些数据问题",
+                            "query": f"围绕{scene_title}，推荐我还能问哪些数据问题",
                         },
                         {
                             "label": "字段说明",
-                            "query": f"说明{display_name}里有哪些可查询字段和适合的分析口径",
+                            "query": f"说明{scene_title}相关数据里有哪些可查询字段和适合的分析口径",
                         },
                     ],
                 }
@@ -432,33 +466,8 @@ class DataQueryPrompts:
         return groups
 
     @classmethod
-    def _fallback_dataset_section(cls, block: dict[str, Any]) -> list[str]:
+    def _render_group_fallback_section(cls, group: dict[str, Any]) -> list[str]:
         """单个业务场景卡片：标题 + 示例问题 + 相关数据 + 继续追问。"""
-        groups = cls.build_dataset_navigation_groups(
-            "\n".join(
-                [
-                    f"- Dataset: {block.get('name') or ''}",
-                    f"  Display Name: {block.get('display_name') or ''}",
-                    f"  Description: {block.get('description') or ''}",
-                    "  Includes Tables: "
-                    + ", ".join(str(t.get("term") or "") for t in block.get("tables") or []),
-                    "  Table Details:",
-                    *[
-                        f"    - {t.get('term')}: {t.get('desc')}"
-                        for t in block.get("tables") or []
-                        if str(t.get("term") or "").strip()
-                    ],
-                    "  Metrics: " + ", ".join(str(m) for m in block.get("metrics") or []),
-                ]
-            )
-        )
-        if not groups:
-            return []
-        group = groups[0]
-        related = group["related_data"][0]
-        related_name = related.get("display_name") or related.get("dataset") or "相关数据"
-        dataset_name = related.get("dataset") or ""
-        tables = related.get("tables") or []
         lines: list[str] = [f"#### {group['title']}"]
         lines.append(f"> {group['summary']}")
         if group.get("tags"):
@@ -468,14 +477,25 @@ class DataQueryPrompts:
         for question in group.get("questions") or []:
             lines.append(cls.quick_button(question.get("label") or "提问", question.get("query") or ""))
         lines.append("")
-        related_title = f"{related_name} ({dataset_name})" if dataset_name and dataset_name != related_name else related_name
-        lines.append(f"**相关数据：** {related_title}")
-        for table in related.get("table_descriptions") or []:
-            desc = str(table.get("description") or "").strip()
-            suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
-            lines.append(f"- {table.get('name')}{suffix}")
-        if not tables:
+        lines.append("**相关数据：**")
+        related_items = group.get("related_data") or []
+        if not related_items:
             lines.append("- 暂无表信息")
+        for related in related_items:
+            related_name = related.get("display_name") or related.get("dataset") or "相关数据"
+            dataset_name = related.get("dataset") or ""
+            related_title = (
+                f"{related_name} ({dataset_name})"
+                if dataset_name and dataset_name != related_name
+                else related_name
+            )
+            lines.append(f"- {related_title}")
+            for table in related.get("table_descriptions") or []:
+                desc = str(table.get("description") or "").strip()
+                suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
+                lines.append(f"  - {table.get('name')}{suffix}")
+            if not related.get("tables"):
+                lines.append("  - 暂无表信息")
         lines.append("")
         lines.append("**继续追问：**")
         for followup in group.get("followups") or []:
@@ -506,8 +526,8 @@ class DataQueryPrompts:
                 + (f"主要覆盖：{scene_titles}。" if scene_titles else ""),
                 "",
             ]
-            for block in blocks:
-                lines.extend(cls._fallback_dataset_section(block))
+            for group in groups:
+                lines.extend(cls._render_group_fallback_section(group))
                 lines.append("")
 
             lines.extend(

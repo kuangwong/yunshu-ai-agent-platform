@@ -66,6 +66,48 @@ def test_parse_dataset_blocks_captures_table_descriptions():
 
 
 @pytest.mark.no_infrastructure
+def test_build_dataset_navigation_groups_merges_same_scene_title():
+    menu = """Available Datasets:
+- Dataset: ops_alerts
+  Display Name: 机房告警
+  Includes Tables: 机房告警表
+  Table Details:
+    - 机房告警表: 告警记录
+
+- Dataset: ops_devices
+  Display Name: 设备监控
+  Includes Tables: 设备状态表
+  Table Details:
+    - 设备状态表: 设备运行状态
+"""
+    groups = DataQueryPrompts.build_dataset_navigation_groups(menu)
+    assert len(groups) == 1
+    assert groups[0]["title"] == "运维监控分析"
+    assert len(groups[0]["related_data"]) == 2
+    assert groups[0]["related_data"][0]["dataset"] == "ops_alerts"
+    assert groups[0]["related_data"][1]["dataset"] == "ops_devices"
+    assert "机房告警表" in groups[0]["related_data"][0]["tables"]
+    assert "设备状态表" in groups[0]["related_data"][1]["tables"]
+
+
+@pytest.mark.no_infrastructure
+def test_build_dataset_navigation_fallback_deduplicates_scene_cards():
+    menu = """Available Datasets:
+- Dataset: ops_alerts
+  Display Name: 机房告警
+  Includes Tables: 机房告警表
+
+- Dataset: ops_devices
+  Display Name: 设备监控
+  Includes Tables: 设备状态表
+"""
+    markdown = DataQueryPrompts.build_dataset_navigation_fallback(menu)
+    assert markdown.count("#### 运维监控分析") == 1
+    assert "机房告警 (ops_alerts)" in markdown
+    assert "设备监控 (ops_devices)" in markdown
+
+
+@pytest.mark.no_infrastructure
 def test_build_dataset_navigation_groups_from_dataset_menu():
     groups = DataQueryPrompts.build_dataset_navigation_groups(SAMPLE_MENU)
     assert len(groups) == 2

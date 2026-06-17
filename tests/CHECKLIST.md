@@ -141,7 +141,8 @@
 | 智能调试页 SSE 撤回去重事件处理 (Agent Debug Page Retraction Event Handling) | `AgentDebug.vue` | **调试页流式数据撤回覆盖与防重复修复**：在 `AgentDebug.vue` 调试页面的主消息事件流处理器和授权恢复事件流处理器中，新增对 `type: "retraction"`（内容撤回）事件的处理分支。若接收到撤回通知，则用 `data.content` 覆盖原消息正文并重置 isThinking 状态，从而修复因异常修复轮次或去除主循环重复导致调试页面在流式输出中意外拼接产生重复“分析解读与折线图”的交互 Bug。 | ✅ 已完成 | 2026-06-17 |
 | 数据门户卡片换一批推荐问题 (Dataset Group Questions Refresh) | `tests/services/test_dataset_navigation_service.py`, `tests/api/v1/test_chat_refresh_group_questions.py`, `DatasetCapabilityMenu.vue` | **卡片推荐问题在线实时刷新**：验证前端卡片标题右侧“🔄 换一批”按钮点击交互；验证后端根据卡片场景与表定义上下文，通过 `build_group_questions_refresh_prompt` 实时调用大模型生成并返回 3 个新提问；验证局部 Loading 骨架屏动画与数据平滑覆盖。 | ✅ 通过 | 2026-06-17 |
 | ChatBI 物理表防猜表与一致性强校验 (ChatBI SQL Table Gating & Consistency) | `tests/services/test_sql_permission_messages.py`, `sql_query_execution_service.py` | **防猜表与强一致性拦截**：验证物理表未注册/不存在时拦截并返回 `[Validation Failed]` 报错，并包含明确的 Schema 引导提示词；验证指定 `dataset_name` 下 SQL 查询的物理表一致性强校验，若跨数据集或拼空猜表则直接予以拦截并报错。 | ✅ 通过 | 2026-06-17 |
-| 数据门户初始化动态加载动效 (Dataset Menu Loading UX) | `EmbedChat.vue` | **初始化高颜值加载动效**：验证首次加载没有 Payload 渲染时呈现 ASCII 艺术面板及呼吸动效；验证使用定时器每 4 秒轮播温馨加载提示词（缓解用户等待大模型冷启动的焦虑）；验证过渡使用了 slide-fade 淡入淡出位移特效，且在加载成功或抽屉关闭时安全回收定时器。 | ✅ 已完成 | 2026-06-17 |
+| ChatBI 错误与安全拦截提示词优化 (ChatBI Guard Warnings Wording Optimization) | `data_agent_runner.py`, `test_data_agent_runner.py` | **拦截报错文案业务视角优化**：将底层数据库强相关的技术术语（如 SQL、JOIN 条件、诊断 SQL 等）优化为业务友好的拦截文案，包含具体的提问与排查建议（如拼写检查、时间调整、换个问法等），以缓解最终用户的困惑并引导其更高效地提问；同步修正单元测试的断言校验。 | ✅ 已完成 | 2026-06-17 |
+
 
 
 

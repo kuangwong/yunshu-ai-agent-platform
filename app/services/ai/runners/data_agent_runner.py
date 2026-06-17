@@ -2554,23 +2554,49 @@ class DataAgentRunner(BaseExecutor):
                 else DataQueryPrompts.SCHEMA_MISS_ABORT_CONTENT
             )
         elif state.sql_before_schema:
-            content = "为保证数据准确性，必须先调用 get_dataset_schema 获取数据集定义，再执行 SQL 查询。"
+            content = "为保证数据准确性，请先检索数据集定义后再执行数据查询。"
         elif state.sql_error:
-            content = "SQL 执行失败，必须根据错误信息修正 SQL 并重新执行成功后才能回答。"
+            content = (
+                "数据查询遇到了一些技术问题，暂时无法获取结果。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                "1. 稍微修改提问的表述，避免过于复杂的交叉分析或含糊的口径。\n"
+                "2. 若多次尝试依然失败，可能是底层服务正在维护，请稍后重试或联系管理员。"
+            )
         elif state.empty_sql_result:
-            content = "SQL 返回空结果，必须先用诊断 SQL 复查筛选条件或 JOIN 条件，再执行最终 SQL 后才能回答。"
+            content = (
+                "抱歉，系统在当前数据集中未查询到符合条件的数据。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                "1. 检查提问中是否包含不正确的筛选条件（如时间范围不正确、拼写错误或不存在的项目名称）。\n"
+                "2. 换个提问方式，或适当放宽时间范围重试（例如将精确时间改为模糊时间，如“本月”）。\n"
+                "3. 确认当前选中的数据集是否包含您想查询的信息。"
+            )
         elif state.sql_static_risk:
-            content = "SQL 存在高风险执行特征，必须先修正 SQL 后才能继续查数。"
+            content = (
+                "该查询涉及的数据量过大或超出安全规范，已被系统自动拦截。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                "1. 明确时间限制（如“查询最近3天”、“本周内”）。\n"
+                "2. 避免使用过于宽泛的“全部”或“所有”类型查询，缩小范围后重试。"
+            )
         elif state.ratio_anomaly:
-            content = "比率/占比结果疑似异常，必须先完成对账 SQL 复核后才能回答。"
+            content = (
+                "计算出的占比/比率数据疑似存在异常，为保证数据准确性，已自动拦截该次回答。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                "1. 重新检查提问中涉及的比较口径（如“同比”、“环比”或时段先后顺序是否表述清晰）。\n"
+                "2. 重新核对提问内容并以简化的表述重新提问。"
+            )
         elif state.duration_anomaly:
-            content = "时间差/时延/时长结果疑似异常，必须先复核时间字段方向、时区或单位换算后才能回答。"
+            content = (
+                "计算出的时延/时长数据疑似存在异常，为保证数据准确性，已自动拦截该次回答。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                "1. 重新检查提问中涉及的时间字段方向、时区或单位定义。\n"
+                "2. 重新核对提问内容并以简化的表述重新提问。"
+            )
         elif state.diagnostic_sql_pending_final:
-            content = "诊断 SQL 只能用于定位问题，必须执行修正后的最终 SQL 后才能回答。"
+            content = "诊断查询已完成，但未能成功获取到最终的结论数据，请尝试重新提问。"
         elif state.tool_loop_fuse_triggered:
-            content = f"检测到工具重复调用循环，已停止继续执行。{state.tool_loop_fuse_reason}"
+            content = f"检测到工具调用出现循环，已被系统安全中止。{state.tool_loop_fuse_reason}"
         else:
-            content = "为保证数据准确性，必须先完成数据集定义检索和 SQL 查询后才能回答。"
+            content = "由于未能完成有效的数据检索和计算，无法为您生成准确的回答。建议您核对问题后重新提问。"
         yield {
             "type": "log",
             "id": f"data_guard_{uuid.uuid4().hex[:8]}",

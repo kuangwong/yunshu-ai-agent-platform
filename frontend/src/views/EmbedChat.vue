@@ -2250,16 +2250,6 @@
                 @refresh="refreshPortalNavigation"
               />
               <div v-else class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 text-xs p-6 text-center select-none">
-                <!-- ASCII 动画 / 呼吸图腾 -->
-                <div class="mb-5 font-mono text-[9px] leading-relaxed text-primary/70 animate-pulse bg-gray-50 dark:bg-gray-800/40 p-4 rounded-lg border border-gray-100 dark:border-gray-800/60 shadow-inner">
-                  <pre class="m-0 text-left block w-fit mx-auto">
-   __  __                 _
-   \ \/ /___ _   _____  // /_
-    \  // __ \ | / / _ \/ / __/
-    / // /_/ / |/ /  __/ / /_
-   /_/ \____/|___/\___/_/\__/
-                  </pre>
-                </div>
                 <!-- 旋转菊花 -->
                 <div class="flex items-center space-x-2 mb-3">
                   <svg class="w-4 h-4 animate-spin text-primary" fill="none" viewBox="0 0 24 24">

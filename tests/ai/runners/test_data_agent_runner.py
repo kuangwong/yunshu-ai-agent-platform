@@ -1703,7 +1703,7 @@ async def test_data_agent_runner_blocks_final_answer_before_required_sql(data_co
         if isinstance(event, dict)
     )
     assert any(
-        "必须先完成数据集定义检索和 SQL 查询" in event.get("content", "")
+        "由于未能完成有效的数据检索和计算" in event.get("content", "")
         for event in events
         if isinstance(event, dict)
     )
@@ -2165,7 +2165,7 @@ async def test_data_agent_runner_rejects_sql_before_schema(data_config):
 
     assert not any(event.get("content") == "结果是 1" for event in events if isinstance(event, dict))
     assert any(
-        "必须先调用 get_dataset_schema" in event.get("content", "")
+        "请先检索数据集定义" in event.get("content", "")
         for event in events
         if isinstance(event, dict)
     )
@@ -2981,7 +2981,7 @@ async def test_data_agent_runner_blocks_final_answer_after_sql_error(data_config
 
     assert not any(event.get("content") == "查到了" for event in events if isinstance(event, dict))
     assert any(
-        "SQL 执行失败" in event.get("content", "")
+        "数据查询遇到了一些技术问题" in event.get("content", "")
         for event in events
         if isinstance(event, dict)
     )
@@ -3052,7 +3052,7 @@ async def test_data_agent_runner_blocks_complex_empty_sql_result_for_recheck(dat
 
     assert not any(event.get("content") == "没有数据" for event in events if isinstance(event, dict))
     assert any(
-        "SQL 返回空结果" in event.get("content", "")
+        "未查询到符合条件的数据" in event.get("content", "")
         for event in events
         if isinstance(event, dict)
     )

@@ -186,6 +186,92 @@ export function findLastPendingStreamLog(
   return undefined;
 }
 
+export function findPendingAgentReplyLog(
+  msg: AgentStreamMessage,
+  replyId: string,
+): AgentStreamLog | undefined {
+  const targetId = `agent_reply_${replyId}`;
+  return (msg.logs || []).find(
+    (log) =>
+      log.status === "pending" &&
+      log.category === "agent" &&
+      String(log.id) === targetId,
+  );
+}
+
+/** 根据 started_at 或显式耗时推算步骤毫秒耗时 */
+export function resolveStreamLogDurationMs(
+  log: Partial<AgentStreamLog>,
+  explicitMs?: number | null,
+  now = Date.now(),
+): number | undefined {
+  if (explicitMs !== undefined && explicitMs !== null && explicitMs > 0) {
+    return explicitMs;
+  }
+  if (
+    log.execution_time_ms !== undefined &&
+    log.execution_time_ms !== null &&
+    log.execution_time_ms > 0
+  ) {
+    return log.execution_time_ms;
+  }
+  if (log.started_at) {
+    return Math.max(1, now - log.started_at);
+  }
+  return undefined;
+}
+
+/** 新的同类步骤开始前，收尾仍挂起的旧步骤并冻结耗时 */
+export function finalizePendingStreamLogs(
+  msg: AgentStreamMessage,
+  category: string,
+  now = Date.now(),
+) {
+  for (const log of msg.logs || []) {
+    if (log.status !== "pending" || log.category !== category) continue;
+    log.status = "success";
+    const durationMs = resolveStreamLogDurationMs(log, undefined, now);
+    if (durationMs !== undefined) {
+      log.execution_time_ms = durationMs;
+    }
+  }
+}
+
+const NON_LIVE_TIMER_CATEGORIES = new Set(["permission", "external"]);
+
+/** 仅最后一条挂起步骤展示实时计时，避免历史 pending 泄漏导致秒表一直跑 */
+export function isLiveThoughtStepTimer(
+  log: AgentStreamLog,
+  allLogs: AgentStreamLog[] | undefined,
+): boolean {
+  if (log.status !== "pending" || !log.started_at) return false;
+  if (log.category && NON_LIVE_TIMER_CATEGORIES.has(log.category)) return false;
+  const logs = allLogs || [];
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const item = logs[i];
+    if (item.status !== "pending") continue;
+    if (item.category && NON_LIVE_TIMER_CATEGORIES.has(item.category)) continue;
+    return item === log;
+  }
+  return false;
+}
+
+/** 流结束时收尾所有挂起步骤（权限/外部执行除外） */
+export function finalizeAllPendingStreamLogs(
+  msg: AgentStreamMessage,
+  now = Date.now(),
+) {
+  for (const log of msg.logs || []) {
+    if (log.status !== "pending") continue;
+    if (log.category && NON_LIVE_TIMER_CATEGORIES.has(log.category)) continue;
+    log.status = "success";
+    const durationMs = resolveStreamLogDurationMs(log, undefined, now);
+    if (durationMs !== undefined) {
+      log.execution_time_ms = durationMs;
+    }
+  }
+}
+
 export function handleModelCallEvent<T extends AgentStreamMessage>(
   msg: T,
   data: Record<string, unknown>,
@@ -194,6 +280,7 @@ export function handleModelCallEvent<T extends AgentStreamMessage>(
   const phase = String(data.phase || "");
   const replyId = String(data.reply_id || `model_${Date.now()}`);
   if (phase === "start") {
+    finalizePendingStreamLogs(msg, "model");
     const seq = (msg.logs || []).filter((log) => log.category === "model").length;
     addLog(msg, {
       id: `model_call_${replyId}_${seq}`,
@@ -231,6 +318,7 @@ export function handleAgentReplyEvent<T extends AgentStreamMessage>(
   const phase = String(data.phase || "");
   const replyId = String(data.reply_id || `reply_${Date.now()}`);
   if (phase === "start") {
+    finalizePendingStreamLogs(msg, "agent");
     addLog(msg, {
       id: `agent_reply_${replyId}`,
       title: "Agent 回复开始",
@@ -240,15 +328,19 @@ export function handleAgentReplyEvent<T extends AgentStreamMessage>(
     });
     return;
   }
-  const pending = findLastPendingStreamLog(msg, "agent");
-  const duration = Number(data.duration_ms || 0);
+  const pending =
+    findPendingAgentReplyLog(msg, replyId) ?? findLastPendingStreamLog(msg, "agent");
+  const execution_time_ms = resolveStreamLogDurationMs(
+    pending || {},
+    Number(data.duration_ms || 0) || undefined,
+  );
   addLog(msg, {
     id: pending?.id ?? `agent_reply_${replyId}`,
     title: "Agent 回复结束",
     details: pending?.details || "",
     status: "success",
     category: "agent",
-    execution_time_ms: duration > 0 ? duration : undefined,
+    execution_time_ms,
   });
 }
 

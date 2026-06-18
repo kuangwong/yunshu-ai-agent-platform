@@ -16,7 +16,7 @@ async def test_call_external_sql_api_optimization():
             "external_sql_api_url": "http://mock-api.com/query",
             "external_sql_api_key": "mock-key",
             "external_sql_data_source": "default_ch",
-            "data_api_timeout_seconds": "30"
+            "data_api_timeout_seconds": "60"
         }.get(key, default)
 
         # 2. Setup Redis Mock

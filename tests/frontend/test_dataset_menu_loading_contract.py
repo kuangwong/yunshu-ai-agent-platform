@@ -65,3 +65,35 @@ def test_dataset_capability_menu_component_contract():
     assert "GROUP_REFRESH_COOLDOWN_MS" in source
     assert "startGroupRefreshCooldown" in source
     assert "换一批太频繁，请稍后再试" in source
+    assert "QUESTIONS_SECTION_TIP" in source
+    assert "FOLLOWUPS_SECTION_TIP" in source
+    assert "该场景的入门示例问题" in source
+    assert "延伸探索型追问" in source
+
+
+def test_thought_step_dimming_contract():
+    source = _source("frontend/src/utils/turnLogDisplay.ts")
+    assert "isActiveThoughtStep" in source
+    assert "isDimmedThoughtStep" in source
+    embed = _source("frontend/src/views/EmbedChat.vue")
+    assert "isDimmedThoughtStep(log, msg.isThinking)" in embed
+    assert "进行中" in embed
+
+
+def test_thought_step_timer_contract():
+    handlers = _source("frontend/src/utils/agentscopeSseHandlers.ts")
+    assert "finalizePendingStreamLogs" in handlers
+    assert "isLiveThoughtStepTimer" in handlers
+    assert "findPendingAgentReplyLog" in handlers
+    embed = _source("frontend/src/views/EmbedChat.vue")
+    assert "isLiveThoughtStepTimer(log, allLogs || [])" in embed
+    assert "finalizeAllPendingStreamLogs(agentMsg.value)" in embed
+
+
+def test_dataset_portal_drawer_pin_contract():
+    source = _source("frontend/src/components/chatbi/DatasetPortalDrawer.vue")
+    assert 'defineModel<boolean>("pinned"' in source
+    assert "v-if=\"!pinned\"" in source
+    assert "pointer-events-none" in source
+    assert "钉住侧栏（去掉遮罩，可继续浏览聊天）" in source
+    assert "已钉住" in source

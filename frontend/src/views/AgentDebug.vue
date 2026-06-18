@@ -24,6 +24,7 @@ import {
   type PendingToolPermission,
 } from "@/utils/agentscopeSseHandlers";
 import { useToast } from "../composables/useToast";
+import { isActiveThoughtStep, isDimmedThoughtStep } from "@/utils/turnLogDisplay";
 
 import ChatInput from "@/components/embed/ChatInput.vue";
 import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
@@ -1855,6 +1856,7 @@ const {
   portalLoading,
   portalBackgroundRefreshing,
   portalKeepOpenOnQuestion,
+  portalPinned,
   openPortalDrawer,
   refreshPortalNavigation,
   handlePortalQuickQuestion,
@@ -1868,6 +1870,7 @@ const {
   onQuickQuestion: handleQuickQuestion,
   findDataQueryAgent,
   keepOpenStorageKey: "debug_portal_keep_open",
+  pinStorageKey: "debug_portal_pinned",
 });
 
 const handleEscKey = (e: KeyboardEvent) => {
@@ -2803,7 +2806,10 @@ onUnmounted(() => {
     />
 
     <!-- Center: Main Chat Area -->
-    <div class="flex-1 flex flex-col bg-white shadow-sm overflow-hidden mr-px">
+    <div
+      class="flex-1 flex flex-col bg-white shadow-sm overflow-hidden mr-px transition-[margin] duration-300"
+      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned }"
+    >
       <!-- Header -->
       <div
         class="h-14 px-6 border-b border-gray-200 flex items-center justify-between bg-white flex-shrink-0"
@@ -3401,13 +3407,15 @@ onUnmounted(() => {
                       <div
                         v-for="(log, idx) in msg.logs"
                         :key="log.id"
-                        class="relative group/log"
+                        class="relative group/log transition-opacity duration-300"
+                        :class="{ 'opacity-45 group-hover/log:opacity-80': isDimmedThoughtStep(log, msg.isThinking) }"
                       >
                         <!-- Timeline Numbered Badge (Soft) -->
                         <div class="absolute -left-[23px] top-2 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold group-hover/log:scale-110 transition-all z-10 select-none ring-4 ring-white"
                              :class="{
                                'bg-red-50 text-red-500 border border-red-200': log.status === 'error',
-                               'bg-gray-100 text-gray-500 border border-gray-200': log.status !== 'error',
+                               'bg-primary/10 text-primary border border-primary/25': isActiveThoughtStep(log, msg.isThinking),
+                               'bg-gray-100 text-gray-500 border border-gray-200': log.status !== 'error' && !isActiveThoughtStep(log, msg.isThinking),
                                'animate-pulse': log.status === 'pending'
                              }"
                         >
@@ -3416,9 +3424,10 @@ onUnmounted(() => {
 
                         <!-- Log Card (Lightweight Row) -->
                         <div 
-                            class="rounded-lg p-2 text-xs transition-colors cursor-pointer"
+                            class="rounded-lg p-2 text-xs transition-all duration-300 cursor-pointer"
                             :class="{
-                               'bg-transparent hover:bg-gray-50': log.status !== 'error',
+                               'bg-blue-50/50 border border-blue-100/80 shadow-sm': isActiveThoughtStep(log, msg.isThinking),
+                               'bg-transparent hover:bg-gray-50': log.status !== 'error' && !isActiveThoughtStep(log, msg.isThinking),
                                'bg-red-50/30 hover:bg-red-50/50 border border-red-100': log.status === 'error'
                             }"
                             @click="toggleLog(log)"
@@ -3439,9 +3448,19 @@ onUnmounted(() => {
                                     <!-- Title & Meta -->
                                     <div class="flex items-center gap-1.5 flex-wrap min-w-0">
                                         <!-- Title -->
-                                        <span class="font-medium flex items-center gap-1 truncate" :class="log.status === 'error' ? 'text-red-700' : 'text-gray-700'">
+                                        <span class="font-medium flex items-center gap-1 truncate" :class="{
+                                          'text-red-700': log.status === 'error',
+                                          'text-gray-800': isActiveThoughtStep(log, msg.isThinking),
+                                          'text-gray-700': !isActiveThoughtStep(log, msg.isThinking) && log.status !== 'error',
+                                        }">
                                             <span>{{ log.title }}</span>
-                                            <span v-if="log.status === 'pending'" class="text-[10px] text-gray-400 animate-pulse">...</span>
+                                            <span
+                                              v-if="isActiveThoughtStep(log, msg.isThinking)"
+                                              class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20"
+                                            >
+                                              进行中
+                                            </span>
+                                            <span v-else-if="log.status === 'pending'" class="text-[10px] text-gray-400 animate-pulse">...</span>
                                         </span>
                                         
                                         <!-- Category Badge -->
@@ -4997,6 +5016,7 @@ onUnmounted(() => {
   <DatasetPortalDrawer
     v-model="showPortalDrawer"
     v-model:keep-open-on-question="portalKeepOpenOnQuestion"
+    v-model:pinned="portalPinned"
     :payload="portalNavigationPayload"
     :initial-loading="portalLoading && !portalNavigationPayload"
     :background-refreshing="portalBackgroundRefreshing"

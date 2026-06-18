@@ -149,3 +149,19 @@ export function countHiddenLogs(
 ): number {
   return Math.max(0, (allLogs?.length || 0) - visibleLogs.length);
 }
+
+/** 思考进行中时，当前正在执行的步骤 */
+export function isActiveThoughtStep(
+  log: TurnLogLike,
+  isThinking?: boolean,
+): boolean {
+  return Boolean(isThinking) && log.status === "pending";
+}
+
+/** 思考进行中时，已完成（非当前）的步骤应弱化展示 */
+export function isDimmedThoughtStep(
+  log: TurnLogLike,
+  isThinking?: boolean,
+): boolean {
+  return Boolean(isThinking) && log.status !== "pending";
+}

@@ -102,7 +102,7 @@ async def call_external_sql_api(sql: str, data_source: Optional[str] = None) -> 
             execution_mode = "remote"
 
     timeout_str = await ConfigService.get("data_api_timeout_seconds")
-    timeout = float(timeout_str) if timeout_str else 30.0
+    timeout = float(timeout_str) if timeout_str else 60.0
 
     # 2. Check Cache (TTL 60s)
     # Cache Key 必须包含执行模式，避免 local/remote 切换时复用到另一种模式的结果。

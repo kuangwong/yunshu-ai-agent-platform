@@ -33,7 +33,10 @@
         </div>
     </div>
 
-    <div class="flex-1 flex flex-col h-full relative z-10 min-w-0">
+    <div
+      class="flex-1 flex flex-col h-full relative z-10 min-w-0 transition-[margin] duration-300"
+      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned }"
+    >
       <!-- Dynamic Header Status (New) -->
       <div 
         class="h-12 border-b border-gray-100 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md px-4 flex items-center justify-between z-30 flex-shrink-0"
@@ -617,13 +620,15 @@
                       <div
                         v-for="(log, idx) in getDisplayLogs(msg)"
                         :key="idx"
-                        class="relative group/log"
+                        class="relative group/log transition-opacity duration-300"
+                        :class="{ 'opacity-45 group-hover/log:opacity-80': isDimmedThoughtStep(log, msg.isThinking) }"
                       >
                         <!-- Timeline Numbered Badge (Soft) -->
                         <div class="absolute -left-[23px] top-2 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold group-hover/log:scale-110 transition-all z-10 select-none ring-4 ring-white dark:ring-gray-800"
                              :class="{
                                'bg-red-50 text-red-500 border border-red-200 dark:bg-red-900/30 dark:border-red-800/50': log.status === 'error',
-                               'bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700': log.status !== 'error',
+                               'bg-primary/10 text-primary border border-primary/25 dark:bg-primary/20 dark:border-primary/30': isActiveThoughtStep(log, msg.isThinking),
+                               'bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700': log.status !== 'error' && !isActiveThoughtStep(log, msg.isThinking),
                                'animate-pulse': log.status === 'pending'
                              }"
                         >
@@ -631,16 +636,21 @@
                         </div>
                         <!-- Log Card (Lightweight Row) -->
                         <div 
-                          class="rounded-lg p-2 text-xs transition-colors cursor-pointer"
+                          class="rounded-lg p-2 text-xs transition-all duration-300 cursor-pointer"
                           :class="{
-                             'bg-transparent hover:bg-gray-50 dark:hover:bg-gray-700/30': log.status !== 'error',
+                             'bg-blue-50/50 dark:bg-blue-900/15 border border-blue-100/80 dark:border-blue-800/40 shadow-sm': isActiveThoughtStep(log, msg.isThinking),
+                             'bg-transparent hover:bg-gray-50 dark:hover:bg-gray-700/30': log.status !== 'error' && !isActiveThoughtStep(log, msg.isThinking),
                              'bg-red-50/30 hover:bg-red-50/50 dark:bg-red-900/10 dark:hover:bg-red-900/20 border border-red-100 dark:border-red-900/30': log.status === 'error'
                           }"
                           @click="log.details ? (log.isExpanded = !log.isExpanded) : null"
                         >
                           <div class="flex items-center justify-between gap-2">
                              <div class="font-medium flex items-center gap-2 flex-1 min-w-0"
-                                  :class="log.status === 'error' ? 'text-red-700 dark:text-red-400' : 'text-gray-700 dark:text-gray-300'">
+                                  :class="{
+                                    'text-red-700 dark:text-red-400': log.status === 'error',
+                                    'text-gray-800 dark:text-gray-100': isActiveThoughtStep(log, msg.isThinking),
+                                    'text-gray-700 dark:text-gray-300': !isActiveThoughtStep(log, msg.isThinking) && log.status !== 'error',
+                                  }">
                                <!-- Semantic Icon -->
                                <span class="text-[13px] flex-shrink-0" :class="{ 'animate-pulse': log.status === 'pending' }">
                                  <template v-if="log.status === 'error'">⚠️</template>
@@ -651,14 +661,20 @@
                                </span>
                                <!-- Main Text -->
                                <span class="truncate">{{ log.title }}</span>
+                               <span
+                                 v-if="isActiveThoughtStep(log, msg.isThinking)"
+                                 class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20"
+                               >
+                                 进行中
+                               </span>
                              </div>
                              <div class="flex items-center gap-2 flex-shrink-0">
                                <span
-                                 v-if="formatLogDuration(log)"
+                                 v-if="formatLogDuration(log, getDisplayLogs(msg))"
                                  class="text-[10px] font-mono text-gray-400 dark:text-gray-500"
                                  :title="log.status === 'pending' ? '当前步骤已等待时间' : '当前步骤耗时'"
                                >
-                                 {{ formatLogDuration(log) }}
+                                 {{ formatLogDuration(log, getDisplayLogs(msg)) }}
                                </span>
                                <button
                                  v-if="log.details && log.isExpanded"
@@ -2205,6 +2221,7 @@
     <DatasetPortalDrawer
       v-model="showPortalDrawer"
       v-model:keep-open-on-question="portalKeepOpenOnQuestion"
+      v-model:pinned="portalPinned"
       :payload="portalNavigationPayload"
       :initial-loading="portalLoading && !portalNavigationPayload"
       :background-refreshing="portalBackgroundRefreshing"
@@ -2245,6 +2262,8 @@ import {
   getTurnPanelTitle,
   defaultThoughtExpanded,
   countHiddenLogs,
+  isActiveThoughtStep,
+  isDimmedThoughtStep,
   type TurnType,
 } from "@/utils/turnLogDisplay";
 import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
@@ -2254,6 +2273,9 @@ import {
   dispatchAgentscopeStreamEvent,
   formatExternalExecutionStatus,
   formatPermissionStatus,
+  isLiveThoughtStepTimer,
+  resolveStreamLogDurationMs,
+  finalizeAllPendingStreamLogs,
   handlePermissionRequired as applyPermissionRequiredEvent,
   resumeExternalExecutionStream,
   type PendingExternalExecution,
@@ -2406,14 +2428,14 @@ const formatDurationMs = (durationMs?: number | null): string => {
   return `${(durationMs / 1000).toFixed(1)}s`;
 };
 
-const formatLogDuration = (log: LogEntry): string => {
+const formatLogDuration = (log: LogEntry, allLogs?: LogEntry[]): string => {
   if (log.execution_time_ms !== undefined && log.execution_time_ms !== null) {
     return formatDurationMs(log.execution_time_ms);
   }
   if (log.elapsed_time_ms !== undefined && log.elapsed_time_ms !== null) {
     return formatDurationMs(log.elapsed_time_ms);
   }
-  if (log.status === "pending" && log.started_at) {
+  if (isLiveThoughtStepTimer(log, allLogs || []) && log.started_at) {
     return formatDurationMs(Date.now() - log.started_at);
   }
   return "";
@@ -4181,6 +4203,12 @@ watch(portalKeepOpenOnQuestion, (val) => {
   localStorage.setItem(PORTAL_KEEP_OPEN_KEY, val ? "1" : "0");
 });
 
+const PORTAL_PIN_KEY = "embed_portal_pinned";
+const portalPinned = ref(localStorage.getItem(PORTAL_PIN_KEY) === "1");
+watch(portalPinned, (val) => {
+  localStorage.setItem(PORTAL_PIN_KEY, val ? "1" : "0");
+});
+
 const isMobileViewport = () =>
   typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
 
@@ -4678,16 +4706,28 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
     else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
     else if (title.includes("权限") || title.includes("permission") || title.includes("确认")) category = "permission";
   }
+  if (data.turn_type && category === "intent") {
+    msg.turnType = data.turn_type;
+    if (msg.isThinking) {
+      msg.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+    }
+  }
   if (existingIdx > -1) {
     const currentLog = msg.logs[existingIdx];
     if (!currentLog) return;
+    const nextStatus = (data.status as LogEntry["status"]) || currentLog.status || "success";
+    const execution_time_ms =
+      data.execution_time_ms ??
+      (nextStatus !== "pending"
+        ? resolveStreamLogDurationMs(currentLog, data.execution_time_ms)
+        : currentLog.execution_time_ms);
     msg.logs[existingIdx] = {
       ...currentLog,
       title: data.title || currentLog.title,
       details: data.details ?? currentLog.details,
-      status: (data.status as any) || currentLog.status || "success",
+      status: nextStatus,
       category: category !== "default" ? category : currentLog.category,
-      execution_time_ms: data.execution_time_ms ?? currentLog.execution_time_ms,
+      execution_time_ms: execution_time_ms ?? currentLog.execution_time_ms,
       elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
       started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
     };
@@ -5034,60 +5074,10 @@ const sendMessage = async () => {
             agentMsg.value.trace_id = data.data.trace_id;
           }
           if (data.type === "log") {
-            if (agentMsg.value.logs) {
-              const logId = data.id || Date.now() + Math.random();
-              const existingIdx = agentMsg.value.logs.findIndex((l) => l.id === logId);
-              // Categorization
-              const title = data.title || "";
-              let category: LogEntry["category"] = data.category || "default";
-              // --- [SMART THINKING TEXT UPDATE] ---
-              if (agentMsg.value.isThinking && title) {
-                  agentMsg.value.thinkingText = `正在${title}...`;
-              }
-              if (category === "default") {
-                if (title.includes("路由")) category = "router";
-                else if (title.includes("SQL") || title.includes("sql") || title.includes("数据")) category = "sql";
-                else if (title.includes("知识") || title.includes("检索") || title.includes("引用") || title.includes("来源") || title.includes("分析")) category = "knowledge";
-                else if (title.includes("工具") || title.includes("调用")) category = "tool";
-                else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
-                else if (title.includes("权限") || title.includes("permission")) category = "permission";
-              }
-              if (data.turn_type && category === "intent") {
-                agentMsg.value.turnType = data.turn_type;
-                if (agentMsg.value.isThinking) {
-                  agentMsg.value.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
-                }
-              }
-              if (existingIdx > -1) {
-                const currentLog = agentMsg.value.logs[existingIdx];
-                if (currentLog) {
-                  agentMsg.value.logs[existingIdx] = {
-                    id: currentLog.id,
-                    title: data.title || currentLog.title,
-                    details: (data.details !== undefined && data.details !== null) ? data.details : currentLog.details,
-                    status: (data.status as any) || "success",
-                    category: category !== "default" ? category : currentLog.category,
-                    execution_time_ms: data.execution_time_ms ?? currentLog.execution_time_ms,
-                    elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
-                    started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
-                    isExpanded: currentLog.isExpanded,
-                    isRouter: currentLog.isRouter,
-                  };
-                }
-              } else {
-                agentMsg.value.logs.push({
-                  id: logId,
-                  title: data.title || "Log Info",
-                  details: data.details || "",
-                  status: (data.status as any) || "success",
-                  isExpanded: false,
-                  category: category,
-                  execution_time_ms: data.execution_time_ms ?? null,
-                  elapsed_time_ms: data.elapsed_time_ms ?? null,
-                  started_at: data.status === "pending" ? Date.now() : (data.started_at ?? null),
-                });
-              }
+            if (agentMsg.value.isThinking && data.title) {
+              agentMsg.value.thinkingText = `正在${data.title}...`;
             }
+            addEmbedLogFromStream(agentMsg.value, data);
           } else if (data.type === "citation") {
             if (data.data && Array.isArray(data.data)) {
               // Deduplicate and append ALL chunks (filtering will happen in UI)
@@ -5199,11 +5189,7 @@ const sendMessage = async () => {
     showStalledPrompt.value = false;
     if (thoughtTimer) clearInterval(thoughtTimer);
     // Final cleanup: stop any remaining log spinners
-    if (agentMsg.value.logs) {
-      agentMsg.value.logs.forEach((l) => {
-        if (l.status === "pending" && l.category !== "permission") l.status = "success";
-      });
-    }
+    finalizeAllPendingStreamLogs(agentMsg.value);
     scrollToBottom();
     nextTick(() => {
       chatInputRef.value?.focus();

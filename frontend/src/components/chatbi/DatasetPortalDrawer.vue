@@ -1,6 +1,15 @@
 <template>
-  <div v-show="modelValue" class="fixed inset-0 z-50 overflow-hidden">
+  <div
+    v-show="modelValue"
+    :class="[
+      'z-50',
+      pinned
+        ? 'fixed inset-y-0 right-0 max-w-full flex pointer-events-none'
+        : 'fixed inset-0 overflow-hidden',
+    ]"
+  >
     <transition
+      v-if="!pinned"
       enter-active-class="ease-out duration-300"
       enter-from-class="opacity-0"
       enter-to-class="opacity-100"
@@ -15,7 +24,13 @@
       />
     </transition>
 
-    <div class="absolute inset-y-0 right-0 pl-0 sm:pl-10 max-w-full flex">
+    <div
+      :class="[
+        pinned
+          ? 'h-full flex pointer-events-auto'
+          : 'absolute inset-y-0 right-0 pl-0 sm:pl-10 max-w-full flex',
+      ]"
+    >
       <transition
         enter-active-class="transform transition ease-in-out duration-300"
         enter-from-class="translate-x-full"
@@ -34,6 +49,12 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4zM14 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-4z" />
               </svg>
               <span class="truncate">数据门户导航</span>
+              <span
+                v-if="pinned"
+                class="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide text-blue-600 bg-blue-50 border border-blue-100 dark:text-blue-300 dark:bg-blue-500/10 dark:border-blue-500/20"
+              >
+                已钉住
+              </span>
             </span>
             <div class="flex items-center gap-2 flex-shrink-0">
               <label
@@ -47,6 +68,20 @@
                 />
                 提问后保持
               </label>
+              <button
+                type="button"
+                class="hidden sm:inline-flex text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
+                :class="{ 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10': pinned }"
+                :title="pinned ? '取消钉住（恢复遮罩模式）' : '钉住侧栏（去掉遮罩，可继续浏览聊天）'"
+                @click="pinned = !pinned"
+              >
+                <svg v-if="pinned" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M16 12V4h1a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1v-2h1V6h-1v6h-2zM9.707 14.707a1 1 0 0 1-1.414 0l-2.829-2.829a1 1 0 0 1 1.414-1.414L9 12.586V4h2v8.586l1.707-1.707a1 1 0 0 1 1.414 1.414l-2.829 2.829z" />
+                </svg>
+                <svg v-else class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12V4h1a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1v-2h1V6h-1v6h-2M9.707 14.707a1 1 0 0 1-1.414 0l-2.829-2.829a1 1 0 0 1 1.414-1.414L9 12.586V4h2v8.586l1.707-1.707a1 1 0 0 1 1.414 1.414l-2.829 2.829z" />
+                </svg>
+              </button>
               <button
                 type="button"
                 class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
@@ -81,6 +116,7 @@ import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue
 
 const modelValue = defineModel<boolean>({ default: false });
 const keepOpenOnQuestion = defineModel<boolean>("keepOpenOnQuestion", { default: false });
+const pinned = defineModel<boolean>("pinned", { default: false });
 
 defineProps<{
   payload: Record<string, unknown> | null;

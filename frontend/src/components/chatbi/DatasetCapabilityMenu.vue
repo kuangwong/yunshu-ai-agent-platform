@@ -283,6 +283,12 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
                 你可以这样问
+                <span
+                  class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 cursor-help border border-gray-300/70 dark:border-gray-600/70"
+                  :title="QUESTIONS_SECTION_TIP"
+                  aria-label="你可以这样问说明"
+                  @click.stop
+                >?</span>
               </span>
               <button
                 type="button"
@@ -524,6 +530,12 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
                 </svg>
                 继续追问
+                <span
+                  class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 cursor-help border border-gray-300/70 dark:border-gray-600/70"
+                  :title="FOLLOWUPS_SECTION_TIP"
+                  aria-label="继续追问说明"
+                  @click.stop
+                >?</span>
               </span>
               <button
                 type="button"
@@ -626,6 +638,11 @@ import axios from "@/utils/axios";
 import { useToast } from "@/composables/useToast";
 
 const { showToast } = useToast();
+
+const QUESTIONS_SECTION_TIP =
+  "该场景的入门示例问题：点击即可直接发起查询，适合快速了解核心指标、趋势与排名。";
+const FOLLOWUPS_SECTION_TIP =
+  "延伸探索型追问：适合在已有结果基础上深挖关联维度、口径说明或下一步分析方向。";
 
 interface DatasetCapabilityQuestion {
   label: string;

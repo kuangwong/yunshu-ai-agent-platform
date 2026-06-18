@@ -56,7 +56,7 @@ async def test_call_external_sql_api_success():
             "external_sql_api_url": "http://api/sql",
             "external_sql_api_key": "key123",
             "external_sql_data_source": "default",
-            "data_api_timeout_seconds": "30"
+            "data_api_timeout_seconds": "60"
         }.get(k, kwargs.get("default"))
         
         mock_post.return_value = httpx.Response(200, json=mock_resp_data)
@@ -75,7 +75,7 @@ async def test_call_external_sql_api_error():
             "external_sql_api_url": "http://api/sql",
             "external_sql_api_key": "key123",
             "external_sql_data_source": "default",
-            "data_api_timeout_seconds": "30"
+            "data_api_timeout_seconds": "60"
         }.get(k, kwargs.get("default"))
         
         mock_post.return_value = httpx.Response(400, content="Bad Request")

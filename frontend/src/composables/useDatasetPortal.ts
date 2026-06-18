@@ -20,6 +20,7 @@ export interface UseDatasetPortalOptions {
   onQuickQuestion: (query: string) => void | Promise<void>;
   findDataQueryAgent?: () => unknown;
   keepOpenStorageKey?: string;
+  pinStorageKey?: string;
 }
 
 const isMobileViewport = () =>
@@ -38,6 +39,12 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   const portalKeepOpenOnQuestion = ref(localStorage.getItem(storageKey) === "1");
   watch(portalKeepOpenOnQuestion, (val) => {
     localStorage.setItem(storageKey, val ? "1" : "0");
+  });
+
+  const pinStorageKey = options.pinStorageKey || "dataset_portal_pinned";
+  const portalPinned = ref(localStorage.getItem(pinStorageKey) === "1");
+  watch(portalPinned, (val) => {
+    localStorage.setItem(pinStorageKey, val ? "1" : "0");
   });
 
   const shouldClosePortalAfterQuestion = () =>
@@ -235,6 +242,7 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
     portalLoading,
     portalBackgroundRefreshing,
     portalKeepOpenOnQuestion,
+    portalPinned,
     openPortalDrawer,
     refreshPortalNavigation,
     handlePortalQuickQuestion,

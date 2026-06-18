@@ -43,7 +43,7 @@ async def test_sql_routing_forced_env_remote():
     
     # 即使 ConfigService.get('sql_execution_mode') 返回 local
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "remote"}), \
-         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "local" if key == "sql_execution_mode" else ("30.0" if key == "data_api_timeout_seconds" else "http://remote/api")), \
+         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "local" if key == "sql_execution_mode" else ("60.0" if key == "data_api_timeout_seconds" else "http://remote/api")), \
          patch("app.services.data_adapter.factory.get_adapter") as mock_get_adapter, \
          patch("app.core.redis.get_redis", return_value=None), \
          patch("app.core.http_client.GlobalHttpClient.get_client", return_value=mock_http_client):
@@ -69,7 +69,7 @@ async def test_sql_routing_fallback_to_db_local():
     
     # 模拟环境变量为 auto，数据库配置为 local
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "auto"}), \
-         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "local" if key == "sql_execution_mode" else ("30.0" if key == "data_api_timeout_seconds" else "http://remote/api")), \
+         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "local" if key == "sql_execution_mode" else ("60.0" if key == "data_api_timeout_seconds" else "http://remote/api")), \
          patch("app.services.data_adapter.factory.get_adapter", return_value=mock_adapter) as mock_get_adapter, \
          patch("app.core.redis.get_redis", return_value=None), \
          patch("app.core.http_client.GlobalHttpClient.get_client") as mock_get_http_client:
@@ -96,7 +96,7 @@ async def test_sql_routing_invalid_db_config_fallback_remote():
     
     # 数据库配置非法值，回退为 remote
     with patch.dict("os.environ", {}), \
-         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "invalid_mode" if key == "sql_execution_mode" else ("30.0" if key == "data_api_timeout_seconds" else "http://remote/api")), \
+         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "invalid_mode" if key == "sql_execution_mode" else ("60.0" if key == "data_api_timeout_seconds" else "http://remote/api")), \
          patch("app.services.data_adapter.factory.get_adapter") as mock_get_adapter, \
          patch("app.core.redis.get_redis", return_value=None), \
          patch("app.core.http_client.GlobalHttpClient.get_client", return_value=mock_http_client):
@@ -149,7 +149,7 @@ async def test_sql_routing_cache_key_includes_execution_mode():
     remote_client.post.return_value = remote_response
 
     with patch("app.core.redis.get_redis", return_value=FakeRedis()), \
-         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "30.0" if key == "data_api_timeout_seconds" else "http://remote/api"), \
+         patch("app.services.config_service.ConfigService.get", side_effect=lambda key, **kw: "60.0" if key == "data_api_timeout_seconds" else "http://remote/api"), \
          patch("app.services.data_adapter.factory.get_adapter", return_value=local_adapter), \
          patch("app.core.http_client.GlobalHttpClient.get_client", return_value=remote_client):
         with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "remote"}):

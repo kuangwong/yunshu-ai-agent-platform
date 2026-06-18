@@ -486,6 +486,22 @@ class DatasetNavigationService:
         )
         has_datasets = menu_has_authorized_datasets(dataset_menu)
 
+        if not has_datasets:
+            markdown = finalize_visible_reply(
+                DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu),
+                collapse_duplicates=False,
+            )
+            return {
+                "dataset_count": 0,
+                "dataset_menu_hash": menu_hash,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "groups": [],
+                "markdown": markdown,
+                "is_fallback": False,
+                "has_datasets": False,
+                "from_cache": False,
+            }
+
         from_cache = False
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if markdown:

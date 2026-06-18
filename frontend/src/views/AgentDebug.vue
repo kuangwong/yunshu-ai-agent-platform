@@ -1754,10 +1754,13 @@ const showDatasetMenuNavigation = async () => {
     navMsg.value.content = markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
 
     // 静默自愈刷新：若获取到的是兜底数据，且该消息未曾静默刷新过，则 3 秒后静默触发一次大模型刷新
-    if (payload?.is_fallback && !navMsg.value._hasSilentlyRefreshed) {
+    if (payload?.is_fallback && payload?.has_datasets !== false && !navMsg.value._hasSilentlyRefreshed) {
       navMsg.value._hasSilentlyRefreshed = true;
       setTimeout(async () => {
-        if (navMsg.value.datasetNavigation?.is_fallback) {
+        if (
+          navMsg.value.datasetNavigation?.is_fallback
+          && navMsg.value.datasetNavigation?.has_datasets !== false
+        ) {
           await silentlyRefreshDatasetMenuNavigation(navMsg.value);
         }
       }, 3000);

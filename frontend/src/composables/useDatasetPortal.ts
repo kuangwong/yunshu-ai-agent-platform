@@ -157,7 +157,13 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
       const payload = await fetchDatasetMenuNavigationPayload(refresh);
       portalNavigationPayload.value = payload;
 
-      if (payload?.is_fallback && !refresh && !silent && !hasSilentlyRefreshed.value) {
+      if (
+        payload?.is_fallback
+        && payload?.has_datasets !== false
+        && !refresh
+        && !silent
+        && !hasSilentlyRefreshed.value
+      ) {
         hasSilentlyRefreshed.value = true;
         if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
         silentRefreshTimer = setTimeout(async () => {
@@ -220,7 +226,10 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
     await options.lockToDataQueryAgentForDatasetMenu();
     if (!portalNavigationPayload.value) {
       await fetchPortalNavigationData();
-    } else if (portalNavigationPayload.value.is_fallback) {
+    } else if (
+      portalNavigationPayload.value.is_fallback
+      && portalNavigationPayload.value.has_datasets !== false
+    ) {
       await fetchPortalNavigationData(false, false);
     }
   };

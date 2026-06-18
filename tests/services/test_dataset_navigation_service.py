@@ -609,3 +609,42 @@ async def test_recommend_table_questions_uses_frontend_columns_without_db_lookup
     assert questions[0]["query"] == "统计最近30天每日新增用户数"
     mock_db.execute.assert_not_called()
 
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_build_navigation_for_user_skips_llm_when_no_authorized_datasets():
+    empty_menu = "Available Datasets\n  (No authorized datasets available)"
+
+    with patch.object(
+        DatasetNavigationService,
+        "_get_dataset_menu",
+        AsyncMock(return_value=empty_menu),
+    ), patch.object(
+        DatasetNavigationService,
+        "_load_cached_navigation",
+        AsyncMock(return_value=None),
+    ) as load_cache, patch.object(
+        DatasetNavigationService,
+        "_generate_navigation_markdown",
+        AsyncMock(),
+    ) as generate_markdown, patch.object(
+        DatasetNavigationService,
+        "_save_cached_navigation",
+        AsyncMock(),
+    ) as save_cache:
+        payload = await DatasetNavigationService.build_navigation_for_user(
+            AsyncMock(),
+            user_id=7,
+            is_admin=False,
+        )
+
+    assert payload["dataset_count"] == 0
+    assert payload["has_datasets"] is False
+    assert payload["is_fallback"] is False
+    assert payload["groups"] == []
+    assert payload["from_cache"] is False
+    assert "开通" in payload["markdown"] or "权限" in payload["markdown"]
+    load_cache.assert_not_awaited()
+    generate_markdown.assert_not_awaited()
+    save_cache.assert_not_awaited()
+

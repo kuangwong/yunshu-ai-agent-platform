@@ -2,7 +2,7 @@
   <section ref="menuContainer" class="space-y-4">
     <!-- 状态条 -->
     <div
-      v-if="portalStatus !== 'ready' || showReadyBanner"
+      v-if="showStatusBanner"
       class="rounded-xl border px-3 py-2 text-[11px] leading-relaxed flex items-start gap-2"
       :class="statusBannerClass"
     >
@@ -59,7 +59,7 @@
     </div>
 
     <!-- Search and Filter Bar -->
-    <div class="space-y-2.5">
+    <div v-if="!isNoPermissionEmpty" class="space-y-2.5">
       <div class="relative">
         <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400 dark:text-gray-500">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -742,7 +742,12 @@ const isRefreshing = ref(false);
 let refreshSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
 const showRefreshBusy = computed(() => isRefreshing.value || props.backgroundRefreshing);
-const refreshDisabled = computed(() => props.initialLoading || showRefreshBusy.value);
+const refreshDisabled = computed(
+  () =>
+    props.initialLoading
+    || showRefreshBusy.value
+    || props.payload?.has_datasets === false,
+);
 
 const clearRefreshBusy = () => {
   isRefreshing.value = false;
@@ -881,9 +886,16 @@ const countRelatedTables = (group: DatasetCapabilityGroup): number => {
 const portalStatus = computed(() => {
   if (props.initialLoading) return "loading";
   if (props.backgroundRefreshing) return "refreshing";
+  if (props.payload?.has_datasets === false) return "no_permission";
   if (props.payload?.is_fallback) return "fallback";
   return "ready";
 });
+
+const showStatusBanner = computed(
+  () =>
+    props.payload?.has_datasets !== false
+    && (portalStatus.value !== "ready" || showReadyBanner.value),
+);
 
 const formattedGeneratedAt = computed(() => {
   if (!props.payload.generated_at) return "";

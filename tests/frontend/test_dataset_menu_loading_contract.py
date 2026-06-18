@@ -61,7 +61,8 @@ def test_dataset_capability_menu_component_contract():
     assert "payload.from_cache" in source
     assert "payload.has_datasets" in source
     assert "isNoPermissionEmpty" in source
-    assert "联系系统管理员" in source
+    assert "showStatusBanner" in source
+    assert "has_datasets === false" in source
     assert "cacheAgeLabel" in source
     assert "我的数据门户" in source
     assert "click_count" in source
@@ -86,8 +87,7 @@ def test_dataset_portal_composable_contract():
     assert "readStoredBoolean" in source
     assert "!isMobileViewport()" in source
     assert "from_cache" in source
-    assert "has_datasets" in source
-    assert "refresh: true" in source
+    assert "has_datasets !== false" in source
     assert "/api/v1/chat/dataset-menu/click" in source
 
 

@@ -1175,6 +1175,7 @@ class DataAgentRunner(BaseExecutor):
                         and not self._is_schema_gate_block(result)
                         and not self._is_sql_repeat_gate_block(result)
                         and not self._is_sql_static_gate_block(result)
+                        and not self._is_sql_plan_gate_block(result)
                     ):
                         parsed_output = self._try_parse_json_output(result)
                         empty_reason = self._detect_empty_result(parsed_output)
@@ -3446,6 +3447,8 @@ class DataAgentRunner(BaseExecutor):
             return None
         if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
             return ToolChoice(mode="get_dataset_schema")
+        if state.sql_plan_missing:
+            return None
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
         if state.failed_sql_repeat_gate_block:
@@ -3655,6 +3658,8 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] 已有成功非空查数结果，已拦截重复 SQL 执行。"
         if tool_name == "execute_sql_query" and self._is_sql_static_gate_block(output):
             details = f"{details}\n\n[系统检测] SQL 存在高风险执行特征，已拦截执行。"
+        if tool_name == "execute_sql_query" and self._is_sql_plan_gate_block(output):
+            details = f"{details}\n\n[系统检测] 高风险 SQL 缺少结构化 SQL Plan，已拦截执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
             details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
         if tool_name == "execute_sql_query" and state.duration_anomaly_reason:
@@ -3756,6 +3761,12 @@ class DataAgentRunner(BaseExecutor):
             state.sql_static_risk = True
             state.sql_error = False
             state.sql_error_message = ""
+            return output, False
+        if self._is_sql_plan_gate_block(output):
+            state.sql_plan_missing = True
+            state.sql_error = False
+            state.sql_error_message = ""
+            state.sql_completed = True
             return output, False
         if self._is_failed_sql_repeat_gate_block(output):
             original_error = (
@@ -4037,6 +4048,7 @@ class DataAgentRunner(BaseExecutor):
             "[Permission Denied]",
             "[Security Error]",
             f"{SCHEMA_GATE_PREFIX}",
+            f"{SQL_PLAN_GATE_PREFIX}",
             "Error: Dataset",
         )
         if any(text.startswith(prefix) for prefix in error_prefixes):

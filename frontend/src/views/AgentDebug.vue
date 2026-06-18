@@ -1649,6 +1649,24 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     await openPortalDrawer();
     return true;
   }
+  if (cmd === "/switch_to_auto" || cmd === "/switch_agent_auto") {
+    userInput.value = "";
+    debugMode.value = "auto";
+    showToast("已切换为自动路由模式", "success");
+    return true;
+  }
+  if (cmd.startsWith("/switch_agent_expert?agent_id=")) {
+    userInput.value = "";
+    const agentId = cmd.split("?agent_id=")[1];
+    if (agentId) {
+      const agent = agents.value.find((a: any) => a.id === agentId);
+      if (agent) {
+        handleSwitchMode(agent);
+        showToast("已切换到指定智能体", "success");
+      }
+    }
+    return true;
+  }
   switch (cmd) {
     case "/history":
       userInput.value = "";

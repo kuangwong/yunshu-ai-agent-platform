@@ -115,7 +115,8 @@ class DataQueryPrompts:
     # 纯寒暄/能力咨询时的兜底引导（仅当用户未提出具体业务问题时使用）
     CLARIFICATION_AGENT_SWITCH_HINT = (
         "若您的问题与业务数据查询无关（如身份确认、闲聊、知识问答、通用助手能力），"
-        "可点击右上角上方 **切换智能体**，选择「全能助手」或其他专用智能体继续。"
+        "可点击右上角上方 **切换智能体**，选择「全能助手」或其他专用智能体继续，"
+        "或直接点击 [⚡ 切换智能体](quick:/switch_to_auto) 切换为自动路由模式。"
     )
 
     CLARIFICATION_CAPABILITY_ONBOARDING = (
@@ -126,11 +127,19 @@ class DataQueryPrompts:
     @staticmethod
     def quick_link_inline(label: str, target: str) -> str:
         """内联 quick 追问按钮（无列表前缀，可放入表格单元格、引用块等行内场景）。"""
-        return f"[🙋 {label}](quick:{target.strip()})"
+        target_val = target.strip()
+        if label.startswith("⚡") or target_val.startswith("/switch"):
+            clean_label = label.lstrip("⚡ ").strip()
+            return f"[⚡ {clean_label}](quick:{target_val})"
+        return f"[🙋 {label}](quick:{target_val})"
 
     @staticmethod
     def quick_button(label: str, target: str) -> str:
-        return f"- [🙋 {label}](quick:{target.strip()})"
+        target_val = target.strip()
+        if label.startswith("⚡") or target_val.startswith("/switch"):
+            clean_label = label.lstrip("⚡ ").strip()
+            return f"- [⚡ {clean_label}](quick:{target_val})"
+        return f"- [🙋 {label}](quick:{target_val})"
 
     @staticmethod
     def has_quick_suggestions(text: str) -> bool:
@@ -162,25 +171,30 @@ class DataQueryPrompts:
         user_question: str,
         reasoning: str,
         history_excerpt: str,
+        user_profile: Optional[str] = None,
     ) -> str:
-        return f"""你是 ChatBI 数据查询助手的澄清引导模块。
+        prefix = ""
+        if user_profile:
+            prefix = f"{user_profile}\n\n"
+        return prefix + f"""你是 ChatBI 数据查询助手的澄清引导模块。
 
 用户当前问题还不足以直接查数，或无法安全复用上一轮结果。请结合最近对话和系统判断原因：
 1. **必须先输出** `### ℹ️ 为什么需要补充信息` 区块，用 3 条列表说明：
    - **触发原因：** 一句话说明系统为何没有直接查数（例如：非明确查数、缺少可复用结果、时间/指代模糊等）。
-   - **具体情况：** 结合【当前用户问题】和【系统判断原因】解释还缺什么。
+   - **具体情况：** 结合【当前用户问题】和【系统判断原因】解释还缺什么。若系统在前文提供了 `<USER_PROFILE>` 信息且有用户的称呼（如真实姓名 Display Name 等），请在具体情况或引导说明中，礼貌、亲切地用其称呼和指代用户（例如：「具体情况： 陈小龙，您重复询问了‘我是谁呢’，这属于通用问答或身份识别范畴...」），避免冷冰冰的称谓，让用户感受到智能体是在与其进行专属对话。
    - **您可以这样改：** 告诉用户应在原问题中补充哪些信息。
 2. 再用 1 句话引导用户选择下方建议或补充说明。
 3. 给出 2-3 个**围绕当前用户问题**的追问建议，供用户一键点击发送。
 4. 若【当前用户问题】属于身份确认、闲聊、通用问答等非查数需求：
-   - 在「您可以这样改」或单独说明中提示：可点击输入框上方 **切换智能体**，选择「全能助手」或其他专用智能体。
+   - 在「您可以这样改」或单独说明中提示：可点击输入框上方 **切换智能体**，选择「全能助手」或其他专用智能体，或点击 [⚡ 切换智能体](quick:/switch_to_auto) 切换到自动路由模式。
    - **禁止**把身份/闲聊问题改写成「查询当前用户信息」等伪查数问题；下方 quick 建议应优先引导切换智能体或给出真实查数示例。
+   - 若给出切换智能体的 quick 建议，必须且只能将其格式写作 `- [⚡ 切换智能体](quick:/switch_to_auto)`。
 
 输出要求：
 - 只输出 Markdown，不要 JSON，不要代码块包裹全文。
 - 必须以 `### ℹ️ 为什么需要补充信息` 开头，然后再写引导语与 `### 💬 您可以这样继续`。
-- 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`。
-- `quick:` 括号内必须是完整、可直接发送的中文问题，应是对【当前用户问题】的改写、补全或口径澄清。
+- 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`，或在提供切换智能体建议时使用：`- [⚡ 切换智能体](quick:/switch_to_auto)`。
+- `quick:` 括号内必须是完整、可直接发送的系统指令或中文问题，应是对【当前用户问题】的改写、补全或口径澄清。
 - **禁止**输出与用户当前问题无关的其他业务域示例（例如用户问 Token 时不得推荐 PUE/告警等无关问题）。
 - 优先结合最近对话中的业务对象、指标、时间范围定制建议；仅当用户只是寒暄且未提出具体问题时，才可给通用查数能力示例。
 - 不要编造对话中未出现的具体数值。
@@ -958,6 +972,7 @@ class DataQueryPrompts:
             return variants[:3]
 
         if cls._is_non_data_general_intent(q, reasoning_text):
+            add("切换智能体", "/switch_to_auto")
             add("查看我能查哪些数据", DATASET_PORTAL_SLASH_COMMAND)
             add("查询本月业务指标趋势", "查询本月核心业务指标趋势")
             return variants[:3]

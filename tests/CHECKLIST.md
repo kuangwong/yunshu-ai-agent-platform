@@ -142,9 +142,6 @@
 | 数据门户卡片换一批推荐问题 (Dataset Group Questions Refresh) | `tests/services/test_dataset_navigation_service.py`, `tests/api/v1/test_chat_refresh_group_questions.py`, `DatasetCapabilityMenu.vue` | **卡片推荐问题在线实时刷新**：验证前端卡片标题右侧“🔄 换一批”按钮点击交互；验证后端根据卡片场景与表定义上下文，通过 `build_group_questions_refresh_prompt` 实时调用大模型生成并返回 3 个新提问；验证局部 Loading 骨架屏动画与数据平滑覆盖。 | ✅ 通过 | 2026-06-17 |
 | ChatBI 物理表防猜表与一致性强校验 (ChatBI SQL Table Gating & Consistency) | `tests/services/test_sql_permission_messages.py`, `sql_query_execution_service.py` | **防猜表与强一致性拦截**：验证物理表未注册/不存在时拦截并返回 `[Validation Failed]` 报错，并包含明确的 Schema 引导提示词；验证指定 `dataset_name` 下 SQL 查询的物理表一致性强校验，若跨数据集或拼空猜表则直接予以拦截并报错。 | ✅ 通过 | 2026-06-17 |
 | ChatBI 错误与安全拦截提示词优化 (ChatBI Guard Warnings Wording Optimization) | `data_agent_runner.py`, `test_data_agent_runner.py` | **拦截报错文案业务视角优化**：将底层数据库强相关的技术术语（如 SQL、JOIN 条件、诊断 SQL 等）优化为业务友好的拦截文案，包含具体的提问与排查建议（如拼写检查、时间调整、换个问法等），以缓解最终用户的困惑并引导其更高效地提问；同步修正单元测试的断言校验。 | ✅ 已完成 | 2026-06-17 |
-| 用户画像稳定注入与截断修复 (Stable User Profile Injection) | `tests/ai/test_prompt_assembler.py`, `app/services/ai/agent_service.py` | **用户画像稳定注入与防截断**：将用户画像注入从 messages 列表挪至 PromptAssembler 装配流，融合成单一 SystemPrompt 头部；支持 cache_reorder 时放入 stable_prefix 以防缓存失效；彻底避免超长对话裁剪机制（>20条）导致画像丢失的失忆问题。 | ✅ 已完成 | 2026-06-18 |
-
-
-
-
+| 用户画像稳定注入与截断修复 (Stable User Profile Injection) | `tests/ai/test_prompt_assembler.py`, `app/services/ai/agent_service.py`, `data_agent_runner.py` | **用户画像稳定注入与防截断**：将用户画像注入从 messages 列表挪至 PromptAssembler 装配流，融合成单一 SystemPrompt 头部；支持 cache_reorder 时放入 stable_prefix 以防缓存失效；彻底避免超长对话裁剪机制（>20条）导致画像丢失的失忆问题；**并在 ChatBI 澄清生成模型调用中同步注入用户画像，使其能友好地使用真实姓名称呼和指代用户**。 | ✅ 已完成 | 2026-06-18 |
+| 智能体澄清快捷切换与调试页指令拦截 (Agent Switch Clarification & Debug Command Intercept) | `prompts.py`, `AgentDebug.vue` | **智能体快速切换与指令拦截**：验证在 ChatBI 非查数澄清场景下，通过 `CLARIFICATION_AGENT_SWITCH_HINT` 嵌入超链接与兜底 quick variants 自动添加 `quick:/switch_to_auto` 切换选项；优化 `quick_button`/`quick_link_inline` 自动将以 `/switch` 开头的系统指令格式化为带有闪电 `⚡` 的前缀；在调试页 `AgentDebug.vue` 正确绑定并拦截 `/switch_to_auto` 等系统切换命令，实现前端直接切换智能体模式而不再请求后端。 | ✅ 已完成 | 2026-06-18 |
 

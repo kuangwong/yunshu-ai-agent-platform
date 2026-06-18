@@ -742,7 +742,7 @@
                                       <button @click.stop="copyMessage(splitSqlToolLogDetails(log.details)!.sqlPart)" class="text-gray-600 hover:text-emerald-400 transition-colors uppercase">Copy</button>
                                       <template v-if="splitSqlToolLogDetails(log.details)!.bodyKind === 'result' && log.status === 'success'">
                                         <span class="text-gray-700">|</span>
-                                        <button @click.stop="openSaveReportModal(splitSqlToolLogDetails(log.details)!.sqlPart, message)" class="text-gray-600 hover:text-primary transition-colors uppercase" title="暂存到我的数据门户">暂存</button>
+                                        <button @click.stop="openSaveReportModal(splitSqlToolLogDetails(log.details)!.sqlPart, msg)" class="text-gray-600 hover:text-primary transition-colors uppercase" title="暂存到我的数据门户">暂存</button>
                                       </template>
                                     </div>
                                   </div>
@@ -2961,6 +2961,7 @@ const config = reactive({
   expertAgentId: "",
   enableMultiAgent: true,
   showShortcuts: true,
+  enableSqlPlan: false,
 });
 const showAutoRoutingHint = ref(false);
 const showMultiAgentHint = ref(false);
@@ -2971,6 +2972,7 @@ const saveRoutingSettings = () => {
     localStorage.setItem("yovole_expert_agent_id", config.expertAgentId || "");
     localStorage.setItem("yovole_enable_multi_agent", config.enableMultiAgent ? "1" : "0");
     localStorage.setItem("yovole_show_shortcuts", config.showShortcuts ? "1" : "0");
+    localStorage.setItem("yovole_enable_sql_plan", config.enableSqlPlan ? "1" : "0");
     localStorage.setItem("yovole_override_model", config.overrideModel || "");
     localStorage.setItem("yovole_approval_mode", config.approvalMode || "ask");
     localStorage.setItem("yovole_embed_theme", config.theme || "light");
@@ -3626,6 +3628,13 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
   let cleanSql = sql || '';
   if (cleanSql.includes('[Executed SQL]:')) {
     cleanSql = cleanSql.replace(/\[Executed\s+SQL\]:\s*/i, '').trim();
+  }
+
+  if (!originalQuery && cleanSql) {
+    const fromMatch = cleanSql.match(/from\s+([a-zA-Z0-9_]+)/i);
+    if (fromMatch && fromMatch[1]) {
+      originalQuery = `${fromMatch[1]}数据查询`;
+    }
   }
 
   saveReportForm.value = {
@@ -5200,6 +5209,7 @@ const sendMessage = async () => {
       debug_options: {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
+        enable_sql_plan: config.enableSqlPlan,
       },
       permission_options: {
         approval_mode: config.approvalMode || "ask",
@@ -5502,6 +5512,8 @@ onMounted(() => {
   if (savedMulti !== null) config.enableMultiAgent = savedMulti === "1";
   const savedShortcuts = localStorage.getItem("yovole_show_shortcuts");
   if (savedShortcuts !== null) config.showShortcuts = savedShortcuts === "1";
+  const savedSqlPlan = localStorage.getItem("yovole_enable_sql_plan");
+  if (savedSqlPlan !== null) config.enableSqlPlan = savedSqlPlan === "1";
   const savedOverrideModel = localStorage.getItem("yovole_override_model");
   if (savedOverrideModel) config.overrideModel = savedOverrideModel;
   const savedApprovalMode = localStorage.getItem("yovole_approval_mode");

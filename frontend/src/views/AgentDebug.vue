@@ -685,6 +685,13 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     cleanSql = cleanSql.replace(/\[Executed\s+SQL\]:\s*/i, '').trim();
   }
 
+  if (!originalQuery && cleanSql) {
+    const fromMatch = cleanSql.match(/from\s+([a-zA-Z0-9_]+)/i);
+    if (fromMatch && fromMatch[1]) {
+      originalQuery = `${fromMatch[1]}数据查询`;
+    }
+  }
+
   saveReportForm.value = {
     title: originalQuery ? `${originalQuery.slice(0, 15)}报表` : '暂存报表',
     sql_content: cleanSql,

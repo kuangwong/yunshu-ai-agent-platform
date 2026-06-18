@@ -598,6 +598,32 @@ class DataAgentRunner(BaseExecutor):
             "不得继续使用这些字段名。"
         )
 
+    def _sql_repair_taxonomy_hint(self, message: str) -> str:
+        text = str(message or "")
+        lower = text.lower()
+        if self._is_date_format_sql_error(text):
+            category = "date_format"
+            focus = "核对日期字段类型、日期字面量格式、TO_DATE/TO_CHAR 或时间边界表达式"
+        elif self._is_schema_reference_sql_error(text):
+            category = "invalid_identifier"
+            focus = "核对字段名、表名或别名引用"
+        elif "not a group by" in lower or "group by expression" in lower or "ora-00979" in lower:
+            category = "group_by_mismatch"
+            focus = "核对 SELECT 中非聚合字段是否全部进入 GROUP BY，或改为聚合表达式"
+        elif "join" in lower and ("cartesian" in lower or "missing" in lower or "condition" in lower):
+            category = "join_condition_missing"
+            focus = "补齐 JOIN ON 条件，并确认左右表关联键来自 Schema"
+        elif "permission" in lower or "unauthorized" in lower or "access denied" in lower:
+            category = "permission_denied"
+            focus = "不要改写 SQL 绕过权限，应如实说明权限不足或请求授权"
+        elif "syntax" in lower or "unexpected token" in lower or "invalid expression" in lower:
+            category = "syntax_error"
+            focus = "修正数据库方言语法、分页写法、函数名和括号结构"
+        else:
+            category = "sql_execution_error"
+            focus = "根据数据库错误信息最小化修改 SQL，禁止无依据更换业务口径"
+        return f"\n\n【SQL Repair Taxonomy】错误分类：{category}\n修复重点：{focus}。"
+
     @staticmethod
     def _normalize_sql_identifier(identifier: str) -> str:
         value = str(identifier or "").strip()
@@ -3289,6 +3315,7 @@ class DataAgentRunner(BaseExecutor):
                 "必须修改导致失败的字段名、表名、JOIN 条件、筛选条件、时间转换或聚合逻辑，"
                 "禁止继续提交与上次完全相同的 SQL。SQL 成功前禁止直接回答用户。"
             )
+            repair += self._sql_repair_taxonomy_hint(error_text)
             repair += self._invalid_identifier_repair_hint(error_text)
             if self._is_schema_reference_sql_error(error_text):
                 repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
@@ -3304,6 +3331,7 @@ class DataAgentRunner(BaseExecutor):
                 "禁止原样重复提交与上次完全相同的失败 SQL。"
                 "在 SQL 成功前禁止直接回答用户。"
             )
+            repair += self._sql_repair_taxonomy_hint(error_text)
             if state.last_failed_sql_normalized:
                 repair += (
                     "\n\n【禁止重复 SQL】上次失败 SQL 归一化后与当前尝试一致时，平台将直接拦截。"

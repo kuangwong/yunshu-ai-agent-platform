@@ -2201,11 +2201,10 @@ async def test_execute_sql_wrapper_blocks_order_by_and_rownum_antipattern(data_c
 
 
 @pytest.mark.asyncio
-async def test_execute_sql_wrapper_blocks_unbounded_join_detail_before_tool_call(data_config):
+async def test_execute_sql_wrapper_allows_unbounded_join_detail_before_tool_call(data_config):
     from app.services.ai.runners.data_agent_runner import (
         DataAgentRunner,
         RuntimeToolSpec,
-        SQL_STATIC_GATE_PREFIX,
         _DataRunState,
     )
 
@@ -2238,10 +2237,9 @@ async def test_execute_sql_wrapper_blocks_unbounded_join_detail_before_tool_call
         dataset_name="demo",
     )
 
-    assert called is False
-    assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
-    assert state.sql_static_risk is True
-    assert "JOIN 明细查询缺少 LIMIT" in state.sql_static_risk_reason
+    assert called is True
+    assert output == {"rows": []}
+    assert state.sql_static_risk is False
 
 @pytest.mark.asyncio
 async def test_execute_sql_wrapper_allows_lenient_safe_expressions(data_config):
@@ -2490,12 +2488,12 @@ async def test_data_agent_runner_sql_static_gate_takes_precedence_over_repeat_ca
         empty_sql_result=False,
         sql_error=False,
     )
-    state.successful_sqls["select id from demo"] = '{"columns": [{"name": "id"}], "items": [[1]]}'
+    state.successful_sqls["select * from demo"] = '{"columns": [{"name": "id"}], "items": [[1]]}'
     runner = DataAgentRunner(config=data_config, trace_id="trace-static-before-repeat", trace_buffer=[])
     wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
 
     result = await wrapped.invoke(
-        {"sql": "SELECT id FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+        {"sql": "SELECT * FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}
     )
 
     assert call_count == 0
@@ -2769,7 +2767,7 @@ async def test_failed_sql_repeat_gate_blocks_second_identical_attempt(data_confi
     runner._apply_sql_tool_result(
         state,
         tool_args={"sql": sql},
-        output='[TOOL_ERROR] unknown column "bad_col"',
+        output='[TOOL_ERROR] syntax error near WHERE',
     )
     assert state.failed_sql_signatures[runner._normalize_sql_text(sql)] == 1
 
@@ -3346,6 +3344,7 @@ async def test_data_agent_runner_blocks_final_answer_after_sql_error(data_config
     assert not any(event.get("content") == "查到了" for event in events if isinstance(event, dict))
     assert any(
         "数据查询遇到了一些技术问题" in event.get("content", "")
+        or "生成的 SQL 存在语法、字段或表引用问题" in event.get("content", "")
         for event in events
         if isinstance(event, dict)
     )
@@ -3755,7 +3754,7 @@ async def test_data_agent_runner_execute_repairs_sql_error_before_final_answer(
 
     async def fake_sql(sql, data_source, dataset_name):
         if "bad_col" in sql:
-            return "Unknown column 'bad_col'"
+            return "SQL syntax error near WHERE"
         return [{"id": 1}]
 
     from app.services.ai.tools.registry import ToolRegistry

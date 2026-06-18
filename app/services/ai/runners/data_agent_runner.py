@@ -3351,7 +3351,7 @@ class DataAgentRunner(BaseExecutor):
                 cached_text = parts[1]
             state.last_successful_sql_output = cached_text
             parsed = self._try_parse_json_output(cached_text)
-            return parsed, bool(self._is_structured_sql_result(parsed))
+            return parsed, False
         if self._is_sql_static_gate_block(output):
             state.sql_static_risk = True
             state.sql_error = False
@@ -3451,7 +3451,7 @@ class DataAgentRunner(BaseExecutor):
         if duration_anomaly:
             state.duration_anomaly = True
             state.duration_anomaly_reason = duration_reason
-            return parsed_output, True
+            return parsed_output, False
         state.duration_anomaly = False
         state.duration_anomaly_reason = ""
         ratio_anomaly, anomaly_reason = self._detect_ratio_anomaly(parsed_output)
@@ -3528,17 +3528,6 @@ class DataAgentRunner(BaseExecutor):
                 if not re.search(r"\bJOIN\b[\s\S]{1,400}\b(ON|USING)\b", sql_upper):
                     return "JOIN 缺少明确 ON 或 USING 条件，存在笛卡尔积风险"
 
-        # 4. 支持 LIMIT、ROWNUM 以及 Oracle 标准的 FETCH FIRST/NEXT 分页
-        has_limit = bool(
-            re.search(r"\bLIMIT\s+\d+\b", sql_upper)
-            or re.search(r"\bROWNUM\s*[<>=]+\s*\d+\b", sql_upper)
-            or re.search(r"\bFETCH\s+(FIRST|NEXT)\b", sql_upper)
-        )
-        has_aggregation = any(marker in sql_upper for marker in (" GROUP BY ", " COUNT(", " SUM(", " AVG(", " MAX(", " MIN("))
-        if " JOIN " in f" {sql_upper} " and not has_limit and not has_aggregation:
-            return "JOIN 明细查询缺少 LIMIT 或聚合约束，可能放大返回行数"
-        if not has_limit and not has_aggregation:
-            return "缺少 LIMIT 或聚合约束，可能返回过多明细行"
         return ""
 
     @staticmethod

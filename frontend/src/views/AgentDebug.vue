@@ -1213,6 +1213,7 @@ const memorySearchQuery = ref("");
 const selectedMemoryIds = ref<Set<string>>(new Set());
 
 const windowWidth = ref(window.innerWidth);
+const isMobile = computed(() => windowWidth.value < 640);
 const handleResize = () => {
   windowWidth.value = window.innerWidth;
 };
@@ -2672,7 +2673,7 @@ onUnmounted(() => {
     <!-- Center: Main Chat Area -->
     <div
       class="flex-1 flex flex-col bg-white shadow-sm overflow-hidden mr-px transition-[margin] duration-300"
-      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned }"
+      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned && !isMobile }"
     >
       <!-- Header -->
       <div

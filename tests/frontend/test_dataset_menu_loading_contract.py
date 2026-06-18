@@ -28,6 +28,7 @@ def _assert_embed_portal_contract(source: str) -> None:
     assert "📚 数据门户" in source
     assert "embed_portal_keep_open" in source
     assert "onPortalLoadingChange" in source
+    assert "applyPortalViewportLayout" in _source("frontend/src/composables/useDatasetPortal.ts")
 
 
 def _assert_agent_debug_portal_contract(source: str) -> None:
@@ -120,6 +121,8 @@ def test_dataset_portal_drawer_pin_contract():
     assert "已钉住" in source
     assert "translate-y-full" in source
     assert "isMobile" in source
+    assert "mobileSheetHeightClass" in source
+    assert "portal-drawer-scroll" in source
 
 
 def test_portal_prompt_time_anchor_contract():

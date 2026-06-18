@@ -30,10 +30,10 @@
       :class="[
         pinned
           ? isMobile
-            ? 'w-full flex pointer-events-auto'
+            ? 'w-full flex pointer-events-auto min-h-0'
             : 'h-full flex pointer-events-auto'
           : isMobile
-            ? 'absolute inset-x-0 bottom-0 flex justify-center'
+            ? 'absolute inset-x-0 bottom-0 flex justify-center min-h-0'
             : 'absolute inset-y-0 right-0 pl-0 sm:pl-10 max-w-full flex',
       ]"
     >
@@ -48,12 +48,11 @@
         <div
           v-show="modelValue"
           :class="[
-            'bg-white dark:bg-gray-900 shadow-2xl flex flex-col relative z-10 pb-[env(safe-area-inset-bottom,0px)]',
+            'bg-white dark:bg-gray-900 shadow-2xl flex flex-col relative z-10 min-h-0 pb-[env(safe-area-inset-bottom,0px)]',
             isMobile
               ? 'w-full max-w-none rounded-t-2xl border-t border-gray-200 dark:border-gray-800'
               : 'w-screen max-w-[min(100vw,28rem)] h-full border-l border-gray-200 dark:border-gray-800',
-            isMobile && pinned ? 'max-h-[min(58vh,100%)]' : '',
-            isMobile && !pinned ? 'max-h-[min(85vh,100%)]' : '',
+            mobileSheetHeightClass,
           ]"
         >
           <div class="px-4 py-3 sm:py-4 border-b border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between gap-2 pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
@@ -107,7 +106,9 @@
               </button>
             </div>
           </div>
-          <div class="flex-1 overflow-y-auto p-3 sm:p-4 bg-white dark:bg-gray-900/60 min-h-0">
+          <div
+            class="portal-drawer-scroll flex-1 overflow-y-auto overscroll-y-contain p-3 sm:p-4 bg-white dark:bg-gray-900/60 min-h-0 touch-pan-y"
+          >
             <DatasetCapabilityMenu
               :payload="payload || { groups: [] }"
               :initial-loading="initialLoading"
@@ -149,12 +150,20 @@ const isMobile = ref(false);
 let mobileMq: MediaQueryList | null = null;
 
 const syncMobile = () => {
+  const wasMobile = isMobile.value;
   isMobile.value = !!mobileMq?.matches;
+  // 桌面钉住状态不应带到移动端；切到移动端时强制恢复遮罩抽屉模式
+  if (!wasMobile && isMobile.value && pinned.value) {
+    pinned.value = false;
+  }
 };
 
 onMounted(() => {
   mobileMq = window.matchMedia("(max-width: 639px)");
   syncMobile();
+  if (isMobile.value && pinned.value) {
+    pinned.value = false;
+  }
   mobileMq.addEventListener("change", syncMobile);
 });
 
@@ -164,6 +173,13 @@ onUnmounted(() => {
 
 const sheetEnterFrom = computed(() => (isMobile.value ? "translate-y-full" : "translate-x-full"));
 const sheetLeaveTo = computed(() => (isMobile.value ? "translate-y-full" : "translate-x-full"));
+
+const mobileSheetHeightClass = computed(() => {
+  if (!isMobile.value) return "";
+  return pinned.value
+    ? "h-[min(58dvh,100%)] max-h-[min(58dvh,100%)]"
+    : "h-[min(85dvh,100%)] max-h-[min(85dvh,100%)]";
+});
 
 const pinButtonTitle = computed(() => {
   if (pinned.value) {
@@ -178,3 +194,9 @@ const closeDrawer = () => {
   modelValue.value = false;
 };
 </script>
+
+<style scoped>
+.portal-drawer-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+</style>

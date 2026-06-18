@@ -59,8 +59,27 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   });
 
   const pinStorageKey = options.pinStorageKey || "dataset_portal_pinned";
-  const portalPinned = ref(localStorage.getItem(pinStorageKey) === "1");
+
+  const readDesktopPortalPinned = () =>
+    localStorage.getItem(pinStorageKey) === "1";
+
+  const portalPinned = ref(
+    !isMobileViewport() && readDesktopPortalPinned(),
+  );
+
+  let portalViewportMq: MediaQueryList | null = null;
+
+  const applyPortalViewportLayout = () => {
+    const mobile = portalViewportMq?.matches ?? isMobileViewport();
+    if (mobile) {
+      portalPinned.value = false;
+      return;
+    }
+    portalPinned.value = readDesktopPortalPinned();
+  };
+
   watch(portalPinned, (val) => {
+    if (isMobileViewport()) return;
     localStorage.setItem(pinStorageKey, val ? "1" : "0");
   });
 
@@ -229,6 +248,9 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   };
 
   const openPortalDrawer = async () => {
+    if (isMobileViewport()) {
+      portalPinned.value = false;
+    }
     showPortalDrawer.value = true;
     hasSilentlyRefreshed.value = false;
     if (silentRefreshTimer) {
@@ -288,10 +310,14 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   };
 
   onMounted(() => {
+    portalViewportMq = window.matchMedia("(max-width: 639px)");
+    applyPortalViewportLayout();
+    portalViewportMq.addEventListener("change", applyPortalViewportLayout);
     document.addEventListener("keydown", handlePortalDrawerKeydown);
   });
 
   onUnmounted(() => {
+    portalViewportMq?.removeEventListener("change", applyPortalViewportLayout);
     document.removeEventListener("keydown", handlePortalDrawerKeydown);
     disposePortalTimers();
   });

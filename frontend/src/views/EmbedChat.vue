@@ -35,7 +35,7 @@
 
     <div
       class="flex-1 flex flex-col h-full relative z-10 min-w-0 transition-[margin] duration-300"
-      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned }"
+      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned && !isMobile }"
     >
       <!-- Dynamic Header Status (New) -->
       <div 

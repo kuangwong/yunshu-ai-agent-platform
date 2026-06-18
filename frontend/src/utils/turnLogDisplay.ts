@@ -158,10 +158,10 @@ export function isActiveThoughtStep(
   return Boolean(isThinking) && log.status === "pending";
 }
 
-/** 思考进行中时，已完成（非当前）的步骤应弱化展示 */
+/** 已完成（非当前 pending）的步骤弱化展示；回答结束后历史步骤保持同样浅色 */
 export function isDimmedThoughtStep(
   log: TurnLogLike,
-  isThinking?: boolean,
+  _isThinking?: boolean,
 ): boolean {
-  return Boolean(isThinking) && log.status !== "pending";
+  return log.status !== "pending";
 }

@@ -121,7 +121,8 @@ def test_dataset_portal_drawer_pin_contract():
     assert "已钉住" in source
     assert "translate-y-full" in source
     assert "isMobile" in source
-    assert "mobileSheetHeightClass" in source
+    assert 'teleport to="body"' in source
+    assert "max-h-[92%]" in source
     assert "portal-drawer-scroll" in source
 
 

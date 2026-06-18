@@ -635,6 +635,11 @@ class AgentService:
                     except Exception as recall_err:
                         logger.warning(f"[ActiveMemory] Failed to preload memory context: {recall_err}", exc_info=True)
 
+            user_profile = None
+            if user_info and should_inject_user_context(early_turn_type):
+                id_msg = await self._build_user_context_msg(user_info)
+                user_profile = id_msg.get("content")
+
             from app.core.config import settings
 
             cache_boundary_enabled, cache_reorder_enabled = await resolve_prompt_assembler_flags()
@@ -649,6 +654,7 @@ class AgentService:
                     ltm_profile=ltm_profile,
                     memory_recall_hint=memory_recall_hint,
                     preloaded_memories=preloaded_memories_text,
+                    user_profile=user_profile,
                     cache_boundary_enabled=cache_boundary_enabled,
                     cache_reorder_enabled=cache_reorder_enabled,
                 )
@@ -662,11 +668,6 @@ class AgentService:
                     "cache_boundary_enabled": assembled_prompt.cache_boundary_enabled,
                     "cache_reorder_enabled": assembled_prompt.cache_reorder_enabled,
                 }
-
-            # --- User Identity Injection（服务端只读，所有智能体/轮次默认注入）---
-            if user_info and should_inject_user_context(early_turn_type):
-                id_msg = await self._build_user_context_msg(user_info)
-                messages.insert(0, id_msg)
 
             # --- Debug Overrides ---
             if debug_options:

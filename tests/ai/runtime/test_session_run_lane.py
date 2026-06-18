@@ -26,6 +26,30 @@ class FakeRedis:
             return 1
         return 0
 
+    async def delete(self, key):
+        if key in self.store:
+            del self.store[key]
+            return 1
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_run_lane_force_release(monkeypatch):
+    fake = FakeRedis()
+    lane = ConversationRunLane()
+    conversation_id = f"conv-force-{uuid.uuid4().hex}"
+    key = lane._lock_key("u1", conversation_id)
+    fake.store[key] = "trace-held"
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    released = await lane.force_release(user_id="u1", conversation_id=conversation_id)
+    assert released is True
+    assert key not in fake.store
+
 
 @pytest.mark.asyncio
 async def test_conversation_run_lane_acquire_and_release(monkeypatch):

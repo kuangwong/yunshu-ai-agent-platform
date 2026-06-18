@@ -170,6 +170,9 @@ const sessionHistory = ref<any[]>([])
 const showDeleteSessionConfirm = ref(false)
 const sessionToDelete = ref<any>(null)
 
+const showClearAllSessionMemoryConfirm = ref(false)
+const clearingAllSessionMemory = ref(false)
+
 // 长期记忆 (LTM)
 const myLtm = ref<Record<string, string>>({})
 const ltmLoading = ref(false)
@@ -366,6 +369,32 @@ const executeDeleteSession = async () => {
         showToast(error.response?.data?.detail || '清除会话记忆失败', 'error')
     } finally {
         sessionToDelete.value = null
+    }
+}
+
+const confirmClearAllSessionMemory = () => {
+    showClearAllSessionMemoryConfirm.value = true
+}
+
+const executeClearAllSessionMemory = async () => {
+    showClearAllSessionMemoryConfirm.value = false
+    clearingAllSessionMemory.value = true
+    try {
+        const response = await axios.delete('/api/portal/memory/my/session-memory')
+        if (response.data && response.data.status === 'success') {
+            showToast('全部会话记忆已清除', 'success')
+            showDailyDetailModal.value = false
+            showSessionDetailModal.value = false
+            if (sessionView.value === 'daily') {
+                await fetchMyDailySummaries()
+            } else {
+                await fetchMySessions()
+            }
+        }
+    } catch (error: any) {
+        showToast(error.response?.data?.detail || '清除全部会话记忆失败', 'error')
+    } finally {
+        clearingAllSessionMemory.value = false
     }
 }
 
@@ -858,6 +887,14 @@ onMounted(() => {
                         >
                             查询
                         </button>
+                        <button
+                            type="button"
+                            class="px-4 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 active:scale-95 transition-all shadow-sm flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                            :disabled="clearingAllSessionMemory"
+                            @click="confirmClearAllSessionMemory"
+                        >
+                            {{ clearingAllSessionMemory ? '清除中…' : '一键清除所有记忆' }}
+                        </button>
                     </div>
 
                     <div v-if="dailyLoading" class="flex justify-center py-10">
@@ -929,6 +966,14 @@ onMounted(() => {
                             @click="fetchMySessions"
                         >
                             查询
+                        </button>
+                        <button
+                            type="button"
+                            class="px-4 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 active:scale-95 transition-all shadow-sm flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                            :disabled="clearingAllSessionMemory"
+                            @click="confirmClearAllSessionMemory"
+                        >
+                            {{ clearingAllSessionMemory ? '清除中…' : '一键清除所有记忆' }}
                         </button>
                     </div>
 
@@ -1173,6 +1218,17 @@ onMounted(() => {
         type="danger"
         @confirm="executeDeleteSession"
         @cancel="showDeleteSessionConfirm = false"
+    />
+
+    <!-- 一键清除全部会话记忆确认 Modal -->
+    <ConfirmModal
+        v-if="showClearAllSessionMemoryConfirm"
+        title="一键清除所有记忆"
+        message="确定清除全部会话记忆？将删除所有会话摘要、每日摘要及 Redis 中的历史聊天记录。清除后，这些历史事实将不再自动注入未来的会话上下文。此操作无法撤销。"
+        confirm-text="确认清除"
+        type="danger"
+        @confirm="executeClearAllSessionMemory"
+        @cancel="showClearAllSessionMemoryConfirm = false"
     />
 
     <!-- LTM 删除确认 Modal -->

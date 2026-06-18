@@ -99,13 +99,36 @@
                   class="hidden sm:inline-flex text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
                   :class="{ 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10': pinned }"
                   :title="pinButtonTitle"
+                  :aria-label="pinned ? '取消钉住' : '钉住侧栏'"
                   @click="pinned = !pinned"
                 >
-                  <svg v-if="pinned" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M16 12V4h1a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1v-2h1V6h-1v6h-2zM9.707 14.707a1 1 0 0 1-1.414 0l-2.829-2.829a1 1 0 0 1 1.414-1.414L9 12.586V4h2v8.586l1.707-1.707a1 1 0 0 1 1.414 1.414l-2.829 2.829z" />
+                  <svg
+                    v-if="pinned"
+                    class="h-5 w-5 -rotate-45"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 17v5" />
+                    <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3.76" />
                   </svg>
-                  <svg v-else class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12V4h1a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1v-2h1V6h-1v6h-2M9.707 14.707a1 1 0 0 1-1.414 0l-2.829-2.829a1 1 0 0 1 1.414-1.414L9 12.586V4h2v8.586l1.707-1.707a1 1 0 0 1 1.414 1.414l-2.829 2.829z" />
+                  <svg
+                    v-else
+                    class="h-5 w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 17v5" />
+                    <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3.76" />
                   </svg>
                 </button>
                 <button

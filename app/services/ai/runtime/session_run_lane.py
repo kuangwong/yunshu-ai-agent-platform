@@ -162,6 +162,30 @@ class ConversationRunLane:
         except Exception as exc:
             logger.warning("[ConversationRunLane] release failed: %s", exc)
 
+    async def force_release(
+        self,
+        *,
+        user_id: str | int | None,
+        conversation_id: str | None,
+    ) -> bool:
+        """Delete the run-lane lock regardless of holder token (client cancel)."""
+        if not conversation_id:
+            return False
+
+        from app.core.redis import get_redis
+
+        redis = await get_redis()
+        if redis is None:
+            return False
+
+        key = self._lock_key(user_id, conversation_id)
+        try:
+            deleted = await redis.delete(key)
+            return bool(deleted)
+        except Exception as exc:
+            logger.warning("[ConversationRunLane] force_release failed: %s", exc)
+            return False
+
     @asynccontextmanager
     async def hold(
         self,

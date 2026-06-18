@@ -8,7 +8,51 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'quick-question', command: string): void;
+  (e: 'open-data-portal'): void;
+  (e: 'select-knowledge-base'): void;
+  (e: 'select-skill'): void;
 }>();
+
+type CapabilityAction = 'data-portal' | 'knowledge-base' | 'skill';
+
+// 2. Capabilities (Static highlights for the platform)
+const capabilities: Array<{
+  icon: string;
+  title: string;
+  desc: string;
+  action: CapabilityAction;
+}> = [
+  {
+    icon: '📊',
+    title: '自然语言查数',
+    desc: '用中文询问机房 PUE、负载等业务指标。',
+    action: 'data-portal',
+  },
+  {
+    icon: '📚',
+    title: '智能知识检索',
+    desc: '查询企业 SOP、运维手册和内部规范文档。',
+    action: 'knowledge-base',
+  },
+  {
+    icon: '🛠️',
+    title: '技能工作流',
+    desc: '挂载生态技能，按标准流程执行复杂任务。',
+    action: 'skill',
+  },
+];
+
+const handleCapabilityClick = (action: CapabilityAction) => {
+  if (action === 'data-portal') {
+    emit('open-data-portal');
+    return;
+  }
+  if (action === 'knowledge-base') {
+    emit('select-knowledge-base');
+    return;
+  }
+  emit('select-skill');
+};
 
 // 1. Dynamic Greeting
 const greeting = computed(() => {
@@ -20,13 +64,6 @@ const greeting = computed(() => {
   if (hour < 18) return '下午好';
   return '晚上好';
 });
-
-// 2. Capabilities (Static highlights for the platform)
-const capabilities = [
-  { icon: '📊', title: '自然语言查数', desc: '直接用中文询问机房 PUE、负载等业务指标。' },
-  { icon: '📚', title: '智能知识检索', desc: '查询企业 SOP、运维手册和内部规范文档。' },
-  { icon: '🛠️', title: '自动化工作流', desc: '一键发起扩容、巡检或故障工单处理。' }
-];
 
 // 3. Recommended Prompts (Pick first 4 from user commands)
 const recommendedPrompts = computed(() => {
@@ -51,12 +88,18 @@ const recommendedPrompts = computed(() => {
 
     <!-- Core Capabilities (Subtle Row) -->
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-12 w-full animate-fade-in-up delay-100">
-      <div v-for="cap in capabilities" :key="cap.title" 
-           class="p-4 rounded-2xl bg-white dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-md transition-all group">
+      <button
+        v-for="cap in capabilities"
+        :key="cap.title"
+        type="button"
+        class="p-4 rounded-2xl bg-white dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-md hover:border-primary/40 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 transition-all group text-left cursor-pointer"
+        :aria-label="cap.title"
+        @click="handleCapabilityClick(cap.action)"
+      >
         <div class="text-2xl mb-2 group-hover:scale-110 transition-transform">{{ cap.icon }}</div>
-        <h3 class="text-xs font-bold text-gray-800 dark:text-gray-200 mb-1">{{ cap.title }}</h3>
+        <h3 class="text-xs font-bold text-gray-800 dark:text-gray-200 mb-1 group-hover:text-primary transition-colors">{{ cap.title }}</h3>
         <p class="text-[10px] text-gray-400 leading-normal">{{ cap.desc }}</p>
-      </div>
+      </button>
     </div>
 
     <!-- Recommended Prompts (Actionable Grid) -->

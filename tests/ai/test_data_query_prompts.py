@@ -25,9 +25,22 @@ def test_build_clarification_fallback_for_general_chat():
     )
     assert "### ℹ️ 为什么需要补充信息" in content
     assert "尚未识别为明确的数据查询" in content
-    assert "数据对象、指标和时间范围" in content
+    assert "切换智能体" in content
+    assert "若不是查数需求" in content
     assert DataQueryPrompts.has_quick_suggestions(content)
     assert "PUE" not in content
+
+
+def test_build_clarification_fallback_for_identity_question():
+    content = DataQueryPrompts.build_clarification_fallback(
+        "我是谁",
+        "用户问题是身份确认或闲聊，不涉及具体业务数据查询",
+        "",
+    )
+    assert "切换智能体" in content
+    assert "身份确认" in content or "通用问答" in content
+    assert "查询当前用户" not in content
+    assert "(quick:" in content
 
 
 def test_build_clarification_fallback_anchors_to_user_question():

@@ -292,6 +292,9 @@
         :welcome-message="config.welcomeMessage"
         :slash-commands="slashCommands"
         @quick-question="handleQuickQuestion"
+        @open-data-portal="openPortalDrawer"
+        @select-knowledge-base="showKnowledgeBaseSelector = true"
+        @select-skill="openSkillSelector"
       />
       <!-- Start of Conversation Indicator -->
       <div v-if="!hasMoreHistory && messages.length > 0" class="w-full flex flex-col items-center py-8 opacity-60">
@@ -2236,6 +2239,7 @@
 import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
+import { cancelConversationRun } from "@/utils/cancelConversationRun";
 import { useToast } from "../composables/useToast";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
 import {
@@ -4124,6 +4128,21 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     await openPortalDrawer();
     return true;
   }
+  if (cmd === "/switch_to_auto" || cmd === "/switch_agent_auto") {
+    userInput.value = "";
+    switchToAuto();
+    showToast("已切换为自动路由模式", "success");
+    return true;
+  }
+  if (cmd.startsWith("/switch_agent_expert?agent_id=")) {
+    userInput.value = "";
+    const agentId = cmd.split("?agent_id=")[1];
+    if (agentId) {
+      switchToExpert(agentId);
+      showToast("已切换到指定智能体", "success");
+    }
+    return true;
+  }
   switch (cmd) {
     case "/history":
       userInput.value = "";
@@ -4283,6 +4302,13 @@ const openModelCallStats = async (msg: any) => {
 };
 
 const stopGeneration = () => {
+  const lastMsg = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null;
+  if (conversationId.value) {
+    void cancelConversationRun(conversationId.value, {
+      traceId: lastMsg?.trace_id,
+      headers: embedAuthHeaders(),
+    });
+  }
   if (abortController) {
     abortController.abort();
     abortController = null;
@@ -4293,15 +4319,12 @@ const stopGeneration = () => {
     thoughtTimer = null;
   }
   // Mark last thinking message as stopped
-  if (messages.value.length > 0) {
-    const lastMsg = messages.value[messages.value.length - 1];
-    if (lastMsg && lastMsg.isThinking) {
-      lastMsg.isThinking = false;
-      if (!lastMsg.content) {
-        lastMsg.content = "[已停止生成]";
-      } else {
-        lastMsg.content += "\n\n[用户终止生成]";
-      }
+  if (lastMsg && lastMsg.isThinking) {
+    lastMsg.isThinking = false;
+    if (!lastMsg.content) {
+      lastMsg.content = "[已停止生成]";
+    } else {
+      lastMsg.content += "\n\n[用户终止生成]";
     }
   }
 };

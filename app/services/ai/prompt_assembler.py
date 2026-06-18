@@ -28,6 +28,7 @@ class PromptAssemblyInput:
     ltm_profile: Optional[str] = None
     memory_recall_hint: Optional[str] = None
     preloaded_memories: Optional[str] = None
+    user_profile: Optional[str] = None
     cache_boundary_enabled: bool = False
     cache_reorder_enabled: bool = False
 
@@ -72,7 +73,7 @@ async def resolve_prompt_assembler_flags() -> tuple[bool, bool]:
 
 
 def _build_stack_without_platform(params: PromptAssemblyInput) -> str:
-    """Mirror AgentService prepend order: skills -> ltm -> recall -> preloaded."""
+    """Mirror AgentService prepend order: skills -> ltm -> recall -> preloaded -> user_profile."""
     prompt = (params.agent_system_prompt or "").strip()
     skills_block = _skills_or_discovery_block(
         skills_injection=params.skills_injection,
@@ -83,6 +84,7 @@ def _build_stack_without_platform(params: PromptAssemblyInput) -> str:
     prompt = _prepend_block(prompt, params.ltm_profile)
     prompt = _prepend_block(prompt, params.memory_recall_hint)
     prompt = _prepend_block(prompt, params.preloaded_memories)
+    prompt = _prepend_block(prompt, params.user_profile)
     return prompt
 
 
@@ -117,7 +119,7 @@ def assemble_system_prompt(params: PromptAssemblyInput) -> AssembledSystemPrompt
     dynamic_suffix = _join_blocks(dynamic_blocks)
 
     if params.cache_reorder_enabled:
-        stable_prefix = _join_blocks([part for part in [platform_global, agent_db] if part])
+        stable_prefix = _join_blocks([part for part in [platform_global, params.user_profile, agent_db] if part])
         if params.cache_boundary_enabled and dynamic_suffix:
             full_text = f"{stable_prefix}{YUNSHU_PROMPT_CACHE_BOUNDARY}{dynamic_suffix}"
         elif params.cache_boundary_enabled:
@@ -143,7 +145,7 @@ def assemble_system_prompt(params: PromptAssemblyInput) -> AssembledSystemPrompt
     else:
         full_text = stack_without_platform
 
-    stable_prefix = _join_blocks([part for part in [platform_global, agent_db] if part])
+    stable_prefix = _join_blocks([part for part in [platform_global, params.user_profile, agent_db] if part])
     return AssembledSystemPrompt(
         full_text=full_text,
         stable_prefix=stable_prefix,

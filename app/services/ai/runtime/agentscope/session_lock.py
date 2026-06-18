@@ -92,6 +92,45 @@ class AgentScopeSessionLock:
         except Exception as exc:
             logger.warning("[AgentScopeSessionLock] release failed: %s", exc)
 
+    def _agent_lock_pattern(
+        self,
+        user_id: str | int | None,
+        conversation_id: str,
+    ) -> str:
+        from app.services.ai.memory_service import memory_service
+
+        uid = str(user_id) if user_id is not None else "anonymous"
+        return f"{memory_service.KEY_PREFIX}:{uid}:{conversation_id}:agent_lock:*"
+
+    async def force_release_all_for_conversation(
+        self,
+        *,
+        user_id: str | int | None,
+        conversation_id: str | None,
+    ) -> int:
+        """Delete all AgentScope session locks for a conversation (client cancel)."""
+        if not conversation_id:
+            return 0
+
+        from app.core.redis import get_redis
+
+        redis = await get_redis()
+        if redis is None:
+            return 0
+
+        pattern = self._agent_lock_pattern(user_id, conversation_id)
+        released = 0
+        try:
+            async for key in redis.scan_iter(match=pattern, count=50):
+                deleted = await redis.delete(key)
+                released += int(deleted or 0)
+        except Exception as exc:
+            logger.warning(
+                "[AgentScopeSessionLock] force_release_all_for_conversation failed: %s",
+                exc,
+            )
+        return released
+
     @asynccontextmanager
     async def hold(
         self,

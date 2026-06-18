@@ -167,3 +167,15 @@ class DailySummaryService:
         if not redis:
             return
         await redis.delete(_daily_key(str(user_id), day))
+
+    @staticmethod
+    async def delete_all_for_user(user_id: str) -> int:
+        redis = await get_redis()
+        if not redis:
+            return 0
+        uid = str(user_id)
+        count = 0
+        async for key in redis.scan_iter(match=f"{DAILY_SUMMARY_KEY_PREFIX}{uid}:*", count=200):
+            await redis.delete(key)
+            count += 1
+        return count

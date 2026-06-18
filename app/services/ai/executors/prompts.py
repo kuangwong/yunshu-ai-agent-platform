@@ -113,19 +113,33 @@ class DataQueryPrompts:
     NO_REUSABLE_RESULT = "当前会话没有可复用的上一轮查询结果，请先完成一次数据查询后再进行可视化或分析。"
 
     # 纯寒暄/能力咨询时的兜底引导（仅当用户未提出具体业务问题时使用）
+    CLARIFICATION_AGENT_SWITCH_HINT = (
+        "若您的问题与业务数据查询无关（如身份确认、闲聊、知识问答、通用助手能力），"
+        "可点击右上角上方 **切换智能体**，选择「全能助手」或其他专用智能体继续，"
+        "或直接点击 [⚡ 切换智能体](quick:/switch_to_auto) 切换为自动路由模式。"
+    )
+
     CLARIFICATION_CAPABILITY_ONBOARDING = (
-        "我可以帮您查询业务数据、统计分析，或基于查询结果做可视化。"
-        "请告诉我您想看的数据对象、指标和时间范围："
+        "我是数据智能助手，主要负责业务数据查询、统计分析，或基于查询结果做可视化。"
+        "若您想查数，请告诉我数据对象、指标和时间范围："
     )
 
     @staticmethod
     def quick_link_inline(label: str, target: str) -> str:
         """内联 quick 追问按钮（无列表前缀，可放入表格单元格、引用块等行内场景）。"""
-        return f"[🙋 {label}](quick:{target.strip()})"
+        target_val = target.strip()
+        if label.startswith("⚡") or target_val.startswith("/switch"):
+            clean_label = label.lstrip("⚡ ").strip()
+            return f"[⚡ {clean_label}](quick:{target_val})"
+        return f"[🙋 {label}](quick:{target_val})"
 
     @staticmethod
     def quick_button(label: str, target: str) -> str:
-        return f"- [🙋 {label}](quick:{target.strip()})"
+        target_val = target.strip()
+        if label.startswith("⚡") or target_val.startswith("/switch"):
+            clean_label = label.lstrip("⚡ ").strip()
+            return f"- [⚡ {clean_label}](quick:{target_val})"
+        return f"- [🙋 {label}](quick:{target_val})"
 
     @staticmethod
     def has_quick_suggestions(text: str) -> bool:
@@ -157,22 +171,30 @@ class DataQueryPrompts:
         user_question: str,
         reasoning: str,
         history_excerpt: str,
+        user_profile: Optional[str] = None,
     ) -> str:
-        return f"""你是 ChatBI 数据查询助手的澄清引导模块。
+        prefix = ""
+        if user_profile:
+            prefix = f"{user_profile}\n\n"
+        return prefix + f"""你是 ChatBI 数据查询助手的澄清引导模块。
 
 用户当前问题还不足以直接查数，或无法安全复用上一轮结果。请结合最近对话和系统判断原因：
 1. **必须先输出** `### ℹ️ 为什么需要补充信息` 区块，用 3 条列表说明：
    - **触发原因：** 一句话说明系统为何没有直接查数（例如：非明确查数、缺少可复用结果、时间/指代模糊等）。
-   - **具体情况：** 结合【当前用户问题】和【系统判断原因】解释还缺什么。
+   - **具体情况：** 结合【当前用户问题】和【系统判断原因】解释还缺什么。若系统在前文提供了 `<USER_PROFILE>` 信息且有用户的称呼（如真实姓名 Display Name 等），请在具体情况或引导说明中，礼貌、亲切地用其称呼和指代用户（例如：「具体情况： 陈小龙，您重复询问了‘我是谁呢’，这属于通用问答或身份识别范畴...」），避免冷冰冰的称谓，让用户感受到智能体是在与其进行专属对话。
    - **您可以这样改：** 告诉用户应在原问题中补充哪些信息。
 2. 再用 1 句话引导用户选择下方建议或补充说明。
 3. 给出 2-3 个**围绕当前用户问题**的追问建议，供用户一键点击发送。
+4. 若【当前用户问题】属于身份确认、闲聊、通用问答等非查数需求：
+   - 在「您可以这样改」或单独说明中提示：可点击输入框上方 **切换智能体**，选择「全能助手」或其他专用智能体，或点击 [⚡ 切换智能体](quick:/switch_to_auto) 切换到自动路由模式。
+   - **禁止**把身份/闲聊问题改写成「查询当前用户信息」等伪查数问题；下方 quick 建议应优先引导切换智能体或给出真实查数示例。
+   - 若给出切换智能体的 quick 建议，必须且只能将其格式写作 `- [⚡ 切换智能体](quick:/switch_to_auto)`。
 
 输出要求：
 - 只输出 Markdown，不要 JSON，不要代码块包裹全文。
 - 必须以 `### ℹ️ 为什么需要补充信息` 开头，然后再写引导语与 `### 💬 您可以这样继续`。
-- 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`。
-- `quick:` 括号内必须是完整、可直接发送的中文问题，应是对【当前用户问题】的改写、补全或口径澄清。
+- 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`，或在提供切换智能体建议时使用：`- [⚡ 切换智能体](quick:/switch_to_auto)`。
+- `quick:` 括号内必须是完整、可直接发送的系统指令或中文问题，应是对【当前用户问题】的改写、补全或口径澄清。
 - **禁止**输出与用户当前问题无关的其他业务域示例（例如用户问 Token 时不得推荐 PUE/告警等无关问题）。
 - 优先结合最近对话中的业务对象、指标、时间范围定制建议；仅当用户只是寒暄且未提出具体问题时，才可给通用查数能力示例。
 - 不要编造对话中未出现的具体数值。
@@ -687,10 +709,11 @@ class DataQueryPrompts:
                 {
                     "title": "尚未识别为明确的数据查询",
                     "detail": (
-                        "您的问题更接近闲聊或能力咨询，尚未包含可直接查数的"
+                        "您的问题更接近闲聊、身份确认或能力咨询，尚未包含可直接查数的"
                         "业务对象、指标和时间范围。"
                     ),
                     "fix": "请在问题中写明要查什么数据、看什么指标、覆盖哪段时间。",
+                    "agent_switch": cls.CLARIFICATION_AGENT_SWITCH_HINT,
                 },
             ),
             (
@@ -724,11 +747,15 @@ class DataQueryPrompts:
                     result["detail"] = f"{result['detail']}此外，当前表述还缺少：{gap_text}。"
                 return result
 
-        if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
+        if cls._is_non_data_general_intent(q, reasoning_text):
             return {
                 "title": "尚未识别为明确的数据查询",
-                "detail": "您还没有说明要查询的业务数据、指标或时间范围。",
-                "fix": "请直接描述想查的对象、指标和时间段，例如「查询本月某指标趋势」。",
+                "detail": (
+                    "您的问题更接近闲聊、身份确认或通用问答，"
+                    "数据智能助手无法通过查数直接回答。"
+                ),
+                "fix": "若您仍想查业务数据，请写明对象、指标和时间范围。",
+                "agent_switch": cls.CLARIFICATION_AGENT_SWITCH_HINT,
             }
 
         if reasoning_text and reasoning_text not in {"需要用户补充查数信息"}:
@@ -759,12 +786,15 @@ class DataQueryPrompts:
     @classmethod
     def _format_clarification_reason_block(cls, user_question: str, reasoning: str) -> str:
         expl = cls._explain_clarification_trigger(user_question, reasoning)
-        return (
+        block = (
             "### ℹ️ 为什么需要补充信息\n"
             f"- **触发原因：** {expl['title']}\n"
             f"- **具体情况：** {expl['detail']}\n"
             f"- **您可以这样改：** {expl['fix']}\n"
         )
+        if expl.get("agent_switch"):
+            block += f"- **若不是查数需求：** {expl['agent_switch']}\n"
+        return block
 
     @classmethod
     def ensure_clarification_reason_block(
@@ -791,12 +821,32 @@ class DataQueryPrompts:
         return cleaned[: max_len - 1] + "…"
 
     @classmethod
+    def _is_non_data_general_intent(cls, user_question: str, reasoning: str) -> bool:
+        """身份确认、闲聊、能力咨询等不适合强行改写成查数的问题。"""
+        if cls._looks_like_greeting_or_capability_question(user_question, reasoning):
+            return True
+        q = str(user_question or "").strip()
+        if not q:
+            return True
+        personal_signals = (
+            "我是谁", "我叫什么", "我的名字", "你知道我是谁", "介绍一下我",
+            "记得我吗", "你认识我吗", "我的身份", "我是谁啊",
+        )
+        if any(signal in q for signal in personal_signals):
+            return True
+        reasoning_text = str(reasoning or "")
+        non_data_reasoning_signals = (
+            "身份确认", "闲聊", "打招呼", "非查数", "通用问答", "能力咨询",
+        )
+        return any(signal in reasoning_text for signal in non_data_reasoning_signals)
+
+    @classmethod
     def _looks_like_greeting_or_capability_question(cls, user_question: str, reasoning: str) -> bool:
         q = str(user_question or "").strip()
         q_lower = q.lower()
         if not q_lower:
             return True
-        greeting_signals = ["你好", "您好", "你是谁", "你能做什么", "谢谢", "感谢", "辛苦了"]
+        greeting_signals = ["你好", "您好", "你是谁", "你能做什么", "谢谢", "感谢", "辛苦了", "我是谁"]
         if any(signal in q_lower for signal in greeting_signals) and len(q_lower) <= 16:
             return True
         reasoning_text = str(reasoning or "")
@@ -866,7 +916,7 @@ class DataQueryPrompts:
                 )
             return "最近对话里暂时没有足够明确的数据上下文，请补充您想分析的对象或时间范围："
 
-        if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
+        if cls._is_non_data_general_intent(q, reasoning_text):
             return cls.CLARIFICATION_CAPABILITY_ONBOARDING
 
         gap_text = "、".join(cls._infer_clarification_gaps(q, reasoning_text))
@@ -921,10 +971,10 @@ class DataQueryPrompts:
                 add(f"按原问题继续：{topic_label}", q)
             return variants[:3]
 
-        if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
+        if cls._is_non_data_general_intent(q, reasoning_text):
+            add("切换智能体", "/switch_to_auto")
+            add("查看我能查哪些数据", DATASET_PORTAL_SLASH_COMMAND)
             add("查询本月业务指标趋势", "查询本月核心业务指标趋势")
-            add("统计最近一周关键记录", "统计最近一周关键业务记录")
-            add("查看数据门户", DATASET_PORTAL_SLASH_COMMAND)
             return variants[:3]
 
         if not q:

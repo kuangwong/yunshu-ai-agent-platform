@@ -324,8 +324,17 @@ def test_adapt_classification_for_non_data_agent():
 
 
 def test_should_inject_user_context():
-    assert should_inject_user_context(TurnType.DATA_QUERY_REQUEST) is False
+    assert should_inject_user_context(TurnType.DATA_QUERY_REQUEST) is True
+    assert should_inject_user_context(TurnType.SKILL_EXECUTION) is True
     assert should_inject_user_context(TurnType.CONTEXT_ACTION) is True
+
+
+def test_should_inject_ltm_for_chatbi_turns():
+    from app.services.ai.turn_classifier import should_inject_ltm
+
+    assert should_inject_ltm(TurnType.DATA_QUERY_REQUEST) is True
+    assert should_inject_ltm(TurnType.SKILL_EXECUTION) is True
+    assert should_inject_ltm(TurnType.GENERAL) is True
 
 
 def test_classify_turn_from_intent_data_query_request_via_reasoning():

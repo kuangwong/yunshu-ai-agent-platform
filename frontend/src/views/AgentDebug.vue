@@ -18,6 +18,7 @@ import CitationPopover from "@/components/CitationPopover.vue";
 import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
+import { cancelConversationRun } from "@/utils/cancelConversationRun";
 import { createSseLineParser } from "@/utils/chartRenderer";
 import {
   dispatchAgentscopeStreamEvent,
@@ -1648,6 +1649,24 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     await openPortalDrawer();
     return true;
   }
+  if (cmd === "/switch_to_auto" || cmd === "/switch_agent_auto") {
+    userInput.value = "";
+    debugMode.value = "auto";
+    showToast("已切换为自动路由模式", "success");
+    return true;
+  }
+  if (cmd.startsWith("/switch_agent_expert?agent_id=")) {
+    userInput.value = "";
+    const agentId = cmd.split("?agent_id=")[1];
+    if (agentId) {
+      const agent = agents.value.find((a: any) => a.id === agentId);
+      if (agent) {
+        handleSwitchMode(agent);
+        showToast("已切换到指定智能体", "success");
+      }
+    }
+    return true;
+  }
   switch (cmd) {
     case "/history":
       userInput.value = "";
@@ -1860,6 +1879,12 @@ const handleFeedback = async (msg: Message, type: "up" | "down") => {
 
 
 const stopGeneration = () => {
+  const lastMsg = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null;
+  if (conversationId.value) {
+    void cancelConversationRun(conversationId.value, {
+      traceId: lastMsg?.trace_id,
+    });
+  }
   if (abortController) {
     abortController.abort();
     abortController = null;
@@ -1873,7 +1898,6 @@ const stopGeneration = () => {
   }
 
   // Update last message status if needed
-  const lastMsg = messages.value[messages.value.length - 1];
   if (lastMsg && lastMsg.role === 'agent' && lastMsg.isThinking) {
     lastMsg.isThinking = false;
     lastMsg.content += "\n[用户终止生成]";

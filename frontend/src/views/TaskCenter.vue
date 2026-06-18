@@ -384,7 +384,7 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
 </script>
 
 <template>
-  <div class="p-6 max-w-7xl mx-auto space-y-6">
+  <div class="space-y-6">
     <!-- Header Section -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
       <div>

@@ -58,13 +58,8 @@ class TurnClassification:
 
 
 def should_inject_ltm(turn_type: Optional[TurnType]) -> bool:
-    """数据查询/技能执行类请求通常不需要 LTM 画像块。"""
-    if turn_type is None:
-        return True
-    return turn_type not in (
-        TurnType.DATA_QUERY_REQUEST,
-        TurnType.SKILL_EXECUTION,
-    )
+    """ChatBI 查数/技能执行也需要 LTM 画像（部门、别名、口径等）。"""
+    return True
 
 
 def should_inject_memory_recall_hint(turn_type: Optional[TurnType]) -> bool:
@@ -87,13 +82,8 @@ def should_run_active_memory_preload(turn_type: Optional[TurnType]) -> bool:
 
 
 def should_inject_user_context(turn_type: Optional[TurnType]) -> bool:
-    """数据查询/技能执行类请求可省略用户画像 system 注入，权限仍走 user_info。"""
-    if turn_type is None:
-        return True
-    return turn_type not in (
-        TurnType.DATA_QUERY_REQUEST,
-        TurnType.SKILL_EXECUTION,
-    )
+    """所有轮次默认注入服务端用户画像；身份以 API Key 校验结果为准，不可由客户端伪造。"""
+    return True
 
 
 def default_thought_expanded(turn_type: Optional[TurnType]) -> bool:

@@ -522,6 +522,25 @@ class LtmUpdateRequest(BaseModel):
     value: str = Field(..., description="长期事实/偏好值")
 
 
+async def _clear_all_session_memory_for_user(uid: str) -> dict[str, int]:
+    from app.core.redis import get_redis
+
+    summary_count = await MemoryIndexService.delete_all_for_user(uid)
+    daily_count = await DailySummaryService.delete_all_for_user(uid)
+    history_count = 0
+    redis = await get_redis()
+    if redis:
+        pattern = f"conversation:{uid}:*:history"
+        async for key in redis.scan_iter(match=pattern, count=200):
+            await redis.delete(key)
+            history_count += 1
+    return {
+        "session_summaries_deleted": summary_count,
+        "daily_summaries_deleted": daily_count,
+        "history_deleted": history_count,
+    }
+
+
 @router.get("/my/summaries")
 async def list_my_summaries(
     keyword: Optional[str] = Query(None),
@@ -586,6 +605,27 @@ async def delete_my_summary(
     uid = str(_current_uid(current_user))
     await memory_service.delete_session_memory(uid, conversation_id, include_summary=True)
     return {"status": "success", "message": "已清除该会话的记忆与聊天历史"}
+
+
+@router.delete("/my/session-memory")
+async def delete_all_my_session_memory(
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """物理清除当前用户本人的全部会话摘要、每日摘要与 Redis 聊天历史"""
+    uid = str(_current_uid(current_user))
+    stats = await _clear_all_session_memory_for_user(uid)
+    total = (
+        stats["session_summaries_deleted"]
+        + stats["daily_summaries_deleted"]
+        + stats["history_deleted"]
+    )
+    return {
+        "status": "success",
+        "message": "已清除全部会话记忆",
+        "data": stats,
+        "total_deleted": total,
+    }
 
 
 @router.get("/my/ltm")

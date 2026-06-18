@@ -3,6 +3,7 @@ import os
 import time
 import uuid
 import re
+import asyncio
 from typing import List, Optional, AsyncGenerator, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File
 from fastapi.responses import StreamingResponse, Response
@@ -65,6 +66,17 @@ class ChatCompletionResponse(BaseModel):
     reasoning: Optional[str] = None
     model: Optional[str] = None
     trace_id: Optional[str] = None
+
+
+class ChatCancelRequest(BaseModel):
+    conversation_id: str = Field(..., description="要释放运行锁的会话 ID")
+    trace_id: Optional[str] = Field(default=None, description="可选，用于日志关联")
+
+
+class ChatCancelResponse(BaseModel):
+    success: bool
+    lane_released: bool
+    session_locks_released: int = 0
 
 
 class ToolPermissionConfirmRequest(BaseModel):
@@ -188,6 +200,31 @@ async def get_dataset_menu_navigation(
         force_refresh=refresh,
     )
     return StandardResponse(data=DatasetNavigationResponse(**payload))
+
+
+@router.post(
+    "/cancel",
+    response_model=StandardResponse[ChatCancelResponse],
+    summary="取消当前会话运行并释放锁",
+    description="用户在前端终止生成时调用，强制释放会话运行锁与 AgentScope session 锁，避免无法继续提问。",
+)
+async def cancel_chat_completion(
+    request: ChatCancelRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    from app.services.ai.runtime.conversation_run_cancel import release_conversation_run_locks
+
+    conversation_id = (request.conversation_id or "").strip()
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    lane_user_id = user_info.get("user_id") or user_info.get("id")
+    result = await release_conversation_run_locks(
+        user_id=lane_user_id,
+        conversation_id=conversation_id,
+        trace_id=request.trace_id,
+    )
+    return StandardResponse(data=ChatCancelResponse(**result))
 
 
 @router.post(
@@ -459,6 +496,17 @@ async def create_chat_completion(
     history = [msg.dict() for msg in completion_request.messages]
     
     if completion_request.stream:
+        lane_user_id = user_info.get("user_id") or user_info.get("id")
+        conversation_id = completion_request.conversation_id
+
+        async def _release_locks_on_client_abort() -> None:
+            from app.services.ai.runtime.conversation_run_cancel import release_conversation_run_locks
+
+            await release_conversation_run_locks(
+                user_id=lane_user_id,
+                conversation_id=conversation_id,
+            )
+
         async def sse_generator() -> AsyncGenerator[str, None]:
             # Extract user info from request state (set by require_api_key dependency)
             # FASTAPI Middleware attaches state to the raw request object
@@ -474,21 +522,29 @@ async def create_chat_completion(
                     else:
                         api_key_str = auth
             
-            async for chunk in agent_service.chat_completion_stream(
-                history, 
-                agent_id=completion_request.agent_id,
-                version_id=completion_request.version_id,
-                conversation_id=completion_request.conversation_id,
-                user_info=user_info,
-                api_key=api_key_str,
-                enable_multi_agent=completion_request.enable_multi_agent,
-                debug_options=completion_request.debug_options,
-                permission_options=completion_request.permission_options,
-                knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
-            ):
-                # Format each chunk as an SSE data event
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                async for chunk in agent_service.chat_completion_stream(
+                    history, 
+                    agent_id=completion_request.agent_id,
+                    version_id=completion_request.version_id,
+                    conversation_id=completion_request.conversation_id,
+                    user_info=user_info,
+                    api_key=api_key_str,
+                    enable_multi_agent=completion_request.enable_multi_agent,
+                    debug_options=completion_request.debug_options,
+                    permission_options=completion_request.permission_options,
+                    knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
+                ):
+                    if await request.is_disconnected():
+                        await _release_locks_on_client_abort()
+                        break
+                    # Format each chunk as an SSE data event
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                else:
+                    yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                await _release_locks_on_client_abort()
+                raise
 
         return StreamingResponse(sse_generator(), media_type="text/event-stream")
     else:

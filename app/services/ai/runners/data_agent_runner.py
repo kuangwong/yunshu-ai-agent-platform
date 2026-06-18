@@ -1859,6 +1859,27 @@ class DataAgentRunner(BaseExecutor):
         reasoning: str,
     ) -> str:
         history_excerpt = DataQueryPrompts.format_clarification_history(history)
+        user_profile = None
+        if self.user_info:
+            from app.services.ai.agent_prompts import AgentServicePrompts
+            raw_name = self.user_info.get("user_name") or self.user_info.get("username", "Unknown User")
+            user_id = str(self.user_info.get("user_id") or self.user_info.get("id") or "")
+            real_name = self.user_info.get("real_name") or raw_name
+            dept = self.user_info.get("dept_name") or self.user_info.get("department")
+            org_path = self.user_info.get("org_path")
+            dept_code = self.user_info.get("dept_code")
+            role = self.user_info.get("role_name") or self.user_info.get("role")
+            
+            user_profile = AgentServicePrompts.user_context_message(
+                user_id=user_id or "unknown",
+                raw_name=raw_name,
+                real_name=real_name,
+                dept=dept,
+                dept_code=dept_code,
+                org_path=org_path,
+                role=role,
+            )
+
         fallback = DataQueryPrompts.build_clarification_fallback(
             user_question,
             reasoning,
@@ -1876,6 +1897,7 @@ class DataAgentRunner(BaseExecutor):
                         user_question,
                         reasoning,
                         history_excerpt,
+                        user_profile=user_profile,
                     ),
                     user_prompt=user_question,
                 )

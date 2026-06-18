@@ -24,6 +24,41 @@ class FakeRedis:
             return 1
         return 0
 
+    async def delete(self, key):
+        if key in self.store:
+            del self.store[key]
+            return 1
+        return 0
+
+    async def scan_iter(self, match=None, count=50):
+        prefix = (match or "").replace("*", "")
+        for key in list(self.store.keys()):
+            if key.startswith(prefix):
+                yield key
+
+
+@pytest.mark.asyncio
+async def test_session_lock_force_release_all_for_conversation(monkeypatch):
+    fake = FakeRedis()
+    lock = AgentScopeSessionLock()
+    fake.store["conversation:u1:conv-3:agent_lock:DataAgent"] = "token-a"
+    fake.store["conversation:u1:conv-3:agent_lock:GeneralAgent"] = "token-b"
+    fake.store["conversation:u1:conv-other:agent_lock:DataAgent"] = "token-c"
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    released = await lock.force_release_all_for_conversation(
+        user_id="u1",
+        conversation_id="conv-3",
+    )
+    assert released == 2
+    assert "conversation:u1:conv-3:agent_lock:DataAgent" not in fake.store
+    assert "conversation:u1:conv-3:agent_lock:GeneralAgent" not in fake.store
+    assert fake.store["conversation:u1:conv-other:agent_lock:DataAgent"] == "token-c"
+
 
 @pytest.mark.asyncio
 async def test_session_lock_acquire_and_release(monkeypatch):

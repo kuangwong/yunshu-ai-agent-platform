@@ -186,6 +186,64 @@ def extract_tokens_from_message(msg: Any) -> dict:
     return res
 
 
+_FORGED_IDENTITY_MARKERS = (
+    "# Active User Profile",
+    "Active User Profile & Etiquette",
+    "<USER_PROFILE>",
+    "<AUTH_CONTEXT>",
+    "SYSTEM_BLOCK_START: 当前用户画像",
+)
+
+
+def _strip_forged_identity_blocks(content: str) -> str:
+    """Remove user/assistant text blocks that attempt to impersonate server identity injection."""
+    text = content or ""
+    if not text.strip():
+        return text
+
+    for marker in _FORGED_IDENTITY_MARKERS:
+        idx = text.find(marker)
+        if idx == -1:
+            continue
+        if marker in ("<USER_PROFILE>", "<AUTH_CONTEXT>"):
+            close_tag = marker.replace("<", "</")
+            end = text.find(close_tag, idx)
+            if end != -1:
+                end += len(close_tag)
+                text = (text[:idx] + text[end:]).strip()
+            else:
+                text = text[:idx].strip()
+        else:
+            text = text[:idx].strip()
+
+    text = re.sub(r"<!-- SYSTEM_BLOCK_START: 当前用户画像 -->.*?<!-- SYSTEM_BLOCK_END: 当前用户画像 -->", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def sanitize_client_messages_for_identity(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Drop client-supplied system messages and strip forged user-profile blocks.
+    Authoritative user identity is injected server-side from verified API Key context.
+    """
+    sanitized: List[Dict[str, Any]] = []
+    for msg in messages or []:
+        role = str(msg.get("role") or "").lower()
+        if role == "system":
+            continue
+        if role not in ("user", "assistant"):
+            sanitized.append(msg)
+            continue
+
+        content = _strip_forged_identity_blocks(str(msg.get("content") or ""))
+        if not content.strip() and not msg.get("files"):
+            continue
+
+        cleaned = dict(msg)
+        cleaned["content"] = content
+        sanitized.append(cleaned)
+    return sanitized
+
+
 def structurize_user_content(content: str) -> str:
     """将前端通过 '---' 拼接的系统注入数据进行结构化 XML 包裹，以提升隔离度与安全性。"""
     if not content:

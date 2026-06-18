@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.redis import get_redis
 from app.services.ai.config import AgentConfigProvider
-from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.executors.prompts import DataQueryPrompts, is_dataset_portal_slash_query
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import system_user_prompt_messages
 from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
@@ -20,7 +20,7 @@ from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible
 logger = logging.getLogger(__name__)
 
 _NAV_CACHE_TTL_SECONDS = 600
-_NAV_PROMPT_VERSION = "v4"
+_NAV_PROMPT_VERSION = "v5"
 _NAV_CACHE_GEN_KEY = "agent:dataset_navigation:cache_generation"
 _CLICK_STATS_TTL_SECONDS = 90 * 24 * 60 * 60
 
@@ -379,7 +379,7 @@ class DatasetNavigationService:
             for match in re.finditer(pattern, questions_part):
                 label = match.group(1).strip()
                 query = match.group(2).strip()
-                if "/dataset_menu" in query or "重新查看" in label:
+                if is_dataset_portal_slash_query(query) or "重新查看" in label:
                     continue
                 dynamic_questions.append({
                     "label": label,
@@ -391,7 +391,7 @@ class DatasetNavigationService:
             for match in re.finditer(pattern, followups_part):
                 label = match.group(1).strip()
                 query = match.group(2).strip()
-                if "/dataset_menu" in query or "重新查看" in label:
+                if is_dataset_portal_slash_query(query) or "重新查看" in label:
                     continue
                 dynamic_followups.append({
                     "label": label,
@@ -635,7 +635,7 @@ class DatasetNavigationService:
         for match in re.finditer(pattern, cleaned):
             label = match.group(1).strip()
             query = match.group(2).strip()
-            if "/dataset_menu" in query or "重新查看" in label:
+            if is_dataset_portal_slash_query(query) or "重新查看" in label:
                 continue
             questions.append({
                 "label": label,

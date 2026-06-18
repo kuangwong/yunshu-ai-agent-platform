@@ -44,7 +44,7 @@ def test_menu_has_authorized_datasets():
 
 
 @pytest.mark.no_infrastructure
-def test_dataset_navigation_generation_prompt_uses_dataset_menu():
+def test_dataset_navigation_generation_prompt_uses_dataset_portal_command():
     prompt = DataQueryPrompts.dataset_navigation_generation_prompt(SAMPLE_MENU)
     assert "ai_agent_meta" in prompt
     assert "业务场景卡片" in prompt
@@ -52,6 +52,7 @@ def test_dataset_navigation_generation_prompt_uses_dataset_menu():
     assert "示例问题" in prompt
     assert "继续追问" in prompt
     assert "{dataset_menu}" in prompt
+    assert "/dataset_portal" in prompt
 
 
 @pytest.mark.no_infrastructure
@@ -153,7 +154,7 @@ def test_build_dataset_navigation_fallback_uses_business_scene_cards():
     assert "**继续追问：**" in markdown
     assert "智能体访问日志" in markdown
     assert "记录 API 访问" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.no_infrastructure
@@ -162,14 +163,14 @@ def test_build_dataset_navigation_fallback_empty():
         "Available Datasets\n  (No authorized datasets available)"
     )
     assert "暂无可查询的数据集" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.no_infrastructure
 def test_build_dataset_navigation_fallback_shows_raw_menu():
     markdown = DataQueryPrompts.build_dataset_navigation_fallback("plain text without dataset blocks")
     assert "plain text" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.asyncio
@@ -181,7 +182,7 @@ async def test_generate_navigation_markdown_uses_llm():
         "#### 运维监控\n"
         "- [🙋 查机房告警](quick:统计最近一周机房告警记录)\n\n"
         "### 💬 您可能还想了解\n---\n"
-        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_portal)\n"
     )
     mock_client = MagicMock()
     mock_client.generate_text = AsyncMock(return_value=llm_output)
@@ -245,7 +246,7 @@ async def test_generate_navigation_markdown_falls_back_when_llm_invalid():
 
     assert llm_err == "模型返回内容无效或未包含推荐问题"
     assert "ai_agent_meta" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.asyncio
@@ -255,7 +256,7 @@ async def test_build_navigation_for_user_uses_dataset_menu_and_cache():
         "### 📚 我的数据门户\n---\n"
         "- [🙋 查告警](quick:统计最近一周机房告警记录)\n\n"
         "### 💬 您可能还想了解\n---\n"
-        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_portal)\n"
     )
     mock_client = MagicMock()
     mock_client.generate_text = AsyncMock(return_value=llm_output)
@@ -428,7 +429,7 @@ def test_parse_groups_from_markdown_success():
         "\n"
         "**继续追问：**\n"
         "- [🙋 性能分析](quick:说明智能体响应时长的分布)\n"
-        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_portal)\n"
     )
 
     parsed = DatasetNavigationService.parse_groups_from_markdown(markdown, static_groups)

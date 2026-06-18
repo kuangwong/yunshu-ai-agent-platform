@@ -48,6 +48,19 @@ class SharedPrompts:
     )
 
 
+DATASET_PORTAL_SLASH_COMMAND = "/dataset_portal"
+DATASET_PORTAL_LEGACY_SLASH_COMMAND = "/dataset_menu"
+
+
+def is_dataset_portal_slash_query(query: str) -> bool:
+    q = str(query or "").strip()
+    return (
+        q in (DATASET_PORTAL_SLASH_COMMAND, DATASET_PORTAL_LEGACY_SLASH_COMMAND)
+        or DATASET_PORTAL_SLASH_COMMAND in q
+        or DATASET_PORTAL_LEGACY_SLASH_COMMAND in q
+    )
+
+
 class DataQueryPrompts:
     """DataQueryExecutor 使用的系统级提示词。"""
 
@@ -179,7 +192,7 @@ class DataQueryPrompts:
     def dataset_navigation_generation_prompt(dataset_menu: str) -> str:
         return f"""你是 ChatBI 我的数据门户生成模块。
 
-用户执行了 `/dataset_menu` 指令，希望了解当前账号**有权访问**哪些数据、能问什么问题。
+用户执行了 `{DATASET_PORTAL_SLASH_COMMAND}` 指令，希望了解当前账号**有权访问**哪些数据、能问什么问题。
 下方【可用数据集目录】与 ChatBI 智能体 system prompt 中的 `{{dataset_menu}}` **完全一致**，请仅基于其中信息生成导航，不要编造未列出的数据集、表或指标。
 
 任务：
@@ -204,7 +217,7 @@ class DataQueryPrompts:
 - 以 `### 📚 我的数据门户` 开头，用 `---` 分隔区块。
 - 整体概要与每个场景介绍必须使用引用块（`>` 开头）。
 - quick 示例问题必须使用列表项格式：`- [🙋 简短标签](quick:完整可发送问题)`。
-- 文末必须包含 `### 💬 您可能还想了解`，其中至少包含一行列表项：`- [🙋 重新查看数据门户](quick:/dataset_menu)`。
+- 文末必须包含 `### 💬 您可能还想了解`，其中至少包含一行列表项：`- [🙋 重新查看数据门户](quick:{DATASET_PORTAL_SLASH_COMMAND})`。
 - “继续追问”属于每张业务场景卡片内部；全局“您可能还想了解”区块必须放在整段回答最末尾。
 - 不要编造目录中未出现的具体数值、表名或指标名。
 
@@ -601,10 +614,10 @@ class DataQueryPrompts:
             return (
                 "### 📚 我的数据门户\n"
                 "---\n"
-                "> 当前账号暂无可查询的数据集。请联系管理员开通数据权限后，再使用 `/dataset_menu` 查看导航。\n\n"
+                "> 当前账号暂无可查询的数据集。请联系管理员开通数据权限后，再使用 `{DATASET_PORTAL_SLASH_COMMAND}` 查看导航。\n\n"
                 "### 💬 您可能还想了解\n"
                 "---\n"
-                f"{cls.quick_button('重新查看数据门户', '/dataset_menu')}\n"
+                f"{cls.quick_button('重新查看数据门户', DATASET_PORTAL_SLASH_COMMAND)}\n"
             )
 
         blocks = cls._parse_dataset_blocks(menu)
@@ -626,7 +639,7 @@ class DataQueryPrompts:
                 [
                     "### 💬 您可能还想了解",
                     "---",
-                    cls.quick_button("重新查看数据门户", "/dataset_menu"),
+                    cls.quick_button("重新查看数据门户", DATASET_PORTAL_SLASH_COMMAND),
                     "",
                 ]
             )
@@ -646,7 +659,7 @@ class DataQueryPrompts:
             "您可以直接用自然语言提问，或点击下方按钮重试。\n\n"
             "### 💬 您可能还想了解\n"
             "---\n"
-            f"{cls.quick_button('重新查看数据门户', '/dataset_menu')}\n"
+            f"{cls.quick_button('重新查看数据门户', DATASET_PORTAL_SLASH_COMMAND)}\n"
         )
 
     @staticmethod
@@ -911,11 +924,11 @@ class DataQueryPrompts:
         if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
             add("查询本月业务指标趋势", "查询本月核心业务指标趋势")
             add("统计最近一周关键记录", "统计最近一周关键业务记录")
-            add("查看数据门户", "/dataset_menu")
+            add("查看数据门户", DATASET_PORTAL_SLASH_COMMAND)
             return variants[:3]
 
         if not q:
-            add("打开数据门户选表提问", "/dataset_menu")
+            add("打开数据门户选表提问", DATASET_PORTAL_SLASH_COMMAND)
             return variants[:3]
 
         gaps = cls._infer_clarification_gaps(q, reasoning_text)

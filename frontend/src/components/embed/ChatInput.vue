@@ -3,6 +3,7 @@ import { ref, reactive, nextTick, computed, watch, onMounted, onUnmounted } from
 import MentionList from "@/components/agent/MentionList.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
+import { DATASET_PORTAL_SYSTEM_COMMAND_ID } from "@/constants/datasetPortalCommand";
 
 type ApprovalMode = "ask" | "allow" | "deny";
 
@@ -249,7 +250,7 @@ const handleShortcutClick = (cmd: any) => {
 const openDataPortalFromPlusMenu = () => {
     if (props.isProcessing) return;
     showPlusMenu.value = false;
-    const cmd = filteredSystemCommands.value.find((c) => c.id === 'sys_dataset_menu');
+    const cmd = filteredSystemCommands.value.find((c) => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID);
     handleShortcutClick(cmd);
 };
 
@@ -498,7 +499,7 @@ defineExpose({
                         <div v-if="!isDrawerExpanded" class="flex items-center space-x-2">
                             <div class="flex flex-1 items-center space-x-2 overflow-x-auto no-scrollbar scroll-smooth pr-12">
                                 <template v-if="windowWidth < 640">
-                                    <button v-if="filteredSystemCommands.some(c => c.id === 'sys_dataset_menu')" @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === 'sys_dataset_menu'))" class="px-3 py-1 text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border border-blue-100/50 dark:border-blue-800 rounded-full whitespace-nowrap">📚 数据门户</button>
+                                    <button v-if="filteredSystemCommands.some(c => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID)" @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID))" class="px-3 py-1 text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border border-blue-100/50 dark:border-blue-800 rounded-full whitespace-nowrap">📚 数据门户</button>
                                     <button v-if="filteredSystemCommands.some(c => c.id === 'sys_clear')" @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === 'sys_clear'))" class="px-3 py-1 text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 rounded-full whitespace-nowrap">💬 新会话</button>
                                 </template>
                                 <template v-else>
@@ -700,7 +701,7 @@ defineExpose({
                         <div v-if="showPlusMenu" class="absolute bottom-full left-0 mb-2 w-52 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/50 dark:border-gray-700/50 py-1.5 z-50 animate-fade-in-up">
                             <!-- Data Portal -->
                             <button
-                              v-if="filteredSystemCommands.some(c => c.id === 'sys_dataset_menu')"
+                              v-if="filteredSystemCommands.some(c => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID)"
                               @click="openDataPortalFromPlusMenu"
                               class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
                             >

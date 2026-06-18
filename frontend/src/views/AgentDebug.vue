@@ -9,6 +9,11 @@ import MessageRenderer from "@/components/MessageRenderer.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
 import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
+import {
+  DATASET_PORTAL_SLASH_COMMAND,
+  DATASET_PORTAL_SYSTEM_COMMAND_ID,
+  isDatasetPortalSlashCommand,
+} from "@/constants/datasetPortalCommand";
 import CitationPopover from "@/components/CitationPopover.vue";
 import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
@@ -382,7 +387,7 @@ watch(
 const agents = ref<any[]>([]);
 const debugMode = ref<"auto" | "specific">("auto");
 const SYSTEM_SLASH_COMMANDS = [
-  { id: "sys_dataset_menu", command: "/dataset_menu", label: "📚 数据门户", sort_order: -35 },
+  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
@@ -791,7 +796,6 @@ interface Message {
   datasetNavigation?: DatasetNavigationPayload;
   prompt_tokens?: number;
   completion_tokens?: number;
-  _hasSilentlyRefreshed?: boolean;
 }
 
 // --- Debug Config State ---
@@ -1582,74 +1586,6 @@ const lockToDataQueryAgentForDatasetMenu = async () => {
   handleSwitchMode(dataQueryAgent);
 };
 
-const fetchDatasetMenuNavigationPayload = async (refresh = false) => {
-  const res = await axios.get("/api/v1/chat/dataset-menu", {
-    headers: debugAuthHeaders(),
-    params: refresh ? { refresh: true } : undefined,
-  });
-  return res.data?.data || {};
-};
-
-const recordDatasetMenuQuestionClick = async (
-  navigation: DatasetNavigationPayload | undefined,
-  payload: { query: string; label?: string; group_id?: string }
-) => {
-  const datasetMenuHash = navigation?.dataset_menu_hash;
-  const query = String(payload?.query || "").trim();
-  if (!datasetMenuHash || !query) return;
-  try {
-    await axios.post(
-      "/api/v1/chat/dataset-menu/click",
-      {
-        dataset_menu_hash: datasetMenuHash,
-        query,
-        label: payload.label,
-        group_id: payload.group_id,
-      },
-      { headers: debugAuthHeaders() }
-    );
-  } catch (error) {
-    console.warn("Failed to record dataset menu question click", error);
-  }
-};
-
-const clearNavigationQuestionClickStats = (
-  navigation: DatasetNavigationPayload | undefined,
-  query: string,
-) => {
-  const normalized = String(query || "").trim();
-  if (!navigation?.groups || !normalized) return;
-  for (const group of navigation.groups) {
-    for (const question of group.questions || []) {
-      if (String(question.query || "").trim() !== normalized) continue;
-      question.click_count = 0;
-      delete question.last_clicked_at;
-    }
-  }
-};
-
-const clearDatasetMenuQuestionClick = async (
-  navigation: DatasetNavigationPayload | undefined,
-  payload: { query: string },
-) => {
-  const datasetMenuHash = navigation?.dataset_menu_hash;
-  const query = String(payload?.query || "").trim();
-  if (!datasetMenuHash || !query) return;
-  try {
-    await axios.post(
-      "/api/v1/chat/dataset-menu/click/clear",
-      {
-        dataset_menu_hash: datasetMenuHash,
-        query,
-      },
-      { headers: debugAuthHeaders() }
-    );
-    clearNavigationQuestionClickStats(navigation, query);
-  } catch (error) {
-    console.warn("Failed to clear dataset menu question click", error);
-  }
-};
-
 const openImagePreview = (url: string) => {
   window.open(url, "_blank");
 };
@@ -1672,13 +1608,11 @@ const toggleFullScreen = () => {
 
 const userInput = ref("");
 const isProcessing = ref(false);
-const datasetMenuLoading = ref(false);
 const inputTextarea = ref<HTMLTextAreaElement | null>(null);
 const messagesContainer = ref<HTMLDivElement | null>(null);
 
 let abortController: AbortController | null = null;
 let thoughtTimer: any = null;
-let datasetMenuThoughtTimer: ReturnType<typeof setInterval> | null = null;
 
 // Auto-scroll
 const isUserAtBottom = ref(true);
@@ -1707,151 +1641,13 @@ watch(
   }
 );
 
-const showDatasetMenuNavigation = async () => {
-  if (datasetMenuLoading.value || isProcessing.value) {
-    return;
-  }
-  datasetMenuLoading.value = true;
-  isProcessing.value = true;
-
-  if (!conversationId.value) {
-    generateNewConversation();
-  }
-  await lockToDataQueryAgentForDatasetMenu();
-
-  messages.value.push({
-    id: Date.now(),
-    role: "user",
-    content: "/dataset_menu",
-    timestamp: new Date().toISOString(),
-  });
-
-  const navMsg = ref<Message>({
-    id: Date.now() + 1,
-    role: "agent",
-    content: "",
-    agentName: "sys_dataset_menu",
-    agentDisplayName: "系统 · 数据门户",
-    isThinking: true,
-    thinkingText: "正在生成我的数据门户，请稍后...",
-    logs: [],
-    thoughtStartTime: Date.now(),
-    thoughtDuration: "0.0",
-    isThoughtExpanded: false,
-    isCitationsExpanded: false,
-    timestamp: new Date().toISOString(),
-  });
-  messages.value.push(navMsg.value);
-  datasetMenuThoughtTimer = setInterval(() => {
-    if (navMsg.value.thoughtStartTime) {
-      navMsg.value.thoughtDuration = (
-        (Date.now() - navMsg.value.thoughtStartTime) /
-        1000
-      ).toFixed(1);
-    }
-  }, 100);
-  await nextTick();
-  scrollToBottom(true);
-
-  try {
-    const payload = await fetchDatasetMenuNavigationPayload();
-    navMsg.value.datasetNavigation = payload;
-    const markdown = payload?.markdown || "";
-    navMsg.value.content = markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
-
-    // 静默自愈刷新：若获取到的是兜底数据，且该消息未曾静默刷新过，则 3 秒后静默触发一次大模型刷新
-    if (payload?.is_fallback && payload?.has_datasets !== false && !payload?.llm_generation_failed && !navMsg.value._hasSilentlyRefreshed) {
-      navMsg.value._hasSilentlyRefreshed = true;
-      setTimeout(async () => {
-        if (
-          navMsg.value.datasetNavigation?.is_fallback
-          && navMsg.value.datasetNavigation?.has_datasets !== false
-          && !navMsg.value.datasetNavigation?.llm_generation_failed
-        ) {
-          await silentlyRefreshDatasetMenuNavigation(navMsg.value);
-        }
-      }, 3000);
-    }
-    if (payload?.llm_generation_failed) {
-      const detail = String(payload.llm_error_message || "").trim();
-      const hint = detail ? `：${detail}` : "";
-      showToast(`AI 模型暂不可用，已展示基础场景目录${hint}`, "error");
-    }
-  } catch (error) {
-    console.warn("Failed to load dataset menu navigation", error);
-    navMsg.value.content = (
-      "暂时无法加载我的数据门户，请稍后重试。\n\n"
-      + "- [🙋 重新加载数据门户](quick:/dataset_menu)"
-    );
-  } finally {
-    navMsg.value.isThinking = false;
-    navMsg.value.thinkingText = "";
-    if (datasetMenuThoughtTimer) {
-      clearInterval(datasetMenuThoughtTimer);
-      datasetMenuThoughtTimer = null;
-    }
-    datasetMenuLoading.value = false;
-    isProcessing.value = false;
-    await nextTick();
-    scrollToBottom(true);
-  }
-};
-
-const silentlyRefreshDatasetMenuNavigation = async (msg: Message) => {
-  try {
-    const payload = await fetchDatasetMenuNavigationPayload(true);
-    msg.datasetNavigation = payload;
-    msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
-    if (payload?.llm_generation_failed) {
-      const detail = String(payload.llm_error_message || "").trim();
-      const hint = detail ? `：${detail}` : "";
-      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
-    }
-    await nextTick();
-    scrollToBottom(true);
-  } catch (error) {
-    console.warn("Failed to silently refresh dataset menu navigation", error);
-  }
-};
-
-const refreshDatasetMenuNavigation = async (msg: Message) => {
-  if (datasetMenuLoading.value || isProcessing.value) {
-    return;
-  }
-  datasetMenuLoading.value = true;
-  isProcessing.value = true;
-  try {
-    const payload = await fetchDatasetMenuNavigationPayload(true);
-    msg.datasetNavigation = payload;
-    msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
-    isProcessing.value = false;
-    if (payload?.llm_generation_failed) {
-      const detail = String(payload.llm_error_message || "").trim();
-      const hint = detail ? `：${detail}` : "";
-      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
-    } else {
-      showToast("数据门户刷新成功", "success");
-    }
-    await nextTick();
-    scrollToBottom(true);
-  } catch (error) {
-    console.warn("Failed to refresh dataset menu navigation", error);
-    showToast("刷新数据门户失败，请稍后重试", "error");
-    if (msg.datasetNavigation) {
-      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
-    }
-  } finally {
-    datasetMenuLoading.value = false;
-    isProcessing.value = false;
-  }
-};
-
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
+  if (isDatasetPortalSlashCommand(cmd)) {
+    userInput.value = "";
+    await openPortalDrawer();
+    return true;
+  }
   switch (cmd) {
-    case "/dataset_menu":
-      userInput.value = "";
-      await openPortalDrawer();
-      return true;
     case "/history":
       userInput.value = "";
       showHistorySidebar.value = !showHistorySidebar.value;
@@ -1888,6 +1684,7 @@ const {
   handlePortalQuickQuestion,
   recordDatasetMenuQuestionClick: recordPortalQuestionClick,
   clearDatasetMenuQuestionClick: clearPortalQuestionClick,
+  fetchDatasetMenuNavigationPayload,
   disposePortalTimers,
 } = useDatasetPortal({
   getAuthHeaders: () => debugAuthHeaders() || {},
@@ -1898,6 +1695,34 @@ const {
   keepOpenStorageKey: "debug_portal_keep_open",
   pinStorageKey: "debug_portal_pinned",
 });
+
+const INLINE_DATASET_MENU_EMPTY =
+  "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+
+/** 历史消息内嵌 DatasetCapabilityMenu 的刷新（抽屉门户走 refreshPortalNavigation） */
+const refreshDatasetMenuNavigation = async (msg: Message) => {
+  if (isProcessing.value) return;
+  try {
+    const payload = await fetchDatasetMenuNavigationPayload(true);
+    msg.datasetNavigation = payload;
+    msg.content = payload?.markdown || INLINE_DATASET_MENU_EMPTY;
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
+    } else {
+      showToast("数据门户刷新成功", "success");
+    }
+    await nextTick();
+    scrollToBottom(true);
+  } catch (error) {
+    console.warn("Failed to refresh dataset menu navigation", error);
+    showToast("刷新数据门户失败，请稍后重试", "error");
+    if (msg.datasetNavigation) {
+      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
+    }
+  }
+};
 
 const handleEscKey = (e: KeyboardEvent) => {
   if (e.key === "Escape" && showPortalDrawer.value) {
@@ -3779,8 +3604,8 @@ onUnmounted(() => {
                   v-else
                   :payload="msg.datasetNavigation"
                   @quick-question="handleQuickQuestion"
-                  @record-question-click="(payload) => recordDatasetMenuQuestionClick(msg.datasetNavigation, payload)"
-                  @clear-question-click="(payload) => clearDatasetMenuQuestionClick(msg.datasetNavigation, payload)"
+                  @record-question-click="(payload) => recordPortalQuestionClick(msg.datasetNavigation, payload)"
+                  @clear-question-click="(payload) => clearPortalQuestionClick(msg.datasetNavigation, payload)"
                   @refresh="refreshDatasetMenuNavigation(msg)"
                 />
                 <!-- 导出 / 点赞踩（托管 RAGFlow、OpenClaw 不展示点赞踩） -->

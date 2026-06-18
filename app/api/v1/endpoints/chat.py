@@ -169,7 +169,7 @@ async def get_greeting():
     "/dataset-menu",
     response_model=StandardResponse[DatasetNavigationResponse],
     summary="获取我的数据门户",
-    description="基于当前用户授权的 {dataset_menu} 目录，由 LLM 生成我的数据门户与 quick 追问建议，供 /dataset_menu 系统指令使用。",
+    description="基于当前用户授权的 {dataset_menu} 目录，由 LLM 生成我的数据门户与 quick 追问建议，供 /dataset_portal 系统指令使用。",
 )
 async def get_dataset_menu_navigation(
     refresh: bool = False,
@@ -194,7 +194,7 @@ async def get_dataset_menu_navigation(
     "/dataset-menu/click",
     response_model=StandardResponse[Dict[str, bool]],
     summary="记录我的数据门户点击偏好",
-    description="记录用户在 /dataset_menu 中点击的 quick 问题，用于同一数据目录下的个性化排序。",
+    description="记录用户在 /dataset_portal 中点击的 quick 问题，用于同一数据目录下的个性化排序。",
 )
 async def record_dataset_menu_question_click(
     request: DatasetMenuClickRequest,

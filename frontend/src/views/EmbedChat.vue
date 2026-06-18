@@ -1740,9 +1740,9 @@
                   <div>
                     <div class="text-[11px] font-black text-gray-800 dark:text-gray-200 uppercase mb-0.5">快捷指令</div>
                     <p class="text-[10px] text-gray-500 mb-2">Web 端支持<b>直接点击</b>快捷按钮；移动端输入斜杠 <span class="font-mono text-blue-500">/</span> 即可快速唤起。</p>
-                    <p class="text-[10px] text-gray-500 mb-2"><span class="font-mono text-blue-500">/dataset_menu</span> 会基于与 ChatBI 相同的数据集目录，由 AI 生成我的数据门户与可点击追问按钮。</p>
+                    <p class="text-[10px] text-gray-500 mb-2"><span class="font-mono text-blue-500">{{ DATASET_PORTAL_SLASH_COMMAND }}</span> 会基于与 ChatBI 相同的数据集目录，由 AI 生成我的数据门户与可点击追问按钮。</p>
                     <div class="flex flex-wrap gap-1.5">
-                      <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/dataset_menu</span>
+                      <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">{{ DATASET_PORTAL_SLASH_COMMAND }}</span>
                       <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/new</span>
                       <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/history</span>
                     </div>
@@ -2238,6 +2238,11 @@ import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { useToast } from "../composables/useToast";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
+import {
+  DATASET_PORTAL_SLASH_COMMAND,
+  DATASET_PORTAL_SYSTEM_COMMAND_ID,
+  isDatasetPortalSlashCommand,
+} from "@/constants/datasetPortalCommand";
 
 const toast = useToast();
 const showToast = toast.showToast;
@@ -3027,7 +3032,7 @@ const resetStallTimer = () => {
 };
 // Slash Commands
 const SYSTEM_SLASH_COMMANDS = [
-  { id: "sys_dataset_menu", command: "/dataset_menu", label: "📚 数据门户", sort_order: -35 },
+  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
@@ -4114,11 +4119,12 @@ const fetchConversationHistory = async (isLoadMore = false) => {
 };
 // --- Logic ---
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
+  if (isDatasetPortalSlashCommand(cmd)) {
+    userInput.value = "";
+    await openPortalDrawer();
+    return true;
+  }
   switch (cmd) {
-    case "/dataset_menu":
-      userInput.value = "";
-      await openPortalDrawer();
-      return true;
     case "/history":
       userInput.value = "";
       showHistorySidebar.value = !showHistorySidebar.value;

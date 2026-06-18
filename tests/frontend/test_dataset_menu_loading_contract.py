@@ -15,7 +15,8 @@ def _assert_embed_portal_contract(source: str) -> None:
     assert "useDatasetPortal" in source
     assert "DatasetPortalDrawer" in source
     assert "const datasetMenuLoading = ref(false);" in source
-    assert "case \"/dataset_menu\":" in source
+    assert "DATASET_PORTAL_SLASH_COMMAND" in source
+    assert "isDatasetPortalSlashCommand" in source
     assert "await openPortalDrawer();" in source
     assert "DatasetCapabilityMenu" in source
     assert "datasetNavigation?: DatasetNavigationPayload;" in source
@@ -32,14 +33,14 @@ def _assert_embed_portal_contract(source: str) -> None:
 def _assert_agent_debug_portal_contract(source: str) -> None:
     assert "useDatasetPortal" in source
     assert "DatasetPortalDrawer" in source
-    assert "const datasetMenuLoading = ref(false);" in source
-    assert "case \"/dataset_menu\":" in source
+    assert "DATASET_PORTAL_SLASH_COMMAND" in source
+    assert "isDatasetPortalSlashCommand" in source
     assert "await openPortalDrawer();" in source
     assert "DatasetCapabilityMenu" in source
     assert "datasetNavigation?: DatasetNavigationPayload;" in source
     assert "lockToDataQueryAgentForDatasetMenu" in source
     assert "refreshDatasetMenuNavigation" in source
-    assert "recordDatasetMenuQuestionClick" in source
+    assert "recordPortalQuestionClick" in source
 
 
 def test_embed_chat_locks_input_while_dataset_menu_loads():

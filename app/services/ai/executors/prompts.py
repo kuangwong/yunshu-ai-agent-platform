@@ -1169,6 +1169,16 @@ class DataQueryPrompts:
         "2) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。"
     )
 
+    # 字段/表/标识符引用错误后的 SQL 修复指引（unknown column/table 等）
+    SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE = (
+        "【字段/表引用修正指引】\n"
+        "1) 不要凭记忆臆造物理列名或 JOIN 键；必须以 get_dataset_schema 返回的字段定义为准。\n"
+        "2) 重点核对：SELECT 列、JOIN ON 条件、WHERE 筛选字段、GROUP BY 键是否与 Schema 一致。\n"
+        "3) 若报错涉及 unknown column/table/invalid identifier 等，优先重查 Schema，"
+        "再修改 SQL 中的列名、表别名或关联键；禁止原样重复失败 SQL。\n"
+        "4) 若 Schema 中仅有中文术语，请使用术语对应的物理字段名，不要直接写未定义的英文列名。"
+    )
+
     # 元数据服务（RAGFlow）不可用时的硬终止回复
     METADATA_UNAVAILABLE = (
         "⚠️ 元数据检索服务（RAGFlow）当前不可用，暂时无法获取数据集结构信息，"

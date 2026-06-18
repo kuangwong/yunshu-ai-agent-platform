@@ -76,7 +76,9 @@ logger = logging.getLogger(__name__)
 SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
 SQL_REPEAT_GATE_PREFIX = "[SQL_REPEAT_GATE]"
 SQL_STATIC_GATE_PREFIX = "[SQL_STATIC_GATE]"
+FAILED_SQL_REPEAT_GATE_PREFIX = "[FAILED_SQL_REPEAT_GATE]"
 TOOL_LOOP_FUSE_THRESHOLD = 3
+FAILED_SQL_REPEAT_THRESHOLD = 2
 DELAY_SECONDS_EXTREME_THRESHOLD = 7 * 24 * 60 * 60
 MAX_DATA_REPAIR_ROUNDS = 2
 DATA_REPAIR_BUDGETS = {
@@ -87,6 +89,7 @@ DATA_REPAIR_BUDGETS = {
     "sql_plan_missing": 1,
     "sql_static_risk": 1,
     "sql_error": 5,
+    "schema_refresh_after_sql_error": 2,
     "empty_sql_result": 1,
     "ratio_anomaly": 1,
     "duration_anomaly": 1,
@@ -205,6 +208,11 @@ class _DataRunState:
     last_applied_schema_retry_keywords: str = ""
     pending_schema_retry: bool = False   # 修复轮受控重试标记（不随 _reset_state_for_repair 清除）
     followup_data_saved: bool = False    # 本轮是否已将结构化 SQL 结果写入 last_data_result
+    failed_sql_signatures: dict[str, int] = field(default_factory=dict)
+    last_failed_sql_normalized: str = ""
+    last_sql_error_summary: str = ""
+    schema_refresh_required: bool = False
+    schema_refreshed_after_sql_error: bool = False
 
     @property
     def has_successful_nonempty_sql(self) -> bool:
@@ -473,6 +481,38 @@ class DataAgentRunner(BaseExecutor):
         return str(output or "").startswith(SQL_STATIC_GATE_PREFIX)
 
     @staticmethod
+    def _is_failed_sql_repeat_gate_block(output: Any) -> bool:
+        return str(output or "").startswith(FAILED_SQL_REPEAT_GATE_PREFIX)
+
+    @staticmethod
+    def _normalize_sql_text(sql: str) -> str:
+        return " ".join(str(sql or "").strip().lower().split())
+
+    @staticmethod
+    def _is_schema_reference_sql_error(message: str) -> bool:
+        """字段/表引用类 SQL 错误：需重查 Schema 后再改 SQL。"""
+        err = str(message or "").lower()
+        if not err.strip():
+            return False
+        patterns = (
+            r"unknown column",
+            r"unknown table",
+            r"invalid column",
+            r"invalid field",
+            r"bad field",
+            r"no such column",
+            r"no such table",
+            r"column .+ does not exist",
+            r"column not found",
+            r"undefined column",
+            r"invalid identifier",
+            r"unresolved column",
+            r"table .+ doesn't exist",
+            r"table .+ does not exist",
+        )
+        return any(re.search(pattern, err) for pattern in patterns)
+
+    @staticmethod
     def _normalize_tool_arg_value(value: Any) -> Any:
         if isinstance(value, dict):
             return {
@@ -507,6 +547,11 @@ class DataAgentRunner(BaseExecutor):
             state.tool_call_signatures.pop(signature, None)
             state.tool_loop_detector = ToolLoopDetector()
             return
+        fuse_threshold = TOOL_LOOP_FUSE_THRESHOLD
+        if tool_name == "execute_sql_query" and (
+            state.last_sql_error_summary or state.failed_sql_signatures
+        ):
+            fuse_threshold = FAILED_SQL_REPEAT_THRESHOLD
         verdict = state.tool_loop_detector.record(tool_name, tool_args)
         count = verdict.count
         if verdict.fused:
@@ -514,14 +559,30 @@ class DataAgentRunner(BaseExecutor):
             state.halt_current_react = True
             state.tool_loop_fuse_reason = verdict.message
             return
-        count = state.tool_call_signatures.get(signature, 0) + 1
-        state.tool_call_signatures[signature] = count
-        if count >= TOOL_LOOP_FUSE_THRESHOLD:
+        if count >= fuse_threshold:
             state.tool_loop_fuse_triggered = True
             state.halt_current_react = True
+            suffix = (
+                "，且近期存在 SQL 执行失败，系统判断继续原样重试只会消耗步数。"
+                if fuse_threshold < TOOL_LOOP_FUSE_THRESHOLD
+                else "，系统判断继续执行大概率只会消耗步数。"
+            )
             state.tool_loop_fuse_reason = (
-                f"工具 `{tool_name}` 使用相同参数连续/重复调用 {count} 次，"
-                "系统判断继续执行大概率只会消耗步数。"
+                f"工具 `{tool_name}` 使用相同参数连续/重复调用 {count} 次{suffix}"
+            )
+            return
+        count = state.tool_call_signatures.get(signature, 0) + 1
+        state.tool_call_signatures[signature] = count
+        if count >= fuse_threshold:
+            state.tool_loop_fuse_triggered = True
+            state.halt_current_react = True
+            suffix = (
+                "，且近期存在 SQL 执行失败，系统判断继续原样重试只会消耗步数。"
+                if fuse_threshold < TOOL_LOOP_FUSE_THRESHOLD
+                else "，系统判断继续执行大概率只会消耗步数。"
+            )
+            state.tool_loop_fuse_reason = (
+                f"工具 `{tool_name}` 使用相同参数连续/重复调用 {count} 次{suffix}"
             )
 
     @staticmethod
@@ -732,9 +793,25 @@ class DataAgentRunner(BaseExecutor):
                         f"{SCHEMA_GATE_PREFIX} 为保证数据准确性，必须先调用 get_dataset_schema "
                         "获取数据集定义，再执行 execute_sql_query。"
                     )
+                if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
+                    return (
+                        f"{SCHEMA_GATE_PREFIX} 上一轮 SQL 因字段/表引用错误失败，必须先重新调用 "
+                        "get_dataset_schema 核对物理列名、表名与 JOIN 键，再修正并执行 SQL。"
+                    )
 
                 current_sql = str(kwargs.get("sql") or kwargs.get("query") or "").strip()
-                current_sql_normalized = " ".join(current_sql.lower().split())
+                current_sql_normalized = self._normalize_sql_text(current_sql)
+
+                if current_sql_normalized:
+                    prior_failures = state.failed_sql_signatures.get(current_sql_normalized, 0)
+                    if prior_failures >= 1:
+                        summary = str(state.last_sql_error_summary or "").strip()
+                        summary_line = f"\n上次错误摘要：{summary[:400]}" if summary else ""
+                        return (
+                            f"{FAILED_SQL_REPEAT_GATE_PREFIX} 该 SQL 已在上一轮执行失败，"
+                            "禁止原样重复提交。请根据错误信息修正字段名、表名、JOIN 条件、"
+                            f"筛选条件或聚合逻辑后再调用 execute_sql_query。{summary_line}"
+                        )
 
                 static_risk = ""
                 if not (state.requires_sql_plan and not state.sql_plan_seen):
@@ -2684,6 +2761,8 @@ class DataAgentRunner(BaseExecutor):
             return ""
         if state.schema_ambiguous:
             return "schema_ambiguous"
+        if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
+            return "schema_refresh_after_sql_error"
         if state.requires_fresh_data and state.sql_before_schema and not state.schema_completed:
             return "sql_before_schema"
         if state.schema_miss and not state.no_authorized_schema:
@@ -2772,6 +2851,15 @@ class DataAgentRunner(BaseExecutor):
                 f"{state.schema_ambiguous_reason}。请停止生成 SQL，先用自然语言和 quick 按钮请用户确认"
                 "具体数据集、指标口径或业务对象；确认前禁止执行 SQL。"
             )
+        if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
+            summary = (state.last_sql_error_summary or state.sql_error_message or "").strip()
+            return (
+                "【Schema 重查要求】上一轮 SQL 因字段/表/标识符引用错误失败，"
+                f"错误信息：{summary[:800]}\n"
+                f"{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}\n"
+                "必须先重新调用 get_dataset_schema，核对物理列名、表名与 JOIN 键。"
+                "在未完成 Schema 重查前禁止 execute_sql_query，也禁止原样重复失败 SQL。"
+            )
         if state.sql_static_risk:
             return (
                 "【SQL 静态风险修正要求】上一轮 execute_sql_query 被平台拦截，"
@@ -2780,13 +2868,22 @@ class DataAgentRunner(BaseExecutor):
                 "或补齐 JOIN 条件。修正并执行成功前禁止直接回答用户。"
             )
         if state.sql_error:
+            error_text = (state.last_sql_error_summary or state.sql_error_message or "").strip()
             repair = (
                 "【SQL 修正要求】上一轮 execute_sql_query 执行失败。"
-                f"错误信息：{state.sql_error_message[:800]}\n"
+                f"错误信息：{error_text[:800]}\n"
                 "请基于已获得的 get_dataset_schema 结果修正 SQL，并再次调用 execute_sql_query。"
+                "禁止原样重复提交与上次完全相同的失败 SQL。"
                 "在 SQL 成功前禁止直接回答用户。"
             )
-            err_lower = state.sql_error_message.lower()
+            if state.last_failed_sql_normalized:
+                repair += (
+                    "\n\n【禁止重复 SQL】上次失败 SQL 归一化后与当前尝试一致时，平台将直接拦截。"
+                    "必须修改至少一处：列名、表名、JOIN、WHERE、时间范围或聚合逻辑。"
+                )
+            err_lower = error_text.lower()
+            if self._is_schema_reference_sql_error(error_text):
+                repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
             if "invalid expression" in err_lower or "unexpected token" in err_lower:
                 repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
             return repair
@@ -2879,6 +2976,11 @@ class DataAgentRunner(BaseExecutor):
         state.schema_miss = False
         state.schema_needs_refinement = False
         # schema_miss_count 不重置，跨轮累计用于连续未命中达到阈值后终止
+        state.tool_loop_detector = ToolLoopDetector()
+        state.tool_call_signatures = {}
+        if repair_kind != "tool_loop_fuse":
+            state.tool_loop_fuse_triggered = False
+            state.tool_loop_fuse_reason = ""
 
     def _resolve_force_execute_sql_tool_choice(self, state: _DataRunState) -> Any | None:
         from agentscope.tool import ToolChoice
@@ -2907,6 +3009,8 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="get_dataset_schema")
         if state.schema_ambiguous:
             return None
+        if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
+            return ToolChoice(mode="get_dataset_schema")
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
         if state.ratio_anomaly:
@@ -2942,6 +3046,8 @@ class DataAgentRunner(BaseExecutor):
             return "优化数据集定义检索"
         if state.schema_ambiguous:
             return "确认数据集或指标口径"
+        if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
+            return "必须先重查数据集定义"
         if state.sql_static_risk:
             return "修正高风险 SQL"
         if state.ratio_anomaly:
@@ -3097,6 +3203,8 @@ class DataAgentRunner(BaseExecutor):
                 details = "\n\n".join(prefix_lines) + "\n\n" + details
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
             details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
+        if tool_name == "execute_sql_query" and self._is_failed_sql_repeat_gate_block(output):
+            details = f"{details}\n\n[系统检测] 已拦截：禁止原样重复执行已失败的 SQL，请修正后再试。"
         if tool_name == "execute_sql_query" and self._is_sql_repeat_gate_block(output):
             details = f"{details}\n\n[系统检测] 已有成功非空查数结果，已拦截重复 SQL 执行。"
         if tool_name == "execute_sql_query" and self._is_sql_static_gate_block(output):
@@ -3175,6 +3283,8 @@ class DataAgentRunner(BaseExecutor):
             return
         state.schema_completed = True
         state.sql_before_schema = False
+        if state.schema_refresh_required:
+            state.schema_refreshed_after_sql_error = True
 
     def _apply_sql_tool_result(
         self,
@@ -3199,7 +3309,22 @@ class DataAgentRunner(BaseExecutor):
             state.sql_error = False
             state.sql_error_message = ""
             return output, False
-        if self._is_schema_gate_block(output) or not state.schema_completed:
+        if self._is_failed_sql_repeat_gate_block(output):
+            state.sql_error = True
+            state.sql_error_message = str(output or "")[:1000]
+            state.last_sql_error_summary = state.sql_error_message
+            state.sql_completed = True
+            return output, False
+        if self._is_schema_gate_block(output):
+            if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
+                state.sql_error = True
+                state.sql_error_message = str(output or "")[:1000]
+                state.last_sql_error_summary = state.sql_error_message
+                state.sql_completed = True
+                return output, False
+            state.sql_before_schema = True
+            return output, False
+        if not state.schema_completed:
             state.sql_before_schema = True
             return output, False
 
@@ -3217,6 +3342,16 @@ class DataAgentRunner(BaseExecutor):
             state.sql_fatal_error = True
             state.sql_fatal_message = state.sql_error_message
         if state.sql_error:
+            normalized_sql = self._normalize_sql_text(sql_text)
+            if normalized_sql:
+                state.failed_sql_signatures[normalized_sql] = (
+                    state.failed_sql_signatures.get(normalized_sql, 0) + 1
+                )
+                state.last_failed_sql_normalized = normalized_sql
+            state.last_sql_error_summary = str(state.sql_error_message or "")[:800]
+            if self._is_schema_reference_sql_error(state.sql_error_message):
+                state.schema_refresh_required = True
+                state.schema_refreshed_after_sql_error = False
             return parsed_output, False
 
         if empty_reason:
@@ -3248,6 +3383,14 @@ class DataAgentRunner(BaseExecutor):
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
         state.sql_repeat_gate_block = False
+        normalized_sql = self._normalize_sql_text(sql_text)
+        if normalized_sql:
+            state.failed_sql_signatures.pop(normalized_sql, None)
+            if state.last_failed_sql_normalized == normalized_sql:
+                state.last_failed_sql_normalized = ""
+        state.schema_refresh_required = False
+        state.schema_refreshed_after_sql_error = False
+        state.last_sql_error_summary = ""
         state.last_successful_sql_output = output
         duration_anomaly, duration_reason = self._detect_duration_anomaly(parsed_output)
         if duration_anomaly:

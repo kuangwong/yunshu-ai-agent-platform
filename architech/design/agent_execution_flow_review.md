@@ -1,6 +1,6 @@
 # 智能体执行流程架构评审
 
-> 文档日期：2026-05-30（评审记录）；2026-06-01 更新 ChatBI 请求类别拆分；2026-06-02 更新路由通用 hint 消费边界；2026-06-09 更新 Assistant / Knowledge 独立 Executor
+> 文档日期：2026-05-30（评审记录）；2026-06-01 更新 ChatBI 请求类别拆分；2026-06-02 更新路由通用 hint 消费边界；2026-06-09 更新 Assistant / Knowledge 独立 Executor；**2026-06-19 更新路由启发式、工具预检、反幻觉 Guard、Skill 自动扫描**
 > 范围：EmbedChat -> AgentService -> Dispatcher -> Executors（Data / Knowledge / Assistant / RAG / OpenClaw）
 > 关联改动：`turn_classifier.py` 通用化、`data_query_turn_classifier.py`、Dispatcher 只做执行器选择、DataQueryExecutor 内部请求类别分析
 
@@ -23,8 +23,8 @@ flowchart TB
 
     subgraph AS["AgentService"]
         M["Redis 会话记忆"]
-        CM["ContextManager + RouterService"]
-        INJ["注入: 技能/LTM/记忆/用户画像"]
+        CM["ContextManager + RouterService<br/>启发式短路 + LLM"]
+        INJ["注入: 技能/LTM/记忆/Skill扫描/用户画像 stable_prefix"]
         DP["AgentDispatcher"]
     end
 
@@ -49,6 +49,8 @@ flowchart TB
 - `TurnClassification` 是通用会话请求分类，只表达 `DATA_QUERY_REQUEST / CONTEXT_ACTION / SKILL_EXECUTION / META_ACTION / GENERAL / KNOWLEDGE` 等跨执行器概念。
 - `shared_turn` 由 `resolve_turn_for_session` 统一产出（启发式 + 意图 LLM），供 Dispatcher 与各 Executor 复用，避免重复意图调用。
 - 路由层输出的 `turn_labels / relation_to_previous / user_action_type` 是通用 hint，可被 Assistant 参考；当前仅把它注入为弱提示词，不做硬分支。
+- **RouterService** 在 LLM 前尝试：问候短路、联网短路、ChatBI 会话粘性打断（`should_inherit_data_agent_session`）。
+- 显式 `agent_id` / 专家模式 → `direct_agent_selection`，跳过自动路由与主助手数据反幻觉 Guard。
 - ChatBI 专用请求类别由 `DataQueryTurnClassifier` 在 `DataQueryExecutor` 内部执行，结果为「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」。
 
 ---
@@ -160,6 +162,9 @@ AgentService 统一输出「轮次分类」日志；ChatBI 场景在 `DATA_QUERY
 - 系统隐式工具（create_skills、memory_search、任务等）是元操作、上下文动作、技能的正确归宿。
 - 非 ChatBI / 非 Knowledge 的 `GENERAL`、`META_ACTION`、`CONTEXT_ACTION` 等轮次走此链路。
 - `turn_labels / relation_to_previous / user_action_type` 会作为「路由层通用理解」注入 system prompt；仅弱 hint，不驱动硬分支。
+- **工具预检**（`tool_nudge_policy` + `agent_tool_preflight_mode`）：按已绑定工具 description 相关度注入便签；`hard` 模式首步强制 ToolChoice。
+- **数据反幻觉 Guard**：仅主助手 + 非 `direct_agent_selection` + 强查数信号；拦截假 ChatBI 话术或「表格+内网 IP/内部字段」类编造；可 yield `quick:/switch_agent_expert`。
+- **Skill 自动扫描**（主助手）：`skill_auto_scan_*` 配置，未挂载技能时按问题扫描技能库。
 
 ---
 
@@ -192,6 +197,10 @@ AgentService 统一输出「轮次分类」日志；ChatBI 场景在 `DATA_QUERY
 5. `GeneralChat*` 重命名为 `Assistant*`（通用助手，非闲聊专用）
 6. 多智能体共享 `session_turn`（通用分类 + 意图 LLM）
 7. RAGExecutor：`conversation_id` 修复
+8. 路由启发式短路（问候/联网/ChatBI 粘性打断）与 `should_inherit_data_agent_session`
+9. 主助手工具预检（`tool_nudge_policy`）与 Skill 自动扫描
+10. 主助手数据反幻觉 Guard 收紧 + 专家直选 bypass
+11. ChatBI `sql_plan` 可选门禁（`enable_sql_plan`）+ 前端 SqlPlanCard 渲染
 
 ### 后续可选
 

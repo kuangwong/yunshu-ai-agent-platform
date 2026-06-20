@@ -15,14 +15,15 @@
 **云枢智能体平台** 是专为企业级复杂场景打造的 AI 智能中枢。
 
 平台核心聚焦于以下能力矩阵：
-*   💬 **深度交互式对话 (Dialogue & Co-Agent)**：提供极速流式响应，支持复杂意图理解与多专家协同。支持快捷指令、@Mention 智能体快速提及、多模态附件上传与 Vision 识图问答，并无缝直连知识检索与动态技能 (Skills) 链执行。
-*   🔌 **灵活的嵌入式 (Embed) 集成**：支持通过嵌入式聊天 SDK 快速集成至企业内各业务系统，并无缝对接现有用户鉴权体系，实现统一的安全合规与租户隔离。
-*   📊 **原生企业级 ChatBI**：内置完整的数据源管理、可视化元数据同步、以及核心的“案例数据集”机制，通过 Few-Shot 强化与 SQL 报错自愈，实现高准确率的自然语言转 SQL 查询。
-*   🤝 **开箱即用的主流生态集成**：原生对接 **RAGFlow 托管智能体与知识库** 以实现非结构化数据的多维精准检索与专业溯源；深度集成 **OpenClaw🦞 大模型安全网关** 代理，实现大模型调用的安全网关鉴权与多维度审计。
-*   📚 **可视化知识库管理中心 (Knowledge Base Center)**：支持企业级非结构化知识文档的一体化树形管理，提供召回检索测试、语义关联合并、生命周期维护及数据隔离防护。
-*   🛠️ **全链路在线 Debug 与 Trace 分析**：可视化呈现 AI 决策链、工具调用详情及生成的 SQL 执行计划，支持在线开发调试与追踪，赋能开发人员快速定位和调优。
-*   ⚙️ **API 接口与分布式调度**：暴露标准化、安全的服务级 API，集成基于 APScheduler + Redis 的任务调度系统，支持模拟智能体身份执行周期/单次自动化任务。
-*   🎯 **提示词工厂 (Prompt Factory)**：提供系统提示词的版本控制与可视化管理（位于 `architech/prompts/`），确保模型行为在企业生产环境中的精确可控。
+*   💬 **深度交互式对话 (Dialogue & Co-Agent)**：极速流式响应，支持自动路由与 **专家模式 / @提及直选**、多专家协同。内置 **工具预检** 促发模型主动调用已绑定工具；主助手支持 **Skill 自动扫描** 与权限挂起恢复；支持快捷指令、多模态附件与 Vision 识图。
+*   🧠 **长期记忆与跨会话回顾**：LTM 偏好注入 + 内置 `memory_search` 按需检索会话/每日摘要；记忆管理中心提供向量检索运维与数据治理。
+*   🔌 **灵活的嵌入式 (Embed) 集成**：通过嵌入式 Chat SDK 快速集成至企业业务系统，对接现有鉴权体系，实现租户隔离与安全合规。
+*   📊 **原生企业级 ChatBI**：数据源与元数据管理、案例集 Few-Shot、SQL 自愈与 **sql_plan 结构化计划**；**我的数据门户**（`/dataset_portal`）个性化导航；支持直连物理 SQL 与黄金报表暂存。
+*   🤝 **开箱即用的主流生态集成**：对接 **RAGFlow** 托管智能体与知识库；集成 **OpenClaw🦞** 大模型安全网关，透传用户身份与数据集权限上下文。
+*   📚 **可视化知识库管理中心**：非结构化文档树形管理、召回测试、语义合并；**Knowledge 执行器**在 ReAct 前自动检索并注入引用。
+*   🛠️ **全链路 Debug 与 Trace**：决策链、工具调用、SQL 计划卡片可视化；结构化查数结果 CSV/Excel 导出。
+*   ⚙️ **API 与分布式调度**：标准化 V1 API；APScheduler + Redis 任务中心，模拟智能体身份执行周期任务。
+*   🎯 **提示词工厂 (Prompt Factory)**：系统提示词版本管理与草稿（`architech/prompts/`），生产行为可控可审计。
 
 ---
 
@@ -95,17 +96,21 @@
 ## 🌟 核心能力 (Core Capabilities)
 
 ### 1. 🧠 多引擎与混合编排 (Multi-Engine & Hybrid Orchestration)
-*   **多意图编排**：系统自动将复杂问题拆解为多个子任务（如：“查上周 PUE 并对比 SOP” -> 拆解为 ChatBI + RAG），支持专家 Agent 异步并行工作，由 Synthesizer 聚合生成逻辑一致的最终回复。
-*   **AgentScope ReAct 引擎**：General / ChatBI 基于 AgentScope Agent + Toolkit，遵循“思考-行动-观察-反思”闭环，支持本地工具链自主调度与权限挂起恢复。
-*   **RAGFlow 托管 Agent 驱动**：一键对接 RAGFlow 在线托管的知识智能体，直接利用其强大的并行检索和流式对话底座。
-*   **OpenClaw🦞 大模型安全网关**：对接小龙虾 API 网关代理，利用 `AUTH_CONTEXT` (授权上下文) 在请求模型时透传当前用户的真实身份、频道及可访问的元数据/数据集列表，确保企业级数据隔离与安全。
+*   **智能路由**：未指定智能体时，先走问候/联网/ChatBI 会话粘性等启发式短路，再 LLM 语义路由；支持多意图并行与 Synthesizer 聚合。
+*   **专家直选**：Embed 专家模式、`agent_id` 或 `@` 提及可跳过自动路由，直达指定智能体。
+*   **AgentScope ReAct**：Assistant / ChatBI / Knowledge 基于 AgentScope Agent + Toolkit，闭环调度本地工具，支持权限挂起与恢复。
+*   **主助手增强**：工具预检（按绑定工具相关度促发调用）、Skill 自动扫描、反业务数据幻觉 Guard（可一键切换 ChatBI）。
+*   **RAGFlow 托管 Agent**：对接 RAGFlow 在线托管智能体，复用其检索与流式对话能力。
+*   **OpenClaw🦞 安全网关**：通过 `AUTH_CONTEXT` 透传用户身份、频道及可访问数据集，保障租户隔离。
 
 
 ### 2. 📊 智能数仓分析 (ChatBI & Self-Healing)
-*   **Text-to-SQL 闭环**：通过元数据注入，实现自然语言直接查询业务数据库。
-*   **案例集与 Few-Shot 增强**：**核心黑科技**。内置案例集（经验库）管理模块，支持用户反馈一键入库与人工审核，通过 RAGFlow 经验库进行相似度检索，并在生成 SQL 时将优秀案例作为 Few-Shot 动态注入 LLM 提示词头部，大幅提升业务专有 SQL 的生成准确率。
-*   **自愈机制 (Self-Healing)**：**独家特性**。当 SQL 生成错误时，系统自动拦截报错并引导 LLM 根据 Schema 修正，大幅提升一次性查询成功率。
-*   **独立数据源管理**：**新增特性**。提供可视化管理界面，支持多类型数据库（含 Oracle Thin/Thick 模式、ClickHouse、MySQL 等）连接配置的管理、测试与 DDL 智能读取，保障连接别名全局唯一。
+*   **Text-to-SQL 闭环**：元数据注入 + Schema 门禁 + 多层 SQL 护栏，自然语言直查业务库。
+*   **我的数据门户**：系统指令 `/dataset_portal`（兼容旧 `/dataset_menu`），按权限生成数据集导航与 quick 追问。
+*   **案例集与 Few-Shot**：经验库审核入库、相似案例动态注入提示词头部，提升专有 SQL 准确率。
+*   **自愈与计划推演**：SQL 报错自动修复轮次；可选 `enable_sql_plan` 要求高风险查询先输出结构化 `<sql_plan>`（前端卡片展示）。
+*   **澄清短路**：非查数/寒暄类请求在分类层直接澄清，避免误触发查库。
+*   **数据源管理**：可视化管理 Oracle / ClickHouse / MySQL 等连接，支持 DDL 抓取与连接别名唯一校验；支持黄金报表暂存与直连物理 SQL 执行。
 
 
 ### 3. 🔌 开放插件生态 (MCP Integration)
@@ -113,25 +118,45 @@
 *   **无限扩展**：无需修改核心代码，即可通过 MCP 服务器连接 Jira、Email、GitLab 等外部生产力工具。
 
 ### 4. 📚 深度知识增强与集成 (RAG & Knowledge Hub)
-*   **一站式知识库管理**：平台内置强大的知识管理工作台，支持文件夹与文档的一体化树形管理，提供文件切片、召回检索测试、语义合并与版本控制能力。
-*   **原生 Chat 无缝集成**：知识库能力原生嵌入 Chat 对话流中，AI 会话时自动并发检索并召回最相关的知识切片注入 Prompt 上下文；同时，在 UI 端以高颜值溯源卡片直观展示引用出处，保障回答的可信性与企业数据安全隔离。
+*   **一站式知识库管理**：树形文档管理、切片预览、召回测试、语义合并与生命周期审计。
+*   **Knowledge 执行器**：对话中自动 `search_knowledge_base` 预检索，ReAct 阶段注入引用卡片，空召回/无引用回答可拦截。
+*   **RAGFlow 托管路径**：亦可一键对接 RAGFlow 托管知识智能体，复用外部检索与流式底座。
 
 ### 5. 🛠️ 企业级配套与安全审计 (Enterprise Toolkit & RBAC)
-*   **分布式任务中心**：**新增特性**。集成基于 APScheduler + Redis 的任务调度系统，支持模拟智能体身份执行周期性或单次自动触发任务（如定时审计、数据同步）。
-*   **精细化 RBAC 权限与数据隔离**：内置细粒度的用户、角色及元素级权限管理系统，支持菜单权限只读、操作权限隔离，实现严苛的企业内安全合规管控。
-*   **SSO 统一认证与数据脱敏**：原生对接 SSO 统一认证登录（支持通过后台胶囊开关一键启闭），支持用户数据的高效安全同步；大模型审计日志捕获时，对密码、API Key 等敏感字段实施自动深度脱敏。
-*   **安全审计水印 (Watermark)**：**新增特性**。支持一键启闭嵌入式对话窗口背景水印，可按【用户名 + 时间戳】或【自定义文本】自动平铺渲染，强力防御截屏信息外泄。
-*   **链路可视化与数据导出**：支持 AI 决策链路 Trace 可视化展示，并提供结构化数据查询结果一键导出（支持 CSV/Excel 格式，已处理中文乱码）。
+*   **分布式任务中心**：APScheduler + Redis 调度，支持模拟智能体身份执行周期/单次任务。
+*   **精细化 RBAC**：用户、角色、菜单与元素级权限，读写操作隔离。
+*   **SSO 与脱敏**：SSO 登录可后台开关；审计日志自动脱敏密码、API Key 等敏感字段。
+*   **安全审计水印**：Embed 窗口背景水印（用户名+时间戳或自定义文案），防截屏外泄。
+*   **链路可视化与导出**：Trace 时间线调试；查数结果 CSV/Excel 导出（utf-8-sig）。
 
 ---
 
 ## 🔄 智能体工作流 (Execution Flow)
 
-系统遵循 **“路由 -> 分发 -> 执行 -> 聚合”** 的环形逻辑：
+系统遵循 **「路由 → 分发 → 执行 → 聚合」** 链路：
 
-1.  **意图路由 (Router)**：基于 LLM 和指代消解技术，决定调用哪些专家。
-2.  **动态执行 (ReAct)**：执行器采用“思考-行动-观察-反思”循环，自主决定工具调用路径。
-3.  **结果合成 (Synthesis)**：消除冗余，将多源数据转化为人类易读的专业报告。
+1.  **意图路由 (Router)**：未传 `agent_id` 时，先尝试启发式短路（纯问候、联网搜索、ChatBI 会话非粘性话题切换 → 通用助手），否则 LLM 结合最近对话与智能体元数据选型；支持多专家并行 hint。
+2.  **专家直选**：Embed 专家模式 / `agent_id` / `@提及` 跳过 Router，直接进入指定智能体。
+3.  **执行分发 (Dispatcher)**：按引擎与能力选择 **Knowledge** / **ChatBI (DataQuery)** / **Assistant** / RAGFlow / OpenClaw 执行器；ChatBI 内部再判定新查数、复用结果、上下文动作等。
+4.  **动态执行 (ReAct)**：AgentScope「思考-行动-观察」循环，工具权限挂起、SQL 护栏、工具预检等按执行器生效。
+5.  **结果合成 (Synthesis)**：多 Agent 场景由 Synthesizer 聚合；单 Agent 流式 SSE 返回正文、日志与引用。
+
+详见 [architech/design/chat/CHAT_FLOW.md](architech/design/chat/CHAT_FLOW.md) · [AGENT_ROUTING_DESIGN.md](architech/design/AGENT_ROUTING_DESIGN.md)
+
+---
+
+## 📚 文档与架构 (Documentation)
+
+| 文档 | 说明 |
+|------|------|
+| [HOW_TO_INSTALL.md](HOW_TO_INSTALL.md) | 安装部署与 FAQ |
+| [architech/README.md](architech/README.md) | 架构文档索引 |
+| [CHAT_FLOW.md](architech/design/chat/CHAT_FLOW.md) | 聊天端到端流程 |
+| [PROMPT_LAYERS.md](architech/design/chat/PROMPT_LAYERS.md) | 提示词分层与注入 |
+| [AGENT_ROUTING_DESIGN.md](architech/design/AGENT_ROUTING_DESIGN.md) | 智能体路由设计 |
+| [api_integration_guide.md](docs/md/api_integration_guide.md) | Embed / V1 API 集成 |
+| [ai_agent_gating_contract.md](docs/md/ai_agent_gating_contract.md) | Agent 门控契约 |
+| [tests/CHECKLIST.md](tests/CHECKLIST.md) | 自动化测试验收清单 |
 
 ---
 

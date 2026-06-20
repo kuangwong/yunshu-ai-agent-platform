@@ -12,14 +12,15 @@
 **Yunshu AI Agent Platform** is an AI intelligence center purpose-built for complex enterprise scenarios.
 
 The platform revolves around the following core capability matrix:
-*   💬 **Deep Interactive Dialogue (Dialogue & Co-Agent)**: Provides high-performance streaming chat, supporting complex intent resolution, multi-agent synthesis, and high-fidelity @Mention taggings. Native support for slash commands, multimodal attachment uploads with Vision capability, seamlessly bridging direct knowledge retrievals and dynamic Skills execution.
-*   🔌 **Flexible Embedded Integration**: Supports fast embedment into existing enterprise portals via our custom Chat SDK, seamlessly binding with local user authentication systems to ensure strict security and tenant isolation.
-*   📊 **Native Enterprise ChatBI**: Built-in visual data source management, metadata synchronization, and a core "Case Dataset" module. Powered by dynamic Few-Shot injection and SQL self-healing to yield highly accurate Text-to-SQL results.
-*   🤝 **Out-of-the-Box Ecosystem Integration**: Native connection to **RAGFlow managed agents and knowledge bases** for unstructured semantic search and citations; deep integration with the **OpenClaw🦞 LLM Security Gateway** to secure model traffic and enforce tenant boundary validation.
-*   📚 **One-Stop Knowledge Base Center**: Supports unified directory-file tree management for enterprise unstructured documents, offering parsing/splitting, recall test, semantic merging, and version controlling.
-*   🛠️ **Full-Link Online Debug & Trace**: Provides visual tracking of the AI's step-by-step reasoning, tool call histories, and SQL execution plans, allowing developers to debug and optimize model logic in real-time.
-*   ⚙️ **Robust APIs & Distributed Scheduling**: Exposes standard, production-ready backend APIs, alongside an APScheduler + Redis task center for scheduling periodic/one-time automated workflows under designated agent credentials.
-*   🎯 **Prompt Factory**: Built-in system prompt version control and management (located under `architech/prompts/`) to guarantee deterministic and compliant LLM behaviors.
+*   💬 **Deep Interactive Dialogue**: High-performance streaming chat with auto-routing, **expert mode / @mention direct selection**, and multi-agent synthesis. **Tool preflight** nudges the model to call bound tools; the main assistant supports **skill auto-scan** and permission suspend/resume; slash commands, multimodal attachments, and Vision Q&A.
+*   🧠 **Long-Term & Cross-Session Memory**: LTM preference injection plus on-demand **`memory_search`** over session/daily summaries; Memory Management Console for vector ops and governance.
+*   🔌 **Flexible Embedded Integration**: Embed Chat SDK for enterprise portals with existing auth, tenant isolation, and compliance.
+*   📊 **Native Enterprise ChatBI**: Data sources, metadata sync, case-library Few-Shot, SQL self-healing, and optional **sql_plan** structured plans; **My Data Portal** via `/dataset_portal`; direct physical SQL and golden report stash.
+*   🤝 **Ecosystem Integration**: **RAGFlow** managed agents & knowledge bases; **OpenClaw🦞** LLM security gateway with user identity and dataset context passthrough.
+*   📚 **Knowledge Base Center**: Tree document management, recall testing, semantic merge; **Knowledge executor** auto-retrieves before ReAct with citation cards.
+*   🛠️ **Debug & Trace**: Decision chains, tool calls, SQL plan cards; CSV/Excel export for structured query results.
+*   ⚙️ **APIs & Scheduling**: Standard V1 APIs; APScheduler + Redis task center under agent identities.
+*   🎯 **Prompt Factory**: System prompt versioning and drafts under `architech/prompts/`.
 
 ---
 
@@ -90,41 +91,65 @@ The platform revolves around the following core capability matrix:
 ## 🌟 Core Capabilities
 
 ### 1. 🧠 Multi-Engine & Hybrid Orchestration
-*   **Multi-Intent Orchestration**: The system automatically breaks down complex user queries into subtasks (e.g., "Check PUE from last week and compare with SOP" -> ChatBI + RAG), orchestrating parallel execution across expert agents, with a Synthesizer aggregating results into a coherent final response.
-*   **AgentScope ReAct Engine**: General and ChatBI agents run on AgentScope Agent + Toolkit, following a closed-loop "Reasoning-Action-Observation-Reflection" lifecycle with permission suspend/resume support.
-*   **RAGFlow Managed Agent**: One-click connection to RAGFlow online-hosted knowledge agents, leveraging their robust parallel retrieval and stream-dialogue infrastructure.
-*   **OpenClaw🦞 LLM Security Gateway**: Proxied through the OpenClaw API gateway, it utilizes `AUTH_CONTEXT` (Authorization Context) to pass through the current user's identity, channel, and accessible metadata/dataset lists, ensuring enterprise-grade data isolation and security.
+*   **Smart routing**: When no agent is specified, heuristic shortcuts (greetings, web search, ChatBI session break) run before LLM semantic routing; multi-intent parallel execution with Synthesizer aggregation.
+*   **Direct expert selection**: Embed expert mode, `agent_id`, or `@mention` skips auto-routing and loads the chosen agent.
+*   **AgentScope ReAct**: Assistant / ChatBI / Knowledge run on AgentScope Agent + Toolkit with permission suspend/resume.
+*   **Main assistant extras**: Tool preflight (relevance-based nudge), skill auto-scan, anti–business-data hallucination guard with one-click ChatBI switch.
+*   **RAGFlow managed agents**: Connect to RAGFlow-hosted bots for retrieval and streaming dialogue.
+*   **OpenClaw🦞 gateway**: Passes `AUTH_CONTEXT` (identity, channel, accessible datasets) for tenant isolation.
 
 ### 2. 📊 Intelligent Warehouse Analysis (ChatBI & Self-Healing)
-*   **Closed-Loop Text-to-SQL**: Achieves natural language querying against production databases through metadata injection.
-*   **Case Repository & Few-Shot Enhancement**: **Core Technology**. Built-in case library (experience base) management module supporting one-click ingestion of user feedback and manual auditing. It conducts similarity searches through RAGFlow and dynamically injects high-quality historical queries as Few-Shot examples at the head of LLM system prompts, greatly improving the generation accuracy of domain-specific SQL.
-*   **Self-Healing Mechanism**: **Exclusive Feature**. When SQL execution fails, the system automatically intercepts the error and guides the LLM to auto-correct based on table schemas, significantly raising the first-attempt query success rate.
-*   **Independent Data Source Management**: **New Feature**. Provides a visual configuration UI to manage, test, and intelligently sync DDL from multiple database types (including Oracle Thin/Thick modes, ClickHouse, MySQL, etc.), guaranteeing globally unique connection aliases.
+*   **Text-to-SQL loop**: Metadata injection, schema gates, and layered SQL guards.
+*   **My Data Portal**: Slash command `/dataset_portal` (legacy `/dataset_menu` still works) for permission-aware navigation and quick follow-ups.
+*   **Case library & Few-Shot**: Audited experience base with dynamic head-of-prompt injection.
+*   **Self-healing & sql_plan**: SQL error repair rounds; optional `enable_sql_plan` for high-risk queries with structured `<sql_plan>` cards in the UI.
+*   **Clarification short-circuit**: Non-data chit-chat clarified at classification without forcing SQL.
+*   **Data sources**: Visual Oracle / ClickHouse / MySQL management, DDL sync, golden report stash, and direct physical SQL execution.
 
 ### 3. 🔌 Open Plugin Ecosystem (MCP Integration)
 *   **Native MCP Support**: Fully compliant with Anthropic's Model Context Protocol.
 *   **Infinite Extensibility**: Seamlessly connect to external productivity tools like Jira, Email, GitLab, etc. via MCP servers without modifying core code.
 
 ### 4. 📚 Deep Knowledge Enhancement & Integration (RAG & Knowledge Hub)
-*   **One-Stop Knowledge Base Center**: Built-in visual knowledge workbench supporting tree-like folder/document management, file slice previewing, recall test, semantic merging, and lifecycle auditing.
-*   **Native Chat Integration**: Knowledge bases are natively embedded into active chat flows, auto-retrieving and injecting relevant slices into the Prompt context. Visually highlights transparent source citations within the UI chat bubbles.
+*   **Knowledge workbench**: Tree document management, slice preview, recall testing, semantic merge, lifecycle audit.
+*   **Knowledge executor**: Auto `search_knowledge_base` prefetch before ReAct; citation cards; blocks uncited factual answers when retrieval is empty.
+*   **RAGFlow managed path**: Optionally connect RAGFlow-hosted knowledge agents instead.
 
-### 5. 🛠️ Enterprise Security, Audit & Utilities (Enterprise Toolkit & RBAC)
-*   **Distributed Task Center**: **New Feature**. Integrates an APScheduler + Redis task scheduling system to run periodic or one-off automated tasks (such as scheduled audit reports, data sync) under specific agent identities.
-*   **Granular RBAC & Data Isolation**: Built-in fine-grained user, role, and element-level permission controls, securing read-only menus and isolating write actions for enterprise compliance.
-*   **SSO Integration & Data Masking**: Native integrations with SSO single sign-on (toggle-controlled via operational UI), supporting high-efficiency user syncing; automatically sanitizes sensitive fields (passwords, API keys) in audit trails.
-*   **Anti-Leakage Audit Watermark**: **New Feature**. Protects embedded chat containers with overlay watermarks, customizable by [username + timestamp] or [custom text] to prevent screenshot leakages.
-*   **Trace Flow & Data Exports**: Supports visual trace debugging for AI decision flows and prints execution steps; offers one-click data exports (CSV/Excel) without Chinese charset issues.
+### 5. 🛠️ Enterprise Security, Audit & Utilities
+*   **Task center**: APScheduler + Redis for periodic/one-off jobs under agent identities.
+*   **Granular RBAC**: User, role, menu, and element-level permissions.
+*   **SSO & masking**: Toggleable SSO; audit logs mask passwords and API keys.
+*   **Embed watermark**: Username + timestamp or custom overlay text against screenshot leaks.
+*   **Trace & export**: Timeline debugging; CSV/Excel query exports (utf-8-sig).
 
 ---
 
 ## 🔄 Execution Flow
 
-The system operates on a cyclic **"Routing -> Dispatch -> Execution -> Synthesis"** logic:
+The system follows **Routing → Dispatch → Execution → Synthesis**:
 
-1.  **Intent Router**: Determines which expert agents to invoke based on LLM intent routing and coreference resolution.
-2.  **Dynamic Execution (ReAct)**: The executor implements the "Reasoning-Action-Observation-Reflection" loop to dynamically decide tool-calling paths.
-3.  **Result Synthesis**: Eliminates redundancy, converting multi-source raw output into structured, human-readable professional reports.
+1.  **Intent Router**: Without `agent_id`, heuristic shortcuts run first (greetings, web search, ChatBI session break → general assistant), then LLM routing with recent history and agent metadata; multi-agent hints supported.
+2.  **Direct selection**: Embed expert mode, `agent_id`, or `@mention` bypasses the router.
+3.  **Dispatcher**: Routes to **Knowledge** / **ChatBI (DataQuery)** / **Assistant** / RAGFlow / OpenClaw; ChatBI classifies new query vs reuse vs context action internally.
+4.  **ReAct execution**: AgentScope reasoning-action loop with per-executor guards (SQL gates, tool preflight, permissions).
+5.  **Synthesis**: Multi-agent answers aggregated by Synthesizer; single-agent streams SSE content, logs, and citations.
+
+See [CHAT_FLOW.md](architech/design/chat/CHAT_FLOW.md) · [AGENT_ROUTING_DESIGN.md](architech/design/AGENT_ROUTING_DESIGN.md)
+
+---
+
+## 📚 Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [HOW_TO_INSTALL.md](HOW_TO_INSTALL.md) | Installation & FAQ |
+| [architech/README.md](architech/README.md) | Architecture index |
+| [CHAT_FLOW.md](architech/design/chat/CHAT_FLOW.md) | End-to-end chat flow |
+| [PROMPT_LAYERS.md](architech/design/chat/PROMPT_LAYERS.md) | Prompt layering |
+| [AGENT_ROUTING_DESIGN.md](architech/design/AGENT_ROUTING_DESIGN.md) | Agent routing |
+| [api_integration_guide.md](docs/md/api_integration_guide.md) | Embed / V1 API integration |
+| [ai_agent_gating_contract.md](docs/md/ai_agent_gating_contract.md) | Agent gating contract |
+| [tests/CHECKLIST.md](tests/CHECKLIST.md) | Test checklist |
 
 ---
 

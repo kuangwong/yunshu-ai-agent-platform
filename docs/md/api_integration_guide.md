@@ -92,15 +92,33 @@ python3 scripts/reinit_system_agents.py
 
 ## 4. 路由逻辑详解 (Router Logic)
 
-Router Service 是编排的核心组件，其决策逻辑如下：
+Router Service 是编排的核心组件。未传 `agent_id` / `agent_name` 时决策顺序如下：
 
-1. **元数据加载**: 从数据库加载所有活跃 Agent 的 `name`, `description`, `capabilities`。
-2. **意图分析**: 将用户输入 + Agent 列表发送给 LLM (DeepSeek-V3)。
-3. **决策 (复合意图)**: 
+### 4.1 启发式短路（无 LLM）
+
+| 条件 | 结果 |
+|------|------|
+| 纯问候/寒暄（`looks_like_greeting`） | 通用助手 |
+| 联网/外部公网搜索（`looks_like_web_search_query`） | 通用助手（配合 `web_search` 等工具） |
+| 上轮为 ChatBI，但本轮 **不**满足 `should_inherit_data_agent_session()` | 打断粘性 → 通用助手 |
+
+`should_inherit_data_agent_session` 仅在对**已有查数结果**的追问，或含**强内部业务查数信号**时返回 true。
+
+### 4.2 LLM 语义路由
+
+1. **元数据加载**: 从数据库加载当前用户有权限的活跃 Agent 的 `name`, `description`, `capabilities`。
+2. **上下文组装**: 最近约 6 轮历史（逐条截断、去表格/代码块）+ 上一轮智能体 + 必要时「禁止机械沿用 ChatBI」提示。
+3. **意图分析**: 将用户输入 + Agent 列表 + 历史发送给路由 LLM（`DEFAULT_SYSTEM_PROMPT`，代码内置）。
+4. **决策 (复合意图)**:
    - LLM 返回最匹配的 `agent_name` (Primary)。
-   - 如果问题涉及多个领域，LLM 还会返回 `secondary_agents` 列表。
-4. **Fallback 机制**:
-   - 如果 LLM 无法决策、置信度低 (< 0.6) 或报错，系统自动降级到 `sys-agent-chat` (通用对话助手)。
+   - 若 `enable_multi_agent` 且问题跨域，可返回 `secondary_agents`。
+   - 附带 `turn_labels`、`relation_to_previous`、`user_action_type` 作为 executor 弱 hint。
+5. **Fallback 机制**:
+   - LLM 解析失败（最多重试 1 次）、置信度低或异常时，降级到 `sys-agent-chat`（通用对话助手）。
+
+### 4.3 专家直选
+
+传 `agent_id` / `agent_name` 或 Embed **专家模式** 时：**跳过** Router LLM，并设置 `route_hints.direct_agent_selection=true`（主助手数据反幻觉 Guard 不启用）。
 
 ---
 

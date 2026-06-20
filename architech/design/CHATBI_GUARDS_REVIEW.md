@@ -35,8 +35,9 @@
         │     ├─ [G5] 文本输出阻断（ready_to_answer 守卫）
         │     │     Schema/SQL 条件未满足时，把模型输出缓冲，不下发给用户
         │     │
-        │     └─ [G6] SQL Plan 门禁（高风险查询）
-        │           含比率/趋势/排名/分组 → 要求先输出 <sql_plan>
+        │     └─ [G6] SQL Plan 门禁（高风险查询，可选）
+        │           须 debug_options.enable_sql_plan=true 且问题命中高风险关键词
+        │           → 要求先输出 <sql_plan>{...}</sql_plan>
         │
         └─ 修复轮（MAX_DATA_REPAIR_ROUNDS=2）
               ├─ [G7] Schema 顺序修复：先取 Schema 再执行 SQL
@@ -67,7 +68,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `execute()` ~L469 |
+| 实现位置 | `data_agent_runner.py` — `execute()` 复用分支；`_synthesize_from_last_data_result` |
 | 触发条件 | `turn_type == REUSE_PREVIOUS_RESULT` |
 | 无历史结果时 | 返回错误 log + `NO_REUSABLE_RESULT` 提示，直接 return |
 | 有历史结果时 | 跳过 Schema/SQL，进入 `_synthesize_from_last_data_result` |
@@ -89,7 +90,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_wrap_tools_with_schema_gate()` ~L319 |
+| 实现位置 | `data_agent_runner.py` — `_wrap_tools_with_schema_gate()` |
 | 触发条件 | 模型调用 `execute_sql_query` 但 `schema_completed=False` |
 | 返回内容 | `SCHEMA_GATE_PREFIX` 错误字符串，SQL 不实际执行 |
 | 作用 | 在工具函数层面强制顺序：Schema → SQL |
@@ -100,7 +101,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_wrap_tools_with_schema_gate()` ~L344 |
+| 实现位置 | `data_agent_runner.py` — `_wrap_tools_with_schema_gate()`（与 G3 同包装器） |
 | 触发条件 | 模型在同一轮 ReAct 中提交了已成功执行过的相同 SQL |
 | 返回内容 | `SQL_REPEAT_GATE_PREFIX` + 缓存结果注入 |
 | 作用 | 防止重复查询、Token 浪费和幻觉循环 |
@@ -111,7 +112,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `on_text_block_delta()` ~L1482，`_emit_final_guard()` ~L1640 |
+| 实现位置 | `data_agent_runner.py` — `on_text_block_delta()`、`_emit_final_guard()` |
 | 触发条件 | `state.ready_to_answer == False` 时模型输出文字 |
 | 实现方式 | 把 delta 存入 `blocked_content`，不 yield 给用户 |
 | 最终兜底 | 整个 ReAct 结束后 `_emit_final_guard` 输出拦截提示 |
@@ -119,14 +120,17 @@
 
 ---
 
-### [G6] SQL Plan 门禁（高风险查询）
+### [G6] SQL Plan 门禁（高风险查询，可选）
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_should_require_sql_plan()` ~L1809，`on_text_block_delta` 内检测 |
-| 触发条件 | 问题包含：率/占比/同比/环比/趋势/Top/排名/JOIN/分组 等关键词 |
-| 要求 | 执行 SQL 前须在 `<thought>` 中输出 `<sql_plan>{...}</sql_plan>` |
+| 实现位置 | `data_agent_runner.py` — `_is_sql_plan_enabled()`、`_should_require_sql_plan()`、`on_text_block_delta` |
+| 开关 | `debug_options.enable_sql_plan`（Embed / 调试页 `enableSqlPlan`；默认关闭时 G6/G11 不生效） |
+| 触发条件 | 开关开启 **且** 新查数路径 **且** 问题含高风险关键词（率/占比/同比/趋势/Top/JOIN/分组等，见 `_should_require_sql_plan`） |
+| 要求 | 执行 SQL 前须在模型输出中给出 `<sql_plan>{...JSON...}</sql_plan>`（前端 `MessageRenderer` + `SqlPlanCard` 可结构化展示） |
 | 若缺失 | `sql_plan_missing=True` → 进入修复轮 G11 |
+
+> **说明**：明细/JOIN 查询**不再**因缺少 `LIMIT` 被静态门禁硬拦截（见 `ai_agent_gating_contract.md` § SQL 安全）；G6 与 LIMIT 无关。
 
 ---
 
@@ -134,7 +138,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_build_repair_message()` ~L1673 |
+| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
 | 触发条件 | `sql_before_schema=True`（SQL 在 Schema 之前被触发） |
 | 修复动作 | 注入强约束提示 + `ToolChoice(mode="get_dataset_schema")` 强制首选 |
 
@@ -144,7 +148,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_build_repair_message()` ~L1680 |
+| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
 | 触发条件 | `schema_miss=True` 且非无授权 |
 | 修复动作 | 要求换更宽泛关键词重试 + `ToolChoice(mode="get_dataset_schema")` |
 
@@ -154,7 +158,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_build_repair_message()` ~L1695 |
+| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
 | 触发条件 | `sql_error=True` |
 | 修复动作 | 注入错误信息 + `ToolChoice(mode="required")` 强制调用工具 |
 | 致命错误 | `sql_fatal_error=True`（权限拒绝/表不存在）→ 直接终止，不进修复轮 |
@@ -165,7 +169,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_build_repair_message()` ~L1702 |
+| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
 | 触发条件 | `empty_sql_result=True` |
 | 修复动作 | 要求先用诊断 SQL 复查筛选条件/JOIN/CTE |
 | 诊断 SQL 识别 | `_is_diagnostic_sql()` 识别 SHOW/DISTINCT LIMIT/COUNT without GROUP/LIMIT<=10 |
@@ -176,7 +180,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_build_repair_message()` ~L1687 |
+| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
 | 触发条件 | `sql_plan_missing=True`（高风险查询未提供计划） |
 | 修复动作 | 要求补充 `<sql_plan>` 再执行 SQL，tool_choice=None（让模型自由输出计划） |
 

@@ -74,7 +74,7 @@ sequenceDiagram
 
 | 条件 | 使用的 ID |
 |------|-----------|
-| `routingMode === 'expert'` 且已选专家 | `config.expertAgentId` |
+| `routingMode === 'expert'` 且已选专家 | `config.expertAgentId`（后端 `route_hints.direct_agent_selection=true`，跳过自动路由与主助手反幻觉 Guard） |
 | 否则 | `config.overrideAgentId`（`@` 提及）或 `config.agentId`（嵌入默认） |
 
 ### 1.6 UI 反馈
@@ -415,8 +415,8 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | 条件 | 行为 |
 |------|------|
 | 传了 `version_id` | 加载指定版本配置 |
-| 传了 `agent_id` / `agent_name` | 直接加载该智能体 |
-| 都未传 | `RouterService.route_query`：在用户有权限的智能体中结合多轮上下文做 LLM 选型（可带 `secondary_agents` 做多智能体，并输出通用会话 hint） |
+| 传了 `agent_id` / `agent_name` | 直接加载该智能体；设置 `route_hints.direct_agent_selection=True` |
+| 都未传 | `RouterService.route_query`：先启发式短路（问候/联网/ChatBI 粘性打断），再 LLM 选型 |
 | 仍无配置 | 回退 **Assistant** 默认配置 |
 
 路由结果通过 SSE 发送 `router_log`，并写入执行 trace。`turn_labels`、`relation_to_previous`、`user_action_type` 只表示路由层对当前轮次的通用理解，供 executor 参考；各 executor 是否使用这些 hint，由自身业务流程决定。
@@ -432,12 +432,17 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 
 **`agent_config.system_prompt`（LOCAL）** — 在 DB 智能体专规之上 prepend；最后一步加上 **`PLATFORM_GLOBAL_SYSTEM_PROMPT`**（平台全局守则，常量见 `agent_prompts.py`）。典型栈顶→栈底：全局守则 → 预加载记忆 → 跨会话 hint → LTM → 技能发现/技能全文 → **DB system_prompt**。
 
-**不进 `system_prompt`**：
+**不进独立 `messages` system 行（已并入 PromptAssembler）**：
 
-- **用户画像**（账号、部门、称呼）：`messages` 中 `role: system`，查数轮次可省略（`should_inject_user_context`）；安全规则已集中在全局块。
-- **Embed 宿主上下文**：`debug_options.injected_context` → 另一条 `role: system`（设备、页面信息、移动/桌面 UI）。
+- **用户画像**（账号、部门、称呼）：由 `PromptAssembler` 写入 `stable_prefix`（与平台全局守则、DB `system_prompt` 同栈）；查数轮次可在裁剪逻辑中省略。启用 `cache_reorder` 时画像位于 cache boundary 之前，避免长对话截断丢失。
+- **Embed 宿主上下文**：`debug_options.injected_context` → 仍为独立 `role: system`（设备、页面信息、移动/桌面 UI）。
 
 跨会话「最近聊了啥」：**不**自动注入摘要全文；条件注入 `[跨会话记忆检索]` hint + 模型调用 **`memory_search`**（§4.1）。
+
+**主助手专属编排**（`agent_service.py`）：
+
+- **Skill 自动扫描**：未挂载/口头解析技能时，对主通用助手按用户问题扫描技能库（`skill_auto_scan_enabled` / `min_score` / `max_results`），注入 Frontmatter 摘要。
+- **工具预检**：在 `AssistantAgentRunner` 内按 `agent_tool_preflight_mode`（`off` / `soft` / `hard`）注入工具促发便签，可选首步强制 `ToolChoice`（见 `tool_nudge_policy.py`）。
 
 **调试**：`system_prompt_override` 在全部 prepend **之后**整段替换（含全局块）。
 
@@ -501,10 +506,12 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | `app/services/ai/runners/assistant_agent_runner.py` | 消息准备、工具解析、事件流 |
 
 1. 按智能体配置从 `ToolRegistry.get_runtime_tools()` 加载 `RuntimeToolSpec` + 系统隐式工具
-2. `build_messages()` 组装 `system_prompt` + 历史；`build_user_msg()` 处理多模态与附件路径
-3. **无工具**：`synthesis_llm.astream()` 直出，不走 AgentScope Agent
-4. **有工具**：`Agent(name, model, toolkit, react_config).reply_stream()` → `map_standard_agentscope_event()` 映射 SSE
-5. ASK 工具挂起：`REQUIRE_USER_CONFIRM` → 用户确认后 `UserConfirmResultEvent` 恢复
+2. **工具预检**（有工具时）：相关度匹配 → system 顶部便签；`hard` 模式首步 `ToolChoice`
+3. `build_messages()` 组装 `system_prompt` + 历史；`build_user_msg()` 处理多模态与附件路径
+4. **无工具**：`synthesis_llm.astream()` 直出，不走 AgentScope Agent
+5. **有工具**：`Agent(name, model, toolkit, react_config).reply_stream()` → `map_standard_agentscope_event()` 映射 SSE
+6. **数据反幻觉 Guard**（主助手 + 自动路由）：流结束后若无工具尝试且输出像编造内部业务数据，拦截并 yield `quick:/switch_agent_expert` 切换链接
+7. ASK 工具挂起：`REQUIRE_USER_CONFIRM` → 用户确认后 `UserConfirmResultEvent` 恢复
 
 ### 6.3 DataQueryExecutor → DataAgentRunner
 
@@ -514,6 +521,8 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | `app/services/ai/runners/data_agent_runner.py` | ChatBI 守卫（schema 前置、SQL 修复、复用上一轮结果） |
 
 在 AgentScope ReAct 之上叠加 `_DataRunState` 护栏；事件映射与 Assistant 共用 `event_stream.py`。
+
+ChatBI 流式正文中的 `<sql_plan>{...}</sql_plan>` 由前端 `MessageRenderer.vue` + `SqlPlanCard.vue`（`sqlPlan.ts`）解析为结构化卡片，与后端 G6 门禁配合。
 
 `RAGExecutor`、`OpenClawExecutor` 仍走 RAGFlow / OpenClaw 直连，对外同样以 chunk 流返回。
 
@@ -586,8 +595,12 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 |--------|--------|------|
 | `agent_max_context_messages` | `20` | 发给 LLM 的历史消息条数上限 |
 | `llm_model_name` | `DeepSeek-V3.2` | 路由日志与 Assistant 回退模型名 |
+| `agent_tool_preflight_mode` | `soft` | 主助手工具预检：`off` / `soft` / `hard` |
+| `skill_auto_scan_enabled` | `true` | 主助手是否自动扫描技能库 |
+| `skill_auto_scan_min_score` | `0.45` | 技能扫描最低相关度 |
+| `skill_auto_scan_max_results` | `1` | 每轮最多注入技能数（上限 3） |
 | `SKILLS_DIR` | 见 `app/core/config.py` | 技能物理目录 |
 
 ---
 
-*文档版本：2026-06-09。本地执行已迁移 AgentScope；含 `PLATFORM_GLOBAL_SYSTEM_PROMPT`、轮次分类裁剪。跨会话 session/daily summary、`memory_search`、记忆管理中心、会话 `finalize` 已实现；会话空闲超时归档摘要仍为二期。*
+*文档版本：2026-06-19。含工具预检、Skill 自动扫描、路由启发式短路、用户画像 stable_prefix、sql_plan 前端卡片、ChatBI 会话粘性修正。*

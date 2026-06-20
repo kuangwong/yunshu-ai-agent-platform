@@ -13,10 +13,18 @@
 | [GLOBAL_SYSTEM_OVERVIEW.md](./design/GLOBAL_SYSTEM_OVERVIEW.md) | 全局系统概览 |
 | [AI_AGENT_SYSTEM_DESIGN.md](./design/AI_AGENT_SYSTEM_DESIGN.md) | AI 智能体系统设计（偏早期总览，含历史 LangChain 章节） |
 | [AGENT_ROUTING_DESIGN.md](./design/AGENT_ROUTING_DESIGN.md) | 智能体路由 |
+| [CHATBI_GUARDS_REVIEW.md](./design/CHATBI_GUARDS_REVIEW.md) | ChatBI 门禁清单 |
 | [AGENT_APP_DESIGN.md](./design/AGENT_APP_DESIGN.md) | Embed / V1 API |
 | [agent_execution_flow_review.md](./design/agent_execution_flow_review.md) | 执行流评审（K1/K2/K3） |
 | [CHAT_BI_DESIGN.md](./design/CHAT_BI_DESIGN.md) | ChatBI |
 | [redis_key_design.md](./design/redis_key_design.md) | Redis Key |
+
+## 集成与契约（`docs/md/`）
+
+| 文档 | 说明 |
+|------|------|
+| [api_integration_guide.md](../docs/md/api_integration_guide.md) | API / Embed 集成 |
+| [ai_agent_gating_contract.md](../docs/md/ai_agent_gating_contract.md) | Agent 门控契约 |
 
 ## 提示词草稿（`prompts/`）
 

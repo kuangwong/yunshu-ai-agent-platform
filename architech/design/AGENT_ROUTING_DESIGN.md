@@ -13,13 +13,19 @@
 ```mermaid
 graph TD
     A[用户输入 User Input] --> B[上下文组装 Context Assembly]
-    B --> C{是否显式指定智能体}
-    C -- 是 --> D[直接加载指定 Agent]
-    C -- 否 --> E[RouterService LLM 路由]
+    B --> C{是否显式指定智能体<br/>agent_id / agent_name / 专家模式}
+    C -- 是 --> D[直接加载指定 Agent<br/>route_hints.direct_agent_selection=true]
+    C -- 否 --> H1{启发式短路}
+    H1 -- 纯问候 --> G1[通用助手 无 LLM]
+    H1 -- 联网/外部搜索 --> G1
+    H1 -- 上轮 ChatBI 但本轮非数据粘性 --> G1
+    H1 -- 否 --> E[RouterService LLM 路由]
     E --> F{LLM 决策结果}
     F -- 匹配成功 --> G[路由至主 Agent]
     F -- 低置信 / 未知 / 异常 --> H[兜底路由: 通用对话助手]
-    G --> I[进入 Executor 内部流程]
+    D --> I[进入 Executor 内部流程]
+    G --> I
+    G1 --> I
     H --> I
 ```
 
@@ -54,7 +60,34 @@ graph TD
 - `DataQueryExecutor` 不消费这些通用标签来决定 ChatBI 查数流程。ChatBI 仍会在执行器内部执行自己的 `DataQueryTurnClassifier` 请求类别分析。
 - `KnowledgeExecutor` 由 `TurnType=KNOWLEDGE` 驱动，不依赖路由标签硬分支。
 
-### 2.3 兜底机制 (Fallback Strategy)
+### 2.4 启发式短路（无 LLM）
+
+在调用路由 LLM 之前，`RouterService.route_query` 会按顺序尝试以下短路（实现见 `router_service.py` + `intent_service.py`）：
+
+| 短路 | 判定函数 | 目标 | 说明 |
+|------|----------|------|------|
+| 纯问候 | `looks_like_greeting()` | 通用助手 | 短句寒暄/自我介绍/致谢，且无复合业务词 |
+| 联网/外部搜索 | `looks_like_web_search_query()` | 通用助手 | 明确公网/新闻/搜索引擎语义，走 `web_search` 等工具 |
+| ChatBI 会话粘性打断 | 上轮为 data_query 智能体 **且** `not should_inherit_data_agent_session()` | 通用助手 | 避免「上一轮查 PUE、本轮问 GitHub 小星星」仍粘 ChatBI |
+
+**`should_inherit_data_agent_session()`** 正向条件（满足其一即**沿用** ChatBI 会话）：
+
+- 对已有查数结果的加工追问（`looks_like_data_followup` / `looks_like_pure_result_followup`）；
+- 仍含明确内部业务库查数信号（`looks_like_strong_business_data_request`）。
+
+反向排除：元操作、上下文动作、技能执行类请求不继承 ChatBI 粘性。
+
+LLM 路由阶段的历史上下文（`_build_history_context`）会在「应打断 ChatBI 粘性」时注入 **禁止机械沿用** 提示，避免模型仅因上一轮是数据智能体就继续选 ChatBI。
+
+### 2.5 专家直选与 Guard 边界
+
+当请求携带 `agent_id`、`agent_name`，或 Embed **专家模式**选定智能体时：
+
+- `AgentService` 设置 `route_hints.direct_agent_selection = True`；
+- **跳过**自动路由 LLM（直接加载指定智能体）；
+- 主通用助手的**数据反幻觉 Guard 不启用**（专家/指定智能体按自身能力回答，含 Bash、联网等）。
+
+### 2.6 兜底机制 (Fallback Strategy)
 - 当路由系统无法做出明确决策，或后端服务出现异常时，请求将统一分发至 **`general-chat`（通用助手 Agent，执行层为 AssistantExecutor）**。
 - 确保系统始终有响应，不中断用户体验。
 
@@ -65,7 +98,18 @@ graph TD
 - **路由提示词定义**：`app/services/ai/router_service.py`
 - **智能体元数据**：数据库 `ai_agents` 表
 
-## 4. 优化方向
+## 4. 相关配置与测试
+
+| 配置键 | 默认值 | 说明 |
+|--------|--------|------|
+| （无 DB 项） | — | 路由 `DEFAULT_SYSTEM_PROMPT` 写死在 `router_service.py` |
+
+测试映射：
+
+- `tests/services/ai/test_router_service.py` — 问候/联网短路、ChatBI 会话打断、LLM 路由与 fallback
+- `tests/ai/test_router_context.py` — 长对话上下文与指代
+
+## 5. 优化方向
 
 1. **动态热更新**：支持在不重启服务的情况下，通过修改 `ai_agents` 表的描述实时影响路由倾向。
 2. **多意图并行**：未来计划支持单条指令拆分为多个任务并由不同智能体协同处理（Orchestration 增强）。

@@ -57,7 +57,7 @@ const copyContent = () => {
 // 下载代码或 HTML
 const downloadFile = () => {
   if (!props.data) return;
-  const content = props.data.content;
+  const content = resolvedContent.value;
   
   // 对于图片、PDF以及CSV（这里的CSV content存放的是文件链接），我们可以通过原生a标签进行链接下载或跳转
   if (props.data.type === 'image' || props.data.type === 'pdf' || props.data.type === 'csv') {
@@ -85,19 +85,23 @@ const downloadFile = () => {
 
 // 使用 hljs 进行代码渲染（带行号）
 const highlightedCode = computed(() => {
-  if (!props.data || props.data.type !== 'code') return '';
+  if (!props.data || (props.data.type !== 'code' && props.data.type !== 'html')) return '';
   const content = props.data.content;
-  const title = props.data.title.toLowerCase();
   
   let lang = 'txt';
-  if (title.includes('python')) lang = 'python';
-  else if (title.includes('javascript') || title.includes('js')) lang = 'javascript';
-  else if (title.includes('typescript') || title.includes('ts')) lang = 'typescript';
-  else if (title.includes('sql')) lang = 'sql';
-  else if (title.includes('css')) lang = 'css';
-  else if (title.includes('html')) lang = 'xml';
-  else if (title.includes('json')) lang = 'json';
-  else if (title.includes('sh') || title.includes('bash')) lang = 'bash';
+  if (props.data.type === 'html') {
+    lang = 'xml';
+  } else {
+    const title = props.data.title.toLowerCase();
+    if (title.includes('python')) lang = 'python';
+    else if (title.includes('javascript') || title.includes('js')) lang = 'javascript';
+    else if (title.includes('typescript') || title.includes('ts')) lang = 'typescript';
+    else if (title.includes('sql')) lang = 'sql';
+    else if (title.includes('css')) lang = 'css';
+    else if (title.includes('html')) lang = 'xml';
+    else if (title.includes('json')) lang = 'json';
+    else if (title.includes('sh') || title.includes('bash')) lang = 'bash';
+  }
 
   try {
     if (hljs.getLanguage(lang)) {
@@ -204,14 +208,14 @@ const csvRows = ref<string[][]>([]);
 const csvSearchQuery = ref('');
 
 const loadCSVData = async () => {
-  if (!props.data?.content) return;
+  if (!resolvedContent.value) return;
   csvLoading.value = true;
   csvError.value = '';
   csvHeaders.value = [];
   csvRows.value = [];
   
   try {
-    const response = await fetch(props.data.content);
+    const response = await fetch(resolvedContent.value);
     if (!response.ok) {
       throw new Error(`加载 CSV 数据失败: ${response.statusText}`);
     }
@@ -276,13 +280,67 @@ const escapeRegExp = (str: string) => {
 };
 
 // ==========================================
-// 3. Watchers & Lifecycles
+// 3. HTML Preview & Code Tab Switcher
+// ==========================================
+const activeTab = ref<'preview' | 'code'>('preview');
+
+const isHtmlContent = computed(() => {
+  if (!props.data) return false;
+  if (props.data.type === 'html') return true;
+  if (props.data.type === 'code') {
+    const content = props.data.content.trim().toLowerCase();
+    const title = props.data.title.toLowerCase();
+    return (
+      content.startsWith('<!doctype') ||
+      content.startsWith('<html') ||
+      content.includes('<div') ||
+      content.includes('<img') ||
+      content.includes('<iframe') ||
+      title.includes('html') ||
+      title.includes('xml')
+    );
+  }
+  return false;
+});
+
+const resolvedContent = computed(() => {
+  if (!props.data?.content) return '';
+  const val = props.data.content;
+  if (props.data.type === 'image' || props.data.type === 'pdf' || props.data.type === 'csv') {
+    if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:')) {
+      return val;
+    }
+    if (val.includes('uploads/')) {
+      const parts = val.split('uploads/');
+      return '/static/uploads/' + parts[parts.length - 1];
+    }
+    if (val.startsWith('/') && 
+        !val.startsWith('/static/') && 
+        !val.startsWith('/api/') && 
+        !val.startsWith('/assets/')) {
+      return `/api/v1/chat/fs/preview?path=${encodeURIComponent(val)}`;
+    }
+  }
+  return val;
+});
+
+// ==========================================
+// 4. Watchers & Lifecycles
 // ==========================================
 watch(() => props.data, () => {
   resetTransform();
   if (props.data?.type === 'csv') {
     csvSearchQuery.value = '';
     loadCSVData();
+  }
+  
+  // 自动根据类型与内容初始化当前激活 Tab
+  if (props.data) {
+    if (props.data.type === 'html') {
+      activeTab.value = 'preview';
+    } else {
+      activeTab.value = 'code';
+    }
   }
 }, { immediate: true });
 </script>
@@ -374,20 +432,58 @@ watch(() => props.data, () => {
         </div>
       </div>
 
+      <!-- HTML Preview/Code Tabs Selector -->
+      <div v-if="isHtmlContent" class="px-4 py-2 border-b border-gray-100/50 dark:border-gray-700/50 bg-slate-50/50 dark:bg-gray-900/10 flex-shrink-0 flex justify-center">
+        <div class="bg-gray-150/80 dark:bg-gray-900 p-0.5 rounded-lg flex space-x-1 w-full max-w-[240px] border border-gray-200/20 shadow-inner">
+          <button 
+            @click="activeTab = 'preview'"
+            class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all duration-200 flex items-center justify-center space-x-1"
+            :class="activeTab === 'preview' 
+              ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10' 
+              : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+            <span>效果预览</span>
+          </button>
+          <button 
+            @click="activeTab = 'code'"
+            class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all duration-200 flex items-center justify-center space-x-1"
+            :class="activeTab === 'code' 
+              ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10' 
+              : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+            <span>源代码</span>
+          </button>
+        </div>
+      </div>
+
       <!-- Content Area -->
       <div class="flex-1 overflow-auto p-4 custom-scrollbar bg-slate-50/50 dark:bg-gray-900/10">
-        <!-- HTML Safe Sandbox Rendering -->
-        <template v-if="data?.type === 'html'">
-          <div class="w-full h-full bg-white dark:bg-gray-950 rounded-xl overflow-hidden shadow-inner border border-gray-100 dark:border-gray-800">
+        <!-- HTML Safe Sandbox Rendering / Code Switchable -->
+        <template v-if="isHtmlContent">
+          <!-- HTML Preview iframe -->
+          <div v-if="activeTab === 'preview'" class="w-full h-full bg-white dark:bg-gray-950 rounded-xl overflow-hidden shadow-inner border border-gray-100 dark:border-gray-800 min-h-[500px]">
             <iframe
-              :srcdoc="data.content"
+              :srcdoc="data?.content"
               sandbox="allow-scripts"
               class="w-full h-full border-none"
             ></iframe>
           </div>
+          <!-- HTML Source Code -->
+          <div v-else class="w-full font-mono text-xs overflow-x-auto bg-white dark:bg-gray-900 rounded-xl p-4 border border-gray-100 dark:border-gray-850 shadow-inner flex leading-relaxed select-text">
+            <!-- Line Numbers Column -->
+            <div class="text-gray-300 dark:text-gray-600 text-right pr-4 select-none border-r border-gray-100 dark:border-gray-800 flex-shrink-0">
+              <div v-for="num in lineCount" :key="num" class="h-5">
+                {{ num }}
+              </div>
+            </div>
+            <!-- Highlighted Code Column -->
+            <pre class="pl-4 flex-1 overflow-x-auto custom-scrollbar select-text"><code class="hljs block whitespace-pre" v-html="highlightedCode"></code></pre>
+          </div>
         </template>
 
-        <!-- Code Block with Highlight & Line Numbers -->
+        <!-- General Code Block (Not HTML) -->
         <template v-else-if="data?.type === 'code'">
           <div class="w-full font-mono text-xs overflow-x-auto bg-white dark:bg-gray-900 rounded-xl p-4 border border-gray-100 dark:border-gray-850 shadow-inner flex leading-relaxed select-text">
             <!-- Line Numbers Column -->
@@ -405,7 +501,7 @@ watch(() => props.data, () => {
         <template v-else-if="data?.type === 'pdf'">
           <div class="w-full h-full bg-white dark:bg-gray-950 rounded-xl overflow-hidden shadow-inner border border-gray-100 dark:border-gray-800 min-h-[500px]">
             <iframe
-              :src="data.content"
+              :src="resolvedContent"
               class="w-full h-full border-none"
             ></iframe>
           </div>
@@ -517,7 +613,7 @@ watch(() => props.data, () => {
                 class="max-w-full max-h-full flex items-center justify-center p-4 origin-center"
               >
                 <img 
-                  :src="data.content" 
+                  :src="resolvedContent" 
                   :alt="data.title" 
                   class="max-w-full max-h-[80vh] object-contain pointer-events-none select-none rounded-lg"
                 />

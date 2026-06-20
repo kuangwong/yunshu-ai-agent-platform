@@ -90,6 +90,26 @@ interface ContentSegment {
     if (!html) return '';
     let res = postProcessQuickButtonHtml(html);
 
+    // 智能将服务器物理绝对路径重映射为可加载的网络相对路径（uploads 转静态托管，其他绝对路径转 fs 预览 API）
+    res = res.replace(/(src|href)=["']([^"']*)["']/gi, (match, attr, val) => {
+      if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:')) {
+        return match;
+      }
+      if (val.includes('uploads/')) {
+        const parts = val.split('uploads/');
+        const newVal = '/static/uploads/' + parts[parts.length - 1];
+        return `${attr}="${newVal}"`;
+      }
+      if (val.startsWith('/') && 
+          !val.startsWith('/static/') && 
+          !val.startsWith('/api/') && 
+          !val.startsWith('/assets/')) {
+        const newVal = `/api/v1/chat/fs/preview?path=${encodeURIComponent(val)}`;
+        return `${attr}="${newVal}"`;
+      }
+      return match;
+    });
+
     // 兜底：仅包裹尚未在 citation-badge 内的裸 [ID:n]，避免双层徽章
     res = res.replace(
       /(?:[\[【]ID:(\w+)[\]】])|(?:Fig\.\s*(\d+))/gi,

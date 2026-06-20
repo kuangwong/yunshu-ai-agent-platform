@@ -53,7 +53,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'quick-question', question: string): void;
   (e: 'show-citation', payload: { id: string; anchor: HTMLElement }): void;
-  (e: 'open-canvas', payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image'; title: string; content: string }): void;
+  (e: 'open-canvas', payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare'; title: string; content: string }): void;
 }>();
 
 interface ContentSegment {
@@ -100,11 +100,17 @@ interface ContentSegment {
         const newVal = '/static/uploads/' + parts[parts.length - 1];
         return `${attr}="${newVal}"`;
       }
-      if (val.startsWith('/') && 
+      if (!val.startsWith('http://') && 
+          !val.startsWith('https://') && 
+          !val.startsWith('data:') && 
+          !val.startsWith('quick:') && 
+          !val.startsWith('canvas:') && 
           !val.startsWith('/static/') && 
           !val.startsWith('/api/') && 
           !val.startsWith('/assets/')) {
-        const newVal = `/api/v1/chat/fs/preview?path=${encodeURIComponent(val)}`;
+        const convId = localStorage.getItem("yovole_embed_conv_id") || "";
+        const convParam = convId ? `&conversation_id=${encodeURIComponent(convId)}` : "";
+        const newVal = `/api/v1/chat/fs/preview?path=${encodeURIComponent(val)}${convParam}`;
         return `${attr}="${newVal}"`;
       }
       return match;
@@ -121,6 +127,25 @@ interface ContentSegment {
         return `<span class="citation-badge" data-cite-id="${finalId}">${match}</span>`;
       },
     );
+
+    // 安全识别本地绝对或相对路径（排除标签内部属性，如 href, src），并在后方渲染一键在画布打开的 [打开] 链接
+    const tags: string[] = [];
+    let textWithPlaceholders = res.replace(/<[^>]+>/g, (match) => {
+      tags.push(match);
+      return `###HTML_TAG_PLACEHOLDER_${tags.length - 1}###`;
+    });
+    
+    // 正则路径匹配：支持绝对路径（以 / 开始）或带斜杠的相对路径，以常见代码、文本、数据及 PDF 扩展名结尾
+    const pathRegex = /(?:\.\/|\/)?(?:[a-zA-Z0-9_\-\.]+\/)+[a-zA-Z0-9_\-\.]+\.(?:md|csv|txt|py|js|ts|sh|sql|json|pdf|html|css|yaml|yml|log|env)/gi;
+    
+    textWithPlaceholders = textWithPlaceholders.replace(pathRegex, (pathVal) => {
+      const canvasUrl = `canvas://file?path=${encodeURIComponent(pathVal)}`;
+      return `${pathVal}<a href="${canvasUrl}" class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-bold ml-1.5 text-[10.5px]" title="点击在画布中打开文件" style="cursor: pointer;">[打开]</a>`;
+    });
+    
+    res = textWithPlaceholders.replace(/###HTML_TAG_PLACEHOLDER_(\d+)###/g, (match, idx) => {
+      return tags[parseInt(idx, 10)];
+    });
 
     return res;
   };
@@ -157,9 +182,36 @@ const handleContentClick = (event: MouseEvent) => {
         const isPdf = lowerHref.endsWith('.pdf');
         const isCsv = lowerHref.endsWith('.csv');
         const isImage = lowerHref.endsWith('.jpg') || lowerHref.endsWith('.jpeg') || lowerHref.endsWith('.png') || lowerHref.endsWith('.gif') || lowerHref.endsWith('.webp');
-        if (isPdf || isCsv || isImage) {
-          const type = isPdf ? 'pdf' : (isCsv ? 'csv' : 'image');
-          const filename = linkEl.textContent?.trim() || (isPdf ? 'PDF 文档' : isCsv ? 'CSV 数据表' : '图片预览');
+        const isCompare = href.startsWith('canvas://compare');
+        const isCanvasFile = href.startsWith('canvas://file');
+        
+        if (isPdf || isCsv || isImage || isCompare || isCanvasFile) {
+          let type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare' = 'code';
+          let filename = '预览';
+          
+          if (isCompare) {
+            type = 'compare';
+            filename = linkEl.textContent?.trim() || '数据对比';
+          } else if (isCanvasFile) {
+            try {
+              const urlObj = new URL(href.replace('canvas://', 'http://localhost/'));
+              const filePath = urlObj.searchParams.get('path') || '';
+              const lowerPath = filePath.toLowerCase();
+              filename = filePath.split('/').pop() || '文件预览';
+              
+              if (lowerPath.endsWith('.csv')) type = 'csv';
+              else if (lowerPath.endsWith('.pdf')) type = 'pdf';
+              else if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg') || lowerPath.endsWith('.png') || lowerPath.endsWith('.gif') || lowerPath.endsWith('.webp')) type = 'image';
+              else if (lowerPath.endsWith('.html') || lowerPath.endsWith('.htm')) type = 'html';
+              else type = 'code';
+            } catch {
+              type = 'code';
+            }
+          } else {
+            type = isPdf ? 'pdf' : (isCsv ? 'csv' : 'image');
+            filename = linkEl.textContent?.trim() || (isPdf ? 'PDF 文档' : isCsv ? 'CSV 数据表' : '图片预览');
+          }
+          
           emit('open-canvas', { type, title: filename, content: href });
           event.preventDefault();
           event.stopPropagation();

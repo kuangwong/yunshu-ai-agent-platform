@@ -3,18 +3,22 @@ import { ref, computed, watch } from 'vue';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import MermaidRenderer from '@/components/MermaidRenderer.vue';
+import { renderMarkdown } from '@/utils/markdown';
 
 const props = defineProps<{
   visible: boolean;
   data: {
-    type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image';
+    type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare';
     title: string;
     content: string;
+    compareContent?: string;
+    compareTitle?: string;
   } | null;
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
+  (e: 'analyze-diff', question: string): void;
 }>();
 
 const isFullscreen = ref(false);
@@ -303,20 +307,35 @@ const isHtmlContent = computed(() => {
   return false;
 });
 
+const isMarkdownContent = computed(() => {
+  if (!props.data) return false;
+  if (props.data.type === 'code') {
+    return props.data.title.toLowerCase().endsWith('.md');
+  }
+  return false;
+});
+
+const renderedMarkdownContent = computed(() => {
+  if (!props.data?.content) return '';
+  return renderMarkdown(props.data.content);
+});
+
 const resolveUrlPath = (val: string): string => {
   if (!val) return '';
-  if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:')) {
+  if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:') || val.startsWith('quick:') || val.startsWith('canvas:')) {
     return val;
   }
   if (val.includes('uploads/')) {
     const parts = val.split('uploads/');
     return '/static/uploads/' + parts[parts.length - 1];
   }
-  if (val.startsWith('/') && 
-      !val.startsWith('/static/') && 
+  // 兼容绝对路径与相对物理路径，只要它不属于静态路由与API接口路由，均通过后端预览API拉取
+  if (!val.startsWith('/static/') && 
       !val.startsWith('/api/') && 
       !val.startsWith('/assets/')) {
-    return `/api/v1/chat/fs/preview?path=${encodeURIComponent(val)}`;
+    const convId = localStorage.getItem("yovole_embed_conv_id") || "";
+    const convParam = convId ? `&conversation_id=${encodeURIComponent(convId)}` : "";
+    return `/api/v1/chat/fs/preview?path=${encodeURIComponent(val)}${convParam}`;
   }
   return val;
 };
@@ -352,13 +371,81 @@ watch(() => props.data, () => {
   
   // 自动根据类型与内容初始化当前激活 Tab
   if (props.data) {
-    if (props.data.type === 'html') {
+    if (props.data.type === 'html' || isMarkdownContent.value) {
       activeTab.value = 'preview';
     } else {
       activeTab.value = 'code';
     }
   }
 }, { immediate: true });
+
+// ==========================================
+// 5. Diff & Analysis Logic (Compare Mode)
+// ==========================================
+const diffSegments = computed(() => {
+  if (!props.data || props.data.type !== 'compare') return [];
+  const left = props.data.content || '';
+  const right = props.data.compareContent || '';
+  
+  const leftLines = left.split('\n');
+  const rightLines = right.split('\n');
+  
+  const matrix: number[][] = Array(leftLines.length + 1)
+    .fill(null)
+    .map(() => Array(rightLines.length + 1).fill(0));
+    
+  for (let i = 1; i <= leftLines.length; i++) {
+    for (let j = 1; j <= rightLines.length; j++) {
+      if (leftLines[i - 1] === rightLines[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1] + 1;
+      } else {
+        matrix[i][j] = Math.max(matrix[i - 1][j], matrix[i][j - 1]);
+      }
+    }
+  }
+  
+  let i = leftLines.length;
+  let j = rightLines.length;
+  const result: { type: 'equal' | 'delete' | 'insert'; leftLineNum?: number; rightLineNum?: number; leftVal?: string; rightVal?: string }[] = [];
+  
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && leftLines[i - 1] === rightLines[j - 1]) {
+      result.unshift({
+        type: 'equal',
+        leftLineNum: i,
+        rightLineNum: j,
+        leftVal: leftLines[i - 1],
+        rightVal: rightLines[j - 1]
+      });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || matrix[i][j - 1] >= matrix[i - 1][j])) {
+      result.unshift({
+        type: 'insert',
+        rightLineNum: j,
+        rightVal: rightLines[j - 1]
+      });
+      j--;
+    } else {
+      result.unshift({
+        type: 'delete',
+        leftLineNum: i,
+        leftVal: leftLines[i - 1]
+      });
+      i--;
+    }
+  }
+  return result;
+});
+
+const analyzeDiff = () => {
+  if (!props.data) return;
+  const leftTitle = props.data.title || '原文件';
+  const rightTitle = props.data.compareTitle || '对比文件';
+  const question = `请深度对比分析并总结这两个文件的核心差异：\n1. 【${leftTitle}】\n2. 【${rightTitle}】\n\n请列出关键的新增、删除与变更点。`;
+  emit('analyze-diff', question);
+  handleClose();
+};
 </script>
 
 <template>
@@ -383,6 +470,7 @@ watch(() => props.data, () => {
               data?.type === 'pdf' ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400' :
               data?.type === 'csv' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400' :
               data?.type === 'mermaid' ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' :
+              data?.type === 'compare' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' :
               'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
             "
           >
@@ -392,11 +480,23 @@ watch(() => props.data, () => {
               data?.type === 'pdf' ? 'PDF' :
               data?.type === 'csv' ? 'CSV Table' :
               data?.type === 'mermaid' ? 'Diagram' :
+              data?.type === 'compare' ? 'File Diff' :
               'Code' 
             }}
           </span>
         </div>
         <div class="flex items-center space-x-2">
+          <!-- AI Analyze Button (Only show in compare mode) -->
+          <button
+            v-if="data?.type === 'compare'"
+            @click="analyzeDiff"
+            class="px-2.5 py-1.5 text-[10px] font-bold text-white bg-gradient-to-r from-indigo-500 to-blue-600 hover:from-indigo-600 hover:to-blue-700 active:scale-95 rounded-lg shadow-xs transition-all flex items-center space-x-1"
+            title="AI 一键智能分析差异"
+          >
+            <span>💡</span>
+            <span>AI 分析差异</span>
+          </button>
+
           <!-- Fullscreen Toggle Button -->
           <button
             @click="toggleFullscreen"
@@ -448,8 +548,8 @@ watch(() => props.data, () => {
         </div>
       </div>
 
-      <!-- HTML Preview/Code Tabs Selector -->
-      <div v-if="isHtmlContent" class="px-4 py-2 border-b border-gray-100/50 dark:border-gray-700/50 bg-slate-50/50 dark:bg-gray-900/10 flex-shrink-0 flex justify-center">
+      <!-- HTML / Markdown Preview/Code Tabs Selector -->
+      <div v-if="isHtmlContent || isMarkdownContent" class="px-4 py-2 border-b border-gray-100/50 dark:border-gray-700/50 bg-slate-50/50 dark:bg-gray-900/10 flex-shrink-0 flex justify-center">
         <div class="bg-gray-150/80 dark:bg-gray-900 p-0.5 rounded-lg flex space-x-1 w-full max-w-[240px] border border-gray-200/20 shadow-inner">
           <button 
             @click="activeTab = 'preview'"
@@ -487,6 +587,24 @@ watch(() => props.data, () => {
             ></iframe>
           </div>
           <!-- HTML Source Code -->
+          <div v-else class="w-full font-mono text-xs overflow-x-auto bg-white dark:bg-gray-900 rounded-xl p-4 border border-gray-100 dark:border-gray-850 shadow-inner flex leading-relaxed select-text">
+            <!-- Line Numbers Column -->
+            <div class="text-gray-300 dark:text-gray-600 text-right pr-4 select-none border-r border-gray-100 dark:border-gray-800 flex-shrink-0">
+              <div v-for="num in lineCount" :key="num" class="h-5">
+                {{ num }}
+              </div>
+            </div>
+            <!-- Highlighted Code Column -->
+            <pre class="pl-4 flex-1 overflow-x-auto custom-scrollbar select-text"><code class="hljs block whitespace-pre" v-html="highlightedCode"></code></pre>
+          </div>
+        </template>
+
+        <!-- Markdown Render Block / Code Switchable -->
+        <template v-else-if="isMarkdownContent">
+          <!-- Markdown Preview html -->
+          <div v-if="activeTab === 'preview'" class="w-full h-full bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-100 dark:border-gray-850 shadow-inner select-text markdown-body" v-html="renderedMarkdownContent">
+          </div>
+          <!-- Markdown Source Code -->
           <div v-else class="w-full font-mono text-xs overflow-x-auto bg-white dark:bg-gray-900 rounded-xl p-4 border border-gray-100 dark:border-gray-850 shadow-inner flex leading-relaxed select-text">
             <!-- Line Numbers Column -->
             <div class="text-gray-300 dark:text-gray-600 text-right pr-4 select-none border-r border-gray-100 dark:border-gray-800 flex-shrink-0">
@@ -647,6 +765,68 @@ watch(() => props.data, () => {
             </p>
           </div>
         </template>
+
+        <!-- Compare Viewer (Split View Diff) -->
+        <template v-else-if="data?.type === 'compare'">
+          <div class="flex flex-col h-full min-h-[500px] bg-white dark:bg-gray-950 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-inner select-text">
+            <!-- 对比头部文件名 -->
+            <div class="grid grid-cols-2 divide-x divide-gray-200 dark:divide-gray-800 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 text-[11px] font-bold text-gray-500 dark:text-gray-400 select-none">
+              <div class="px-4 py-2.5 truncate flex items-center space-x-1">
+                <span class="text-red-500">◀</span>
+                <span>{{ data?.title || '原文件' }}</span>
+              </div>
+              <div class="px-4 py-2.5 truncate flex items-center space-x-1">
+                <span class="text-green-500">▶</span>
+                <span>{{ data?.compareTitle || '对比文件' }}</span>
+              </div>
+            </div>
+            
+            <!-- 对比行展示区域 -->
+            <div class="flex-1 overflow-auto font-mono text-[11px] leading-relaxed custom-scrollbar divide-y divide-gray-100/30 dark:divide-gray-800/30">
+              <div v-for="(seg, idx) in diffSegments" :key="idx" class="grid grid-cols-2 divide-x divide-gray-200 dark:divide-gray-880 min-w-[700px]">
+                <!-- 左侧行 -->
+                <div 
+                  class="flex items-stretch min-h-[22px]"
+                  :class="{
+                    'bg-red-50/40 dark:bg-red-950/15 text-red-700 dark:text-red-300': seg.type === 'delete',
+                    'bg-gray-50/20 dark:bg-gray-900/10 text-gray-400 dark:text-gray-600 empty-line-placeholder': seg.type === 'insert'
+                  }"
+                >
+                  <!-- 行号 -->
+                  <div class="w-12 text-right pr-2 text-[10px] text-gray-400 dark:text-gray-500 select-none border-r border-gray-100 dark:border-gray-800/80 py-0.5 font-sans flex-shrink-0">
+                    {{ seg.type !== 'insert' ? seg.leftLineNum : '' }}
+                  </div>
+                  <!-- 差异标志 -->
+                  <div class="w-5 text-center text-red-500 dark:text-red-400 font-bold select-none py-0.5 text-[10px] flex-shrink-0">
+                    {{ seg.type === 'delete' ? '-' : '' }}
+                  </div>
+                  <!-- 内容 -->
+                  <pre class="flex-1 px-2 py-0.5 overflow-x-auto whitespace-pre custom-scrollbar select-text font-mono text-[11px]">{{ seg.type !== 'insert' ? seg.leftVal : '' }}</pre>
+                </div>
+                
+                <!-- 右侧行 -->
+                <div 
+                  class="flex items-stretch min-h-[22px]"
+                  :class="{
+                    'bg-green-50/40 dark:bg-green-950/15 text-green-700 dark:text-green-300': seg.type === 'insert',
+                    'bg-gray-50/20 dark:bg-gray-900/10 text-gray-400 dark:text-gray-600 empty-line-placeholder': seg.type === 'delete'
+                  }"
+                >
+                  <!-- 行号 -->
+                  <div class="w-12 text-right pr-2 text-[10px] text-gray-400 dark:text-gray-500 select-none border-r border-gray-100 dark:border-gray-800/80 py-0.5 font-sans flex-shrink-0">
+                    {{ seg.type !== 'delete' ? seg.rightLineNum : '' }}
+                  </div>
+                  <!-- 差异标志 -->
+                  <div class="w-5 text-center text-green-500 dark:text-green-400 font-bold select-none py-0.5 text-[10px] flex-shrink-0">
+                    {{ seg.type === 'insert' ? '+' : '' }}
+                  </div>
+                  <!-- 内容 -->
+                  <pre class="flex-1 px-2 py-0.5 overflow-x-auto whitespace-pre custom-scrollbar select-text font-mono text-[11px]">{{ seg.type !== 'delete' ? seg.rightVal : '' }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- Action Footer -->
@@ -747,5 +927,24 @@ watch(() => props.data, () => {
 }
 .dark .hljs :deep(.hljs-comment) {
   color: #9ca3af;
+}
+
+.empty-line-placeholder {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(156, 163, 175, 0.08) 0px,
+    rgba(156, 163, 175, 0.08) 2px,
+    transparent 2px,
+    transparent 8px
+  );
+}
+.dark .empty-line-placeholder {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(156, 163, 175, 0.05) 0px,
+    rgba(156, 163, 175, 0.05) 2px,
+    transparent 2px,
+    transparent 8px
+  );
 }
 </style>

@@ -46,6 +46,7 @@ const props = defineProps<{
   approvalMode?: ApprovalMode;
   selectedModel?: string;
   availableModels?: ModelOption[];
+  activeLtmPreference?: any;
 }>();
 
 const emit = defineEmits<{
@@ -68,7 +69,49 @@ const emit = defineEmits<{
   (e: 'select-knowledge-base'): void;
   (e: 'select-local-fs'): void;
   (e: 'select-memory'): void;
+  (e: 'ignore-ltm'): void;
+  (e: 'dismiss-ltm'): void;
 }>();
+
+const formatLtmText = (pref: any): string => {
+  if (!pref) return '';
+  if (typeof pref === 'string') {
+    try {
+      const parsed = JSON.parse(pref);
+      return formatLtmText(parsed);
+    } catch {
+      return pref;
+    }
+  }
+  if (Array.isArray(pref)) {
+    return pref.map(item => formatLtmText(item)).filter(Boolean).join(', ');
+  }
+  if (typeof pref === 'object') {
+    return Object.entries(pref)
+      .map(([key, val]) => {
+        if (!val) return '';
+        if (typeof val === 'object') {
+          const obj: any = val;
+          if (obj.name) return String(obj.name);
+          if (obj.title) return String(obj.title);
+          if (obj.label) return String(obj.label);
+          return key;
+        }
+        if (typeof val === 'string' && (val.startsWith('{') || val.startsWith('['))) {
+          try {
+            const parsedVal = JSON.parse(val);
+            return formatLtmText({ [key]: parsedVal });
+          } catch {
+            // fallback
+          }
+        }
+        return String(val);
+      })
+      .filter(Boolean)
+      .join(', ');
+  }
+  return String(pref);
+};
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const isComposing = ref(false);
@@ -166,11 +209,20 @@ const selectApprovalMode = (mode: ApprovalMode) => {
   showApprovalMenu.value = false;
 };
 
+const handleFocus = () => {
+  if (props.activeLtmPreference) {
+    emit('dismiss-ltm');
+  }
+};
+
 const handleInput = (e: Event) => {
   if (props.isProcessing) return;
-  emit('update:modelValue', (e.target as HTMLTextAreaElement).value);
   const target = e.target as HTMLTextAreaElement;
   const val = target.value;
+  emit('update:modelValue', val);
+  if (props.activeLtmPreference && val) {
+    emit('dismiss-ltm');
+  }
   const cursor = target.selectionStart;
   if (inputRef.value) {
     inputRef.value.style.height = "auto";
@@ -495,6 +547,42 @@ defineExpose({
     <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 flex flex-col relative z-20">
       <slot name="banner"></slot>
 
+      <!-- Active LTM Preference Banner -->
+      <transition name="fade-slide">
+        <div v-if="activeLtmPreference" class="mx-3 mt-2 px-3 py-1.5 bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-100/30 dark:border-indigo-900/30 rounded-xl flex items-center justify-between z-10 animate-fade-in-up">
+          <div class="flex items-center space-x-2 text-[11px] text-indigo-600 dark:text-indigo-300 font-medium select-none">
+            <span class="text-sm">🧠</span>
+            <span class="truncate max-w-[200px] sm:max-w-[400px]">已自动应用您的常用偏好：{{ formatLtmText(activeLtmPreference) }}</span>
+          </div>
+          
+          <div class="flex items-center space-x-2 flex-shrink-0 ml-2">
+            <!-- 忽略本次按钮 -->
+            <button 
+              @click="emit('ignore-ltm')" 
+              class="flex items-center space-x-1 px-1.5 py-0.5 border border-indigo-200 dark:border-indigo-900/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 rounded-md text-[10px] text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 transition-all font-medium"
+              title="在本轮提问中临时停用并忽略此记忆偏好"
+            >
+              <span>🚫</span>
+              <span>忽略本次</span>
+            </button>
+            
+            <!-- 分割线 -->
+            <span class="w-[1px] h-3 bg-indigo-100 dark:bg-indigo-900/50"></span>
+            
+            <!-- 仅关闭按钮 -->
+            <button 
+              @click="emit('dismiss-ltm')" 
+              class="p-1 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 rounded-full text-indigo-400 hover:text-indigo-600 dark:text-indigo-500 transition-colors" 
+              title="仅关闭此提示气泡，不影响本轮偏好生效"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </transition>
+
       <div
         :class="isMobileViewport
           ? 'px-3 pt-1 pb-[calc(env(safe-area-inset-bottom,0px)+0.625rem)]'
@@ -686,7 +774,7 @@ defineExpose({
               </div>
             </div>
 
-            <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed" :class="isProcessing ? 'min-h-[46px] opacity-0 pointer-events-none' : 'min-h-[46px] opacity-100'" :placeholder="isProcessing ? '' : '输入消息，或 \'/\' 使用快捷指令...'"></textarea>
+            <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @focus="handleFocus" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed" :class="isProcessing ? 'min-h-[46px] opacity-0 pointer-events-none' : 'min-h-[46px] opacity-100'" :placeholder="isProcessing ? '' : '输入消息，或 \'/\' 使用快捷指令...'"></textarea>
 
             <div class="relative z-20 mt-1 flex min-h-9 flex-wrap items-center gap-1.5 sm:gap-2">
                 <!-- Plus Button & Menu (Premium Glassmorphism Style) -->
@@ -1020,4 +1108,15 @@ defineExpose({
 .custom-scrollbar::-webkit-scrollbar { width: 4px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 2px; }
+
+/* ── LTM 气泡淡入淡出滑动效果 ── */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+}
+.fade-slide-enter-from,
+.fade-slide-leave-to {
+  transform: translateY(-8px);
+  opacity: 0;
+}
 </style>

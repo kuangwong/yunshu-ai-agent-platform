@@ -144,29 +144,83 @@ async def list_files(
     ))
 
 
+TEXT_PREVIEW_EXTENSIONS = {
+    ".txt", ".md", ".csv", ".json", ".sql", ".py", ".js", ".ts", 
+    ".sh", ".xml", ".html", ".css", ".yaml", ".yml", ".ini", ".conf",
+    ".log", ".env"
+}
+
 @router.get(
     "/preview",
-    summary="预览服务器图片",
-    description="在安全根目录内读取图片文件，供 EmbedChat 缩略图展示及多模态链路校验。",
+    summary="预览服务器文件内容",
+    description="在安全根目录内读取图片或常规文本/PDF文件内容，供 EmbedChat 画布和数据渲染使用。",
 )
 async def preview_file(
-    path: str = Query(..., description="图片绝对路径，须在安全根目录内"),
+    path: str = Query(..., description="文件绝对路径，须在安全根目录内"),
+    conversation_id: Optional[str] = Query(None, description="所属会话 ID"),
     user_info: Dict[str, Any] = Depends(require_api_key),
 ):
-    safe_path = normalize_under_base(path)
+    base_dir = None
+    if conversation_id and not path.startswith("/") and not path.startswith("/app/data"):
+        from app.utils.fs_paths import get_data_base_dir
+        user_id = str(user_info.get("user_id", "anonymous"))
+        import re
+        cleaned_uid = re.sub(r"[^A-Za-z0-9_-]+", "_", user_id).strip("_")
+        cleaned_cid = re.sub(r"[^A-Za-z0-9_-]+", "_", conversation_id).strip("_")
+        
+        session_workdir = os.path.normpath(os.path.join(get_data_base_dir(), "agent_workspaces", cleaned_uid, cleaned_cid))
+        if os.path.isdir(session_workdir):
+            base_dir = session_workdir
+
+    safe_path = None
+    if base_dir:
+        safe_path = normalize_under_base(path, base_dir)
+        if not safe_path or not os.path.isfile(safe_path):
+            safe_path = None
+
+    # 自愈搜索：若在当前会话空间内未找到相对文件，迭代遍历该用户所有的历史会话空间进行全局寻址
+    if not safe_path and not path.startswith("/") and not path.startswith("/app/data"):
+        from app.utils.fs_paths import get_data_base_dir
+        user_id = str(user_info.get("user_id", "anonymous"))
+        import re
+        cleaned_uid = re.sub(r"[^A-Za-z0-9_-]+", "_", user_id).strip("_")
+        
+        user_workspaces_root = os.path.normpath(os.path.join(get_data_base_dir(), "agent_workspaces", cleaned_uid))
+        if os.path.isdir(user_workspaces_root):
+            for cid_dir in os.listdir(user_workspaces_root):
+                candidate_dir = os.path.join(user_workspaces_root, cid_dir)
+                if os.path.isdir(candidate_dir):
+                    test_path = normalize_under_base(path, candidate_dir)
+                    if test_path and os.path.isfile(test_path):
+                        safe_path = test_path
+                        break
+
+    if not safe_path:
+        safe_path = normalize_under_base(path)
+
     if not safe_path:
         raise HTTPException(status_code=403, detail="安全越权拦截：禁止访问安全根目录以外的文件。")
     if not os.path.isfile(safe_path):
         raise HTTPException(status_code=404, detail="文件不存在。")
 
     ext = os.path.splitext(safe_path)[1].lower()
-    if ext not in IMAGE_PREVIEW_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="仅支持预览图片文件。")
-
-    return FileResponse(
-        safe_path,
-        media_type=IMAGE_MEDIA_TYPES.get(ext, "application/octet-stream"),
-    )
+    if ext in IMAGE_PREVIEW_EXTENSIONS:
+        return FileResponse(
+            safe_path,
+            media_type=IMAGE_MEDIA_TYPES.get(ext, "application/octet-stream"),
+        )
+    elif ext in TEXT_PREVIEW_EXTENSIONS:
+        return FileResponse(
+            safe_path,
+            media_type="text/plain; charset=utf-8",
+        )
+    elif ext == ".pdf":
+        return FileResponse(
+            safe_path,
+            media_type="application/pdf",
+        )
+    else:
+        raise HTTPException(status_code=400, detail="不支持预览该类型的文件。")
 
 
 @router.get(

@@ -158,9 +158,8 @@
 | 路由 ChatBI 会话粘性修正 (Router Data-Agent Session Break) | `router_service.py`, `intent_service.py`, `tests/services/ai/test_router_service.py` | **should_inherit_data_agent_session**：非数据追问/非强内部查数时打断 ChatBI 粘性；问候/联网短路；历史上下文注入禁止机械沿用提示。 | ✅ 通过 | 2026-06-19 |
 | ChatBI sql_plan 前端卡片 (SqlPlan Card UI) | `frontend/src/components/SqlPlanCard.vue`, `frontend/src/utils/sqlPlan.ts`, `MessageRenderer.vue`, `frontend/scripts/sqlPlan.test.ts` | **解析 `<sql_plan>{...}</sql_plan>` 为结构化卡片**；与 `enable_sql_plan` 后端门禁配合；重复 plan 去重。 | ✅ 通过 | 2026-06-19 |
 | 主助手数据反幻觉 Guard 收紧 (Assistant Data Guard Refinement) | `assistant_agent_runner.py`, `tests/ai/runners/test_assistant_agent_data_guard.py` | **Guard 触发条件收紧**：主助手 only；direct_agent_selection bypass；permission_required 计为已尝试工具；裸表格不拦截；表格+IP/内部字段或假 ChatBI 话术才拦截。 | ✅ 通过 | 2026-06-19 |
-
-
-
-
-
-
+| 长期记忆 SSE 流式注入与主动忽略 (LTM Stream Meta & Ignore) | `tests/ai/test_ltm_stream_metadata.py`, `app/services/ai/agent_service.py`, `frontend/src/components/embed/ChatInput.vue`, `frontend/src/views/EmbedChat.vue` | **长期记忆 SSE 元数据流式注入与忽略选项**：验证在 LTM 命中时流式接口 `meta` 块正确注入 `ltm_applied` 标记与用户偏好载荷；验证在提问时可以通过 `ignore_ltm` 参数控制跳过该记忆；验证前端输入框上方高颜值大脑气泡提醒的淡入淡出动效及点击 `x` 一键本轮忽略功能。 | ✅ 通过 | 2026-06-20 |
+| 数据画布多文件分栏对比与 AI 解读 (Canvas Multi-File Diff & AI Analyze) | `frontend/src/components/embed/ChatCanvas.vue`, `frontend/src/views/EmbedChat.vue` | **多文件分栏对比与一键分析**：验证 Canvas 支持以 `canvas://compare` 协议拦截解析并异步拉取原文件和对比文件；支持左右分栏对齐 Diff 高亮及空行斜线占位；验证 Header “💡 AI 分析差异”一键解读按钮触发，自动拉回输入框完成差异问答。 | ✅ 已完成 | 2026-06-20 |
+| 物理文件安全识别与 401 权限 / 404 迭代自愈 (Canvas File Safe Preview) | `app/api/v1/endpoints/fs.py`, `frontend/src/views/EmbedChat.vue`, `frontend/src/components/embed/ChatCanvas.vue`, `frontend/src/components/MessageRenderer.vue` | **物理绝对/相对路径识别与安全自愈**：验证前端在消息中自动匹配服务器文件并生成一键 `[打开]` 链接，在安全根目录下向 `/fs/preview` 拉取渲染；验证将 URL 传 token 重构为 Axios Header + 内存 Blob 临时沙箱协议形式，完美化解图片与 PDF 跨域 401 痛点并增加垃圾回收防泄露；验证后端相对路径寻址引入 `conversation_id` 自动定位当前会话工作空间，以及在多会话 workspaces 下迭代自愈检索，彻底解决历史消息相对路径 404 故障；验证前端友好化中文字符错误翻译拦截提示。 | ✅ 通过 | 2026-06-20 |
+| Canvas Markdown 富文本高颜值渲染 (Canvas Markdown Rendering) | `frontend/src/components/embed/ChatCanvas.vue` | **Markdown 画布富文本渲染与 Tab 切换**：验证 Canvas 支持对 `.md` 格式文件进行格式化渲染与预览；支持在“效果预览”与“源代码”两个 Tab 选项卡间自由无缝双态切换；对于 `.md` 文件默认优先以“效果预览”模式打开。 | ✅ 已完成 | 2026-06-20 |
+| 长期记忆提醒气泡精细化 (LTM Bubble Help Toggle UI) | `frontend/src/components/embed/ChatInput.vue` | **气泡交互精细化**：验证去除了偏好命中气泡内不必要的问号 `?` 标志以净化排版，保持极简直观的常用偏好提醒、一键忽略和关闭交互。 | ✅ 已完成 | 2026-06-20 |

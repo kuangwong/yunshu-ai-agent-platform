@@ -1204,6 +1204,7 @@
         :approval-mode="config.approvalMode"
         :selected-model="config.overrideModel"
         :available-models="availableModels"
+        :active-ltm-preference="activeLtmPreference"
         @update:approval-mode="(mode) => { config.approvalMode = mode; saveRoutingSettings(); }"
         @update:selected-model="(model) => { config.overrideModel = model; saveRoutingSettings(); }"
         @send="sendMessage"
@@ -1220,6 +1221,8 @@
         @select-local-fs="showFileBrowserModal = true"
         @select-memory="openMemorySelector"
         @system-command="handleSystemCommand"
+        @ignore-ltm="handleIgnoreLtm"
+        @dismiss-ltm="activeLtmPreference = null"
       >
       </ChatInput>
     </div>
@@ -2361,6 +2364,7 @@
       :visible="canvasVisible"
       :data="canvasData"
       @close="canvasVisible = false"
+      @analyze-diff="handleAnalyzeDiff"
     />
     </div>
 </template>
@@ -3467,11 +3471,120 @@ const saveAndResend = async () => {
 
 // Canvas Panel States
 const canvasVisible = ref(false);
-const canvasData = ref<{ type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image'; title: string; content: string } | null>(null);
+const canvasData = ref<{ type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare'; title: string; content: string; compareContent?: string; compareTitle?: string } | null>(null);
+const activeBlobUrl = ref('');
 
-const handleOpenCanvas = (payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image'; title: string; content: string }) => {
-  canvasData.value = payload;
-  canvasVisible.value = true;
+// Long-Term Memory States
+const activeLtmPreference = ref<any>(null);
+const ignoreLtmThisTurn = ref(false);
+
+const handleIgnoreLtm = () => {
+  ignoreLtmThisTurn.value = true;
+  activeLtmPreference.value = null;
+  showToast("已在此会话本轮提问中忽略该记忆偏好", "info");
+};
+
+const handleOpenCanvas = async (payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare'; title: string; content: string }) => {
+  // 回收之前创建的本地 Blob 内存链接，防止内存泄漏
+  if (activeBlobUrl.value) {
+    try {
+      URL.revokeObjectURL(activeBlobUrl.value);
+    } catch (e) {
+      console.warn("Revoke blob URL error:", e);
+    }
+    activeBlobUrl.value = '';
+  }
+
+  if (payload.type === 'compare') {
+    try {
+      // 解析 canvas://compare?left=pathA&right=pathB
+      const urlObj = new URL(payload.content.replace('canvas://', 'http://localhost/'));
+      const leftPath = urlObj.searchParams.get('left') || '';
+      const rightPath = urlObj.searchParams.get('right') || '';
+      
+      const leftResolved = resolveFileUrl(leftPath);
+      const rightResolved = resolveFileUrl(rightPath);
+      
+      // 使用全局配置了 Authorization 头的 axios 安全拉取物理内容
+      const [leftRes, rightRes] = await Promise.all([
+        axios.get(leftResolved).then(res => res.data),
+        axios.get(rightResolved).then(res => res.data)
+      ]);
+      
+      canvasData.value = {
+        type: 'compare',
+        title: payload.title || '数据对比',
+        content: leftRes,
+        compareContent: rightRes,
+        compareTitle: rightPath.split('/').pop() || '对比文件'
+      };
+      canvasVisible.value = true;
+    } catch (err: any) {
+      console.error('加载对比文件失败:', err);
+      let errMsg = '加载对比文件失败';
+      if (err.response?.data?.detail) {
+        errMsg = err.response.data.detail;
+      } else if (err.response?.status === 404) {
+        errMsg = '对比的文件不存在，可能已被删除或尚未生成。';
+      } else if (err.response?.status === 403) {
+        errMsg = '权限拦截：无权访问该对比文件。';
+      } else {
+        errMsg = err.message || String(err);
+      }
+      showToast(errMsg, 'error');
+    }
+  } else if (payload.content.startsWith('canvas://file')) {
+    try {
+      const urlObj = new URL(payload.content.replace('canvas://', 'http://localhost/'));
+      const filePath = urlObj.searchParams.get('path') || '';
+      const resolvedUrl = resolveFileUrl(filePath);
+      
+      if (payload.type === 'pdf' || payload.type === 'image' || payload.type === 'csv') {
+        // 对于二进制或结构化媒体资源，使用 axios 携带 header 发送安全请求，并将响应流转为 blob URL 零泄露渲染
+        const response = await axios.get(resolvedUrl, { responseType: 'blob' });
+        const blobUrl = URL.createObjectURL(response.data);
+        activeBlobUrl.value = blobUrl;
+        
+        canvasData.value = {
+          type: payload.type,
+          title: payload.title || filePath.split('/').pop() || '文件预览',
+          content: blobUrl
+        };
+        canvasVisible.value = true;
+      } else {
+        const resText = await axios.get(resolvedUrl).then(res => res.data);
+        canvasData.value = {
+          type: payload.type,
+          title: payload.title || filePath.split('/').pop() || '文件预览',
+          content: resText
+        };
+        canvasVisible.value = true;
+      }
+    } catch (err: any) {
+      console.error('加载本地文件失败:', err);
+      let errMsg = '加载本地文件失败';
+      if (err.response?.data?.detail) {
+        errMsg = err.response.data.detail;
+      } else if (err.response?.status === 404) {
+        errMsg = '预览的文件不存在，请确认路径是否正确。';
+      } else if (err.response?.status === 403) {
+        errMsg = '安全拦截：无权访问该服务器文件。';
+      } else {
+        errMsg = err.message || String(err);
+      }
+      showToast(errMsg, 'error');
+    }
+  } else {
+    canvasData.value = payload;
+    canvasVisible.value = true;
+  }
+};
+
+const handleAnalyzeDiff = async (question: string) => {
+  canvasVisible.value = false;
+  userInput.value = question;
+  await nextTick();
+  sendMessage();
 };
 
 const handlePreviewImageUrl = (url: string, filename: string) => {
@@ -3484,18 +3597,19 @@ const handlePreviewImageUrl = (url: string, filename: string) => {
 
 const resolveFileUrl = (url: string): string => {
   if (!url) return '';
-  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) {
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('quick:') || url.startsWith('canvas:')) {
     return url;
   }
   if (url.includes('uploads/')) {
     const parts = url.split('uploads/');
     return '/static/uploads/' + parts[parts.length - 1];
   }
-  if (url.startsWith('/') && 
-      !url.startsWith('/static/') && 
+  // 兼容绝对路径与相对物理路径，只要它不属于静态路由与API接口路由，均通过后端预览API拉取
+  if (!url.startsWith('/static/') && 
       !url.startsWith('/api/') && 
       !url.startsWith('/assets/')) {
-    return `/api/v1/chat/fs/preview?path=${encodeURIComponent(url)}`;
+    const convParam = conversationId.value ? `&conversation_id=${encodeURIComponent(conversationId.value)}` : "";
+    return `/api/v1/chat/fs/preview?path=${encodeURIComponent(url)}${convParam}`;
   }
   return url;
 };
@@ -5278,6 +5392,10 @@ const sendMessage = async () => {
   await nextTick();
   scrollToBottom(true);
   requestAnimationFrame(() => scrollToBottom(true));
+  const ltmIgnoredVal = ignoreLtmThisTurn.value;
+  ignoreLtmThisTurn.value = false;
+  activeLtmPreference.value = null;
+
   // Start thought timer
   startThoughtTimer(agentMsg.value);
   // 3. API Call
@@ -5294,6 +5412,7 @@ const sendMessage = async () => {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
         enable_sql_plan: config.enableSqlPlan,
+        ignore_ltm: ltmIgnoredVal,
       },
       permission_options: {
         approval_mode: config.approvalMode || "ask",
@@ -5409,6 +5528,9 @@ const sendMessage = async () => {
             }
             if (data.has_data_output) {
               agentMsg.value.hasDataOutput = true;
+            }
+            if (data.ltm_applied && data.ltm_data) {
+              activeLtmPreference.value = data.ltm_data;
             }
           } else if (data.type === "retraction") {
             agentMsg.value.content = data.content;

@@ -325,8 +325,8 @@ const resolvedContent = computed(() => {
   if (!props.data?.content) return '';
   const val = props.data.content;
   
-  if (props.data.type === 'html') {
-    // 深度重写 HTML 中的所有物理资源绝对路径引用
+  if (isHtmlContent.value) {
+    // 只要识别为可预览的 HTML 语法，就深度重写其内部的所有物理资源绝对路径引用
     return val.replace(/(src|href)=["']([^"']*)["']/gi, (match, attr, pathVal) => {
       const newVal = resolveUrlPath(pathVal);
       return `${attr}="${newVal}"`;

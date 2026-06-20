@@ -595,7 +595,7 @@
               class="px-4 py-3 rounded-2xl rounded-tl-sm shadow-md border border-gray-100 dark:border-gray-700 border-l-4 border-l-primary/60 dark:border-l-primary/40 text-sm leading-relaxed min-h-[46px] transition-all duration-300 relative group/bubble"
               :class="[
                 msg.isThinking 
-                    ? 'bg-slate-50/80 dark:bg-slate-800/80' 
+                    ? 'bg-slate-50/80 dark:bg-slate-800/80 shimmer-thought-card' 
                     : 'bg-white dark:bg-gray-800'
               ]"
             >
@@ -2964,6 +2964,7 @@ const config = reactive({
   enableMultiAgent: true,
   showShortcuts: true,
   enableSqlPlan: false,
+  expandThoughts: false, // 思考过程默认展示开关
 });
 const showAutoRoutingHint = ref(false);
 const showMultiAgentHint = ref(false);
@@ -2978,6 +2979,7 @@ const saveRoutingSettings = () => {
     localStorage.setItem("yovole_override_model", config.overrideModel || "");
     localStorage.setItem("yovole_approval_mode", config.approvalMode || "ask");
     localStorage.setItem("yovole_embed_theme", config.theme || "light");
+    localStorage.setItem("yovole_expand_thoughts", config.expandThoughts ? "1" : "0");
 };
 const triggerMultiAgentHint = (enabled: boolean) => {
     multiAgentHintMessage.value = enabled ? "已开启多智能体协同模式" : "已切换为单智能体模式";
@@ -3136,6 +3138,34 @@ const startStalePendingTimer = (msg: Message) => {
       msg.isThinking = false;
     }
   }, 10_000);
+};
+const startThoughtTimer = (msg: Message) => {
+  if (thoughtTimer) clearInterval(thoughtTimer);
+  msg.thoughtStartTime = Date.now();
+  msg.thoughtDuration = "0.0";
+  let ticks = 0;
+  const THINKING_MESSAGES = [
+    "正在分析任务...",
+    "正在组织回答...",
+  ];
+  thoughtTimer = setInterval(() => {
+    ticks++;
+    if (msg.thoughtStartTime) {
+      msg.thoughtDuration = (
+        (Date.now() - msg.thoughtStartTime) /
+        1000
+      ).toFixed(1);
+    }
+    // Switch message every 3 seconds (30 * 100ms)
+    if (ticks % 30 === 0) {
+      const stepIndex = ticks / 30;
+      if (stepIndex < THINKING_MESSAGES.length) {
+        msg.thinkingText = THINKING_MESSAGES[stepIndex];
+      } else {
+        msg.thinkingText = "任务处理中，请稍候...";
+      }
+    }
+  }, 100);
 };
 const clearStallTimer = () => {
   if (stallTimer) {
@@ -4908,7 +4938,7 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
   if (data.turn_type && category === "intent") {
     msg.turnType = data.turn_type;
     if (msg.isThinking) {
-      msg.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+      msg.isThoughtExpanded = config.expandThoughts;
     }
   }
   if (existingIdx > -1) {
@@ -5025,8 +5055,8 @@ const submitPendingExternalExecution = async (msg: Message) => {
   pending.isSubmitting = true;
   isProcessing.value = true;
   msg.isThinking = true;
-  msg.thoughtStartTime = Date.now();
-  msg.thoughtDuration = "0.0";
+  startThoughtTimer(msg);
+  msg.isThoughtExpanded = config.expandThoughts;
   msg.thinkingText = "正在提交外部执行结果...";
   resetStallTimer();
 
@@ -5071,8 +5101,8 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
   isProcessing.value = true;
   if (confirmed) {
     msg.isThinking = true;
-    msg.thoughtStartTime = Date.now();
-    msg.thoughtDuration = "0.0";
+    startThoughtTimer(msg);
+    msg.isThoughtExpanded = config.expandThoughts;
     msg.thinkingText = "正在继续执行...";
     resetStallTimer();
   }
@@ -5172,7 +5202,7 @@ const sendMessage = async () => {
     logs: [],
     thoughtStartTime: Date.now(),
     thoughtDuration: "0.0",
-    isThoughtExpanded: false,
+    isThoughtExpanded: config.expandThoughts,
     isCitationsExpanded: false,
     timestamp: new Date().toISOString(),
   });
@@ -5184,33 +5214,8 @@ const sendMessage = async () => {
   await nextTick();
   scrollToBottom(true);
   requestAnimationFrame(() => scrollToBottom(true));
-  // Thinking Messages
-  const THINKING_MESSAGES = [
-    "正在分析任务...",
-    "正在组织回答...",
-  ];
-  // Timer
-  if (thoughtTimer) clearInterval(thoughtTimer);
-  let ticks = 0;
-  thoughtTimer = setInterval(() => {
-    ticks++;
-    if (agentMsg.value.thoughtStartTime) {
-      agentMsg.value.thoughtDuration = (
-        (Date.now() - agentMsg.value.thoughtStartTime) /
-        1000
-      ).toFixed(1);
-    }
-    // Switch message every 3 seconds (30 * 100ms)
-    // If we exceed the defined messages, show a generic "still processing" message
-    if (ticks % 30 === 0) {
-      const stepIndex = ticks / 30;
-      if (stepIndex < THINKING_MESSAGES.length) {
-        agentMsg.value.thinkingText = THINKING_MESSAGES[stepIndex];
-      } else {
-        agentMsg.value.thinkingText = "任务处理中，请稍候...";
-      }
-    }
-  }, 100);
+  // Start thought timer
+  startThoughtTimer(agentMsg.value);
   // 3. API Call
   abortController = new AbortController();
   try {
@@ -5329,7 +5334,7 @@ const sendMessage = async () => {
               if (typeof data.thought_expanded_default === "boolean") {
                 agentMsg.value.isThoughtExpanded = data.thought_expanded_default;
               } else {
-                agentMsg.value.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+                agentMsg.value.isThoughtExpanded = config.expandThoughts;
               }
             }
             if (data.prompt_tokens !== undefined) {
@@ -5540,6 +5545,8 @@ onMounted(() => {
     config.theme = savedTheme;
     applyTheme(savedTheme);
   }
+  const savedExpandThoughts = localStorage.getItem("yovole_expand_thoughts");
+  if (savedExpandThoughts !== null) config.expandThoughts = savedExpandThoughts === "1";
   const query = new URLSearchParams(window.location.search);
   if (query.get("token")) {
     const token = query.get("token")!;
@@ -5905,5 +5912,44 @@ onUnmounted(() => {
 :deep(.markdown-body .code-copy-btn.copied) {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2310b981'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
   border-color: #10b981;
+}
+
+/* 思维链扫光动效 */
+.shimmer-thought-card {
+  position: relative !important;
+  overflow: hidden !important;
+}
+.shimmer-thought-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.45) 20%,
+    rgba(255, 255, 255, 0.75) 60%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: shimmer-slide 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+.dark .shimmer-thought-card::after {
+  background-image: linear-gradient(
+    90deg,
+    rgba(30, 41, 59, 0) 0%,
+    rgba(148, 163, 184, 0.08) 20%,
+    rgba(148, 163, 184, 0.15) 60%,
+    rgba(30, 41, 59, 0) 100%
+  );
+}
+@keyframes shimmer-slide {
+  100% {
+    transform: translateX(100%);
+  }
 }
 </style>

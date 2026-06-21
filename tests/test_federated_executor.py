@@ -1007,5 +1007,125 @@ async def test_federated_executor_rejects_dangerous_memory_join_before_execute()
     fake_conn.close.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_federated_executor_repairs_subquery_time_range_mismatch_before_execute():
+    """子查询 SQL 使用错误年份的「上个月」日期时，应在执行前拦截并触发联邦 repair。"""
+    from datetime import datetime
+
+    import pytz
+
+    from app.services.ai.time_anchor import detect_time_range_mismatch
+
+    tz = pytz.timezone("Asia/Shanghai")
+    fixed_now = tz.localize(datetime(2026, 6, 21, 10, 0, 0))
+    user_question = "帮我查询上个月所有销售人员的拜访记录"
+
+    bad_sql = (
+        "SELECT follow_up_person, follow_up_date FROM VIEW_AI_VISIT_LOG "
+        "WHERE follow_up_date >= TO_DATE('2025-05-01', 'YYYY-MM-DD') "
+        "AND follow_up_date < TO_DATE('2025-06-01', 'YYYY-MM-DD')"
+    )
+    good_sql = (
+        "SELECT follow_up_person, follow_up_date FROM VIEW_AI_VISIT_LOG "
+        "WHERE follow_up_date >= DATE '2026-05-01' AND follow_up_date < DATE '2026-06-01'"
+    )
+    assert detect_time_range_mismatch(user_question, bad_sql, now=fixed_now)
+    assert detect_time_range_mismatch(user_question, good_sql, now=fixed_now) == ""
+
+    runner = MagicMock()
+    runner.user_info = {"id": 1, "role": "user"}
+    runner.trace_buffer = []
+    runner._current_user_id.return_value = 1
+    runner._current_user_is_admin.return_value = False
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    bad_plan = f"""
+    <multi_dataset_plan>
+      <sub_query dataset_name="crm_ds" temp_table="t_visit">
+        <![CDATA[{bad_sql}]]>
+      </sub_query>
+      <memory_join>
+        <![CDATA[SELECT follow_up_person, follow_up_date FROM t_visit]]>
+      </memory_join>
+    </multi_dataset_plan>
+    """
+    repaired_plan = f"""
+    <multi_dataset_plan>
+      <sub_query dataset_name="crm_ds" temp_table="t_visit">
+        <![CDATA[{good_sql}]]>
+      </sub_query>
+      <memory_join>
+        <![CDATA[SELECT follow_up_person, follow_up_date FROM t_visit]]>
+      </memory_join>
+    </multi_dataset_plan>
+    """
+
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_stream_client = MagicMock()
+
+    async def mock_stream_messages(*args, **kwargs):
+        yield SimpleNamespace(content="上月拜访记录查询完成")
+
+    mock_llm_stream_client.stream_messages = mock_stream_messages
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "stream" if streaming else "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_stream_client if handle == "stream" else mock_llm_client
+
+    mock_ds = MagicMock()
+    mock_ds.id = 101
+    mock_ds.name = "crm_ds"
+    mock_ds.data_source = "oracle_crm"
+
+    async def mock_get_dataset_by_name(session, name):
+        return mock_ds
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return True
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    ok_result = json.dumps({
+        "columns": [{"name": "follow_up_person"}, {"name": "follow_up_date"}],
+        "items": [["Alice", "2026-05-10"]],
+    })
+    execute_mock = AsyncMock(return_value=ok_result)
+
+    with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+         patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+         patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+         patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+         patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", execute_mock), \
+         patch("app.services.ai.executors.federated_executor.detect_time_range_mismatch") as mock_detect:
+        mock_detect.side_effect = lambda q, sql, **kwargs: detect_time_range_mismatch(
+            q, sql, now=fixed_now
+        )
+        mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+        chunks = []
+        async for chunk in FederatedQueryExecutor(runner, "", ["crm_ds"]).execute([], "", user_question):
+            chunks.append(chunk)
+
+    assert execute_mock.await_count == 1
+    assert mock_llm_client.generate_text.await_count == 2
+    assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
+    assert "上月拜访记录查询完成" in "".join(chunk.get("content") or "" for chunk in chunks)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

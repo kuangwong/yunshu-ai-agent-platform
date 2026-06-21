@@ -19,6 +19,12 @@ from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import system_user_prompt_messages
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.time_anchor import (
+    TIME_RANGE_GATE_PREFIX,
+    build_data_query_time_anchor_block,
+    build_time_range_gate_message,
+    detect_time_range_mismatch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +237,11 @@ class FederatedQueryExecutor:
                                 has_perm = await perm_service.check_permission(int(user_id), "metadata", str(dataset.id))
                                 if not has_perm:
                                     raise PermissionError(f"无权访问数据集: '{dataset_name}' (ID: {dataset.id})")
+                            
+                            # 相对时间范围门禁：子查询 SQL 的日期字面量必须与用户问题 + 时间锚点一致。
+                            time_range_risk = detect_time_range_mismatch(original_user_question, sub_sql)
+                            if time_range_risk:
+                                raise ValueError(build_time_range_gate_message(time_range_risk))
                             
                             # 跨 repair 轮缓存命中：相同 (数据集, SQL) 已成功执行过，直接复用结果，避免重跑。
                             cache_key = f"{dataset.name}::{self._normalize_sub_sql(sub_sql)}"
@@ -548,6 +559,7 @@ class FederatedQueryExecutor:
                     original_user_question,
                     final_md_table,
                     data_caveats=data_caveats,
+                    dataset_names=self.datasets,
                 )
                 
                 # 流式输出总结（synthesis_prompt 已含用户问题，user_prompt 用默认值避免重复）
@@ -640,6 +652,10 @@ class FederatedQueryExecutor:
             "执行超时",
             "除零",
             "division by zero",
+            "time_range_gate",
+            "相对时间",
+            "时间锚点",
+            "时间范围与用户相对时间",
         )
         return any(marker in lower for marker in retryable_markers)
 
@@ -693,6 +709,11 @@ class FederatedQueryExecutor:
             targeted_guides += f"\n\n{DataQueryPrompts.DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE}"
         if is_schema_err:
             targeted_guides += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
+        if TIME_RANGE_GATE_PREFIX in error or "相对时间" in error.lower() or "时间锚点" in error:
+            targeted_guides += (
+                f"\n\n{build_data_query_time_anchor_block()}\n\n"
+                f"{DataQueryPrompts.TIME_RANGE_ANOMALY_REPAIR_GUIDE}"
+            )
         return (
             f"{base_prompt}\n\n"
             "【上一轮联邦计划执行失败，需要 repair 后重试】\n"

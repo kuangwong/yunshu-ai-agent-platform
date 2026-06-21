@@ -2237,6 +2237,54 @@ async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_co
 
 
 @pytest.mark.asyncio
+async def test_execute_sql_wrapper_blocks_time_range_mismatch_before_tool_call(data_config):
+    from app.services.ai.time_anchor import build_data_query_time_anchor_block
+    from app.services.ai.runners.data_agent_runner import (
+        DataAgentRunner,
+        RuntimeToolSpec,
+        TIME_RANGE_GATE_PREFIX,
+        _DataRunState,
+    )
+
+    called = False
+
+    async def fake_execute(**kwargs):
+        nonlocal called
+        called = True
+        return {"rows": []}
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-time-range-gate", trace_buffer=[])
+    runner._standalone_query = "帮我查询上个月所有销售人员的拜访记录"
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    [wrapped] = runner._wrap_tools_with_schema_gate([
+        RuntimeToolSpec(
+            name="execute_sql_query",
+            description="execute",
+            parameters_schema={},
+            source_type="static",
+            callable=fake_execute,
+            permission_scope="read",
+        )
+    ], state)
+
+    output = await wrapped.callable(
+        sql=(
+            "SELECT follow_up_person, visit_date FROM visit_log "
+            "WHERE visit_date >= TO_DATE('2025-05-01', 'YYYY-MM-DD') "
+            "AND visit_date < TO_DATE('2025-06-01', 'YYYY-MM-DD')"
+        ),
+        data_source="oracle_crm",
+        dataset_name="crm",
+    )
+
+    assert called is False
+    assert str(output).startswith(TIME_RANGE_GATE_PREFIX)
+    assert state.time_range_anomaly is True
+    assert "上月" in state.time_range_anomaly_reason
+    assert build_data_query_time_anchor_block()  # sanity: anchor module importable in repair path
+
+
+@pytest.mark.asyncio
 async def test_execute_sql_wrapper_blocks_order_by_and_rownum_antipattern(data_config):
     from app.services.ai.runners.data_agent_runner import (
         DataAgentRunner,

@@ -30,7 +30,12 @@ from app.services.ai.executors.common import (
 )
 from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
 from app.services.ai.executors.prompts import DataQueryPrompts
-from app.services.ai.time_anchor import build_data_query_time_anchor_block
+from app.services.ai.time_anchor import (
+    TIME_RANGE_GATE_PREFIX,
+    build_data_query_time_anchor_block,
+    build_time_range_gate_message,
+    detect_time_range_mismatch,
+)
 from app.services.ai.multimodal_support import (
     ensure_multimodal_compatible,
     resolve_runtime_model_name,
@@ -95,6 +100,7 @@ DATA_REPAIR_BUDGETS = {
     "schema_ambiguous": 1,
     "sql_plan_missing": 1,
     "sql_static_risk": 1,
+    "time_range_anomaly": 1,
     "sql_sandbox_blocked": 2,
     "sql_error": 5,
     "failed_sql_repeat": 1,
@@ -229,6 +235,8 @@ class _DataRunState:
     sql_fatal_emitted: bool = False
     sql_static_risk: bool = False
     sql_static_risk_reason: str = ""
+    time_range_anomaly: bool = False
+    time_range_anomaly_reason: str = ""
     sql_sandbox_blocked: bool = False
     sql_sandbox_blocked_reason: str = ""
     sql_repeat_gate_block: bool = False
@@ -305,6 +313,7 @@ class _DataRunState:
             and self.sql_completed
             and not self.sql_before_schema
             and not self.sql_static_risk
+            and not self.time_range_anomaly
             and not self.sql_error
             and not self.empty_sql_result
             and not self.diagnostic_sql_pending_final
@@ -597,6 +606,10 @@ class DataAgentRunner(BaseExecutor):
     @staticmethod
     def _is_sql_static_gate_block(output: Any) -> bool:
         return str(output or "").startswith(SQL_STATIC_GATE_PREFIX)
+
+    @staticmethod
+    def _is_time_range_gate_block(output: Any) -> bool:
+        return str(output or "").startswith(TIME_RANGE_GATE_PREFIX)
 
     @staticmethod
     def _is_sql_sandbox_gate_block(output: Any) -> bool:
@@ -1200,6 +1213,7 @@ class DataAgentRunner(BaseExecutor):
                 and not state.empty_sql_result
                 and not state.sql_plan_missing
                 and not state.sql_static_risk
+                and not state.time_range_anomaly
                 and not state.sql_repeat_gate_block
                 and not state.failed_sql_repeat_gate_block
                 and not state.ratio_anomaly
@@ -1294,6 +1308,15 @@ class DataAgentRunner(BaseExecutor):
                 if preflight_error:
                     return preflight_error
 
+                time_range_risk = detect_time_range_mismatch(
+                    self._standalone_query or "",
+                    current_sql,
+                )
+                if time_range_risk:
+                    state.time_range_anomaly = True
+                    state.time_range_anomaly_reason = time_range_risk
+                    return build_time_range_gate_message(time_range_risk)
+
                 static_risk = ""
                 if not (state.requires_sql_plan and not state.sql_plan_seen):
                     static_risk = self._detect_sql_static_risk(current_sql)
@@ -1323,6 +1346,7 @@ class DataAgentRunner(BaseExecutor):
                         and not self._is_schema_gate_block(result)
                         and not self._is_sql_repeat_gate_block(result)
                         and not self._is_sql_static_gate_block(result)
+                        and not self._is_time_range_gate_block(result)
                         and not self._is_sql_plan_gate_block(result)
                         and not self._is_sql_sandbox_gate_block(result)
                     ):
@@ -3272,6 +3296,7 @@ class DataAgentRunner(BaseExecutor):
                 or state.empty_sql_result
                 or state.sql_plan_missing
                 or state.sql_static_risk
+                or state.time_range_anomaly
                 or state.sql_sandbox_blocked
                 or state.sql_repeat_gate_block
                 or state.failed_sql_repeat_gate_block
@@ -3500,6 +3525,7 @@ class DataAgentRunner(BaseExecutor):
             or state.sql_error
             or state.empty_sql_result
             or state.sql_static_risk
+            or state.time_range_anomaly
             or state.failed_sql_repeat_gate_block
             or state.ratio_anomaly
             or state.duration_anomaly
@@ -3557,6 +3583,12 @@ class DataAgentRunner(BaseExecutor):
                 "💡 **建议您可以尝试**：\n"
                 "1. 明确时间限制（如“查询最近3天”、“本周内”）。\n"
                 "2. 避免使用过于宽泛的“全部”或“所有”类型查询，缩小范围后重试。"
+            )
+        elif state.time_range_anomaly:
+            content = (
+                "查询 SQL 中的时间范围与您问题里的相对时间不一致，已被系统拦截。\n\n"
+                f"原因：{state.time_range_anomaly_reason}\n\n"
+                "💡 **建议**：请确认问题中的时间表述（如「上个月」「本月」），系统将按当前日期自动换算后再查数。"
             )
         elif state.sql_sandbox_blocked:
             content = (
@@ -3634,6 +3666,8 @@ class DataAgentRunner(BaseExecutor):
             return "sql_sandbox_blocked"
         if state.sql_static_risk:
             return "sql_static_risk"
+        if state.time_range_anomaly:
+            return "time_range_anomaly"
         if state.sql_plan_missing:
             return "sql_plan_missing"
         if state.failed_sql_repeat_gate_block:
@@ -3735,6 +3769,16 @@ class DataAgentRunner(BaseExecutor):
                 f"原因：{state.sql_static_risk_reason}\n"
                 "请修正 SQL 后重新调用 execute_sql_query，例如补充时间范围、限制返回行数、避免 SELECT *、"
                 "或补齐 JOIN 条件。修正并执行成功前禁止直接回答用户。"
+            )
+        if state.time_range_anomaly:
+            time_anchor = build_data_query_time_anchor_block()
+            return (
+                "【相对时间范围修正要求】上一轮 execute_sql_query 因 SQL 时间范围与问题中的相对时间不一致被平台拦截。\n"
+                f"原因：{state.time_range_anomaly_reason}\n\n"
+                f"{time_anchor}\n\n"
+                f"{DataQueryPrompts.TIME_RANGE_ANOMALY_REPAIR_GUIDE}\n"
+                "请仅修正 WHERE 中的日期起止条件后重新调用 execute_sql_query；"
+                "修正并执行成功前禁止直接回答用户。"
             )
         if state.sql_sandbox_blocked:
             return (
@@ -3871,6 +3915,8 @@ class DataAgentRunner(BaseExecutor):
         state.sql_before_schema = False
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
+        state.time_range_anomaly = False
+        state.time_range_anomaly_reason = ""
         state.sql_sandbox_blocked = False
         state.sql_sandbox_blocked_reason = ""
         state.failed_sql_repeat_gate_block = False
@@ -3931,6 +3977,8 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="execute_sql_query")
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
+        if state.time_range_anomaly:
+            return ToolChoice(mode="execute_sql_query")
         if state.failed_sql_repeat_gate_block:
             return ToolChoice(mode="required")
         if state.ratio_anomaly:
@@ -3974,6 +4022,8 @@ class DataAgentRunner(BaseExecutor):
             return "修正性能超限 SQL"
         if state.sql_static_risk:
             return "修正高风险 SQL"
+        if state.time_range_anomaly:
+            return "修正 SQL 时间范围"
         if state.sql_plan_missing:
             return "补充 SQL 计划"
         if state.failed_sql_repeat_gate_block:
@@ -4142,6 +4192,8 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] 已有成功非空查数结果，已拦截重复 SQL 执行。"
         if tool_name == "execute_sql_query" and self._is_sql_static_gate_block(output):
             details = f"{details}\n\n[系统检测] SQL 存在高风险执行特征，已拦截执行。"
+        if tool_name == "execute_sql_query" and self._is_time_range_gate_block(output):
+            details = f"{details}\n\n[系统检测] SQL 时间范围与相对时间锚点不一致，已拦截执行。"
         if tool_name == "execute_sql_query" and self._is_sql_sandbox_gate_block(output):
             details = f"{details}\n\n[系统检测] SQL 存在性能安全风险（超限或笛卡尔积），已被沙箱网关拦截。"
         if tool_name == "execute_sql_query" and self._is_sql_plan_gate_block(output):
@@ -4245,6 +4297,14 @@ class DataAgentRunner(BaseExecutor):
             return parsed, False
         if self._is_sql_static_gate_block(output):
             state.sql_static_risk = True
+            state.sql_error = False
+            state.sql_error_message = ""
+            return output, False
+        if self._is_time_range_gate_block(output):
+            state.time_range_anomaly = True
+            if not state.time_range_anomaly_reason:
+                text = str(output or "").replace(TIME_RANGE_GATE_PREFIX, "").strip()
+                state.time_range_anomaly_reason = text[:800]
             state.sql_error = False
             state.sql_error_message = ""
             return output, False
@@ -4355,6 +4415,8 @@ class DataAgentRunner(BaseExecutor):
         state.diagnostic_sql_pending_final = False
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
+        state.time_range_anomaly = False
+        state.time_range_anomaly_reason = ""
         state.sql_repeat_gate_block = False
         state.failed_sql_repeat_gate_block = False
         normalized_sql = self._normalize_sql_text(sql_text)

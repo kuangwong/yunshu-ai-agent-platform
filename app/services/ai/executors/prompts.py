@@ -120,6 +120,9 @@ class DataQueryPrompts:
    - 每个 `<sub_query>` 的 SQL 必须使用上方【数据集与 SQL 方言对照表】中对应数据集的数据库语法。
    - `<memory_join>` 的 SQL 对临时表操作，使用 DuckDB 语法（支持 field::DATE、STRFTIME 等）；最终聚合/汇总必须在 `<memory_join>` 中完成。
    - 为了防止 SQL 语句中的特殊字符（如比较运算符 <、>、& 等）破坏 XML 格式，请将所有 SQL 语句使用 <![CDATA[ ... ]]> 包裹。
+9. 相对时间（上月/本月/今年/最近N天等）必须严格使用下方【当前时间锚点】换算出的 YYYY-MM-DD 起止日期写入各 `<sub_query>` 的 WHERE 条件，禁止臆测年份或月份。
+
+{build_data_query_time_anchor_block()}
 
 【输出格式】
 只输出一个 `<multi_dataset_plan>` XML 区块，不要输出任何其他的解释文字、不要包裹 Markdown 标记之外的内容。
@@ -155,6 +158,7 @@ XML 示例：
         user_question: str,
         final_result_md: str,
         data_caveats: str = "",
+        dataset_names: Optional[List[str]] = None,
     ) -> str:
         caveat_block = ""
         if data_caveats and data_caveats.strip():
@@ -164,16 +168,31 @@ XML 示例：
                 "请在总结中明确说明上述数据缺失或截断对结论的影响，"
                 "不要把不完整的数据当作完整、精确的结论给出。\n"
             )
+        dataset_block = ""
+        if dataset_names:
+            names = "、".join(
+                str(name).strip()
+                for name in dataset_names
+                if str(name).strip()
+            )
+            if names:
+                dataset_block = (
+                    f"\n【参与查询的数据集】\n{names}\n"
+                    "数据来源说明必须使用上述数据集名称；若涉及多个数据集，用顿号列出全部名称。\n"
+                )
         return f"""你是一个数据分析专家。
 已经完成了跨数据集的联邦查询计算，以下是最终的计算结果：
 
 {final_result_md}
-{caveat_block}
+{caveat_block}{dataset_block}
 请结合该结果，直接针对用户的问题进行专业的总结和解读。
 【输出规范】
 1. 必须使用标准 Markdown 格式进行总结，文字要专业简练。
 2. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
 3. ECharts 图表必须使用标准 ECharts Option 配置。
+4. **数据源与引用说明 (MUST)**：在正文、表格与 ```chart``` 图表之后，于段尾注明当前数据归属的数据集名称（例如：`（* 数据来源：{{数据集名称}}）`），以帮助用户明确数据来源。
+
+{SharedPrompts.QUICK_SUGGESTIONS_PLACEMENT}
 
 【当前用户问题】
 {user_question}
@@ -1403,6 +1422,16 @@ XML 示例：
         "不要把 'YYYY-MM-DD' 用在实际包含时间、斜杠或中文格式的字段上。\n"
         "4) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
         "不要顺手更换无关表字段。"
+    )
+
+    TIME_RANGE_ANOMALY_REPAIR_GUIDE = (
+        "【相对时间范围修正指引】\n"
+        "1) 必须严格使用 system prompt 中【当前时间锚点】给出的起止日期重写 WHERE 时间条件，"
+        "禁止凭记忆或训练数据臆测年份/月份（例如把「上个月」写成去年同月）。\n"
+        "2) SQL 中必须写出具体 YYYY-MM-DD 起止日期，并与锚点区间完全一致或为其子区间。\n"
+        "3) 仅修正时间过滤相关表达式（日期字面量、TO_DATE、DATE '...'、时间边界），不要改动无关字段或业务口径。\n"
+        "4) 若用户问题本身已给出明确绝对年月（如「2025年5月」），才允许使用对应绝对日期；"
+        "相对时间词（上月/本月/今年等）不得自行换算到其他年份。"
     )
 
     # 元数据服务（RAGFlow）不可用时的硬终止回复

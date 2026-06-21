@@ -176,6 +176,7 @@ XML 示例：
         final_result_md: str,
         data_caveats: str = "",
         dataset_names: Optional[List[str]] = None,
+        column_label_guide: str = "",
     ) -> str:
         caveat_block = ""
         if data_caveats and data_caveats.strip():
@@ -197,17 +198,26 @@ XML 示例：
                     f"\n【参与查询的数据集】\n{names}\n"
                     "数据来源说明必须使用上述数据集名称；若涉及多个数据集，用顿号列出全部名称。\n"
                 )
+        column_label_block = ""
+        if column_label_guide.strip():
+            column_label_block = (
+                "\n【结果列中文表头对照（输出表格 MUST 使用中文表头）】\n"
+                f"{column_label_guide.strip()}\n"
+                "下方结果预览表头已按元数据术语映射为中文；你在正文或新建表格中不得再使用英文/拼音物理列名作为表头，"
+                "未映射列请按业务语义译为中文。\n"
+            )
         return f"""你是一个数据分析专家。
 已经完成了跨数据集的联邦查询计算，以下是最终的计算结果：
 
 {final_result_md}
-{caveat_block}{dataset_block}
+{caveat_block}{dataset_block}{column_label_block}
 请结合该结果，直接针对用户的问题进行专业的总结和解读。
 【输出规范】
 1. 必须使用标准 Markdown 格式进行总结，文字要专业简练。
-2. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
-3. ECharts 图表必须使用标准 ECharts Option 配置。
-4. **数据源与引用说明 (MUST)**：在正文、表格与 ```chart``` 图表之后、quick 区块之前，单独一行注明数据归属的数据集名称（例如：`（* 数据来源：{{数据集名称}}）`）；多数据集用顿号列出；禁止与 quick 建议混在同一行。
+2. 输出中的所有 Markdown 表格表头 MUST 使用中文业务术语，禁止保留 visit_id、FOLLOW_UP_DATE 等英文/拼音物理列名。
+3. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
+4. ECharts 图表必须使用标准 ECharts Option 配置；图表 series / legend / tooltip 中的维度名也 MUST 使用中文表头。
+5. **数据源与引用说明 (MUST)**：在正文、表格与 ```chart``` 图表之后、quick 区块之前，单独一行注明数据归属的数据集名称（例如：`（* 数据来源：{{数据集名称}}）`）；多数据集用顿号列出；禁止与 quick 建议混在同一行。
 
 {SharedPrompts.QUICK_SUGGESTIONS_FORMAT}
 

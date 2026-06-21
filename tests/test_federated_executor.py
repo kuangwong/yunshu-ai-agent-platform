@@ -81,6 +81,15 @@ def test_make_markdown_table():
     assert "| 2 | DeviceB |" in md
 
 
+def test_make_markdown_table_with_column_labels():
+    cols = [{"name": "FOLLOW_UP_DATE"}, {"name": "CUSTOMER_NAME"}]
+    rows = [["2026-06-19", "科华数据"]]
+    labels = {"FOLLOW_UP_DATE": "跟进日期", "CUSTOMER_NAME": "客户名称"}
+    md = make_markdown_table(cols, rows, column_labels=labels)
+    assert "| 跟进日期 | 客户名称 |" in md
+    assert "FOLLOW_UP_DATE" not in md.split("\n")[0]
+
+
 def test_federated_memory_join_sql_blocks_external_access():
     assert FederatedQueryExecutor._validate_memory_join_sql("SELECT * FROM t_energy") is None
 

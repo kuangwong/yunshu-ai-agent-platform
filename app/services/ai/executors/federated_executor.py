@@ -19,6 +19,14 @@ from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import system_user_prompt_messages
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.federated_column_labels import (
+    build_column_label_map,
+    extract_alias_term_hints_from_join_sql,
+    extract_column_term_map_from_schema,
+    format_column_label_guide,
+    load_column_term_map_for_datasets,
+    merge_column_term_maps,
+)
 from app.services.ai.federated_sql_repair import (
     build_repair_schema_search_keywords,
     build_sql_repair_guidance,
@@ -46,10 +54,24 @@ MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 10
 MAX_FEDERATED_SQL_REPAIR_PER_NODE = 10
 
 
-def make_markdown_table(columns: list, rows: list) -> str:
+def make_markdown_table(
+    columns: list,
+    rows: list,
+    *,
+    column_labels: dict[str, str] | None = None,
+) -> str:
     if not columns or not rows:
         return "无结果数据。"
-    headers = [c["name"] for c in columns]
+
+    def _header_name(col: Any) -> str:
+        raw = col["name"] if isinstance(col, dict) else str(col)
+        if column_labels:
+            labeled = column_labels.get(raw) or column_labels.get(str(raw).lower())
+            if labeled:
+                return labeled
+        return str(raw)
+
+    headers = [_header_name(c) for c in columns]
     lines = []
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
@@ -634,7 +656,17 @@ class FederatedQueryExecutor:
                         return
 
                 # 4. 可视化分析与总结解读
-                final_md_table = make_markdown_table(columns, join_rows)
+                schema_term_map = extract_column_term_map_from_schema(self.schema_output)
+                db_term_map = await load_column_term_map_for_datasets(session, self.datasets)
+                term_map = merge_column_term_maps(
+                    schema_term_map,
+                    db_term_map,
+                    extract_alias_term_hints_from_join_sql(join_sql, merge_column_term_maps(schema_term_map, db_term_map)),
+                )
+                column_names = [str(c.get("name") or "") for c in columns]
+                column_labels = build_column_label_map(column_names, term_map)
+                column_label_guide = format_column_label_guide(term_map, column_names, label_map=column_labels)
+                final_md_table = make_markdown_table(columns, join_rows, column_labels=column_labels)
                 
                 # 保存至 "上一轮数据结果" 中供下一次追问与微调
                 try:
@@ -656,6 +688,7 @@ class FederatedQueryExecutor:
                     final_md_table,
                     data_caveats=data_caveats,
                     dataset_names=self.datasets,
+                    column_label_guide=column_label_guide,
                 )
                 
                 # 流式输出总结（synthesis_prompt 已含用户问题，user_prompt 用默认值避免重复）

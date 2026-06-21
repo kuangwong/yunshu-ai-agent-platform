@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import pandas as pd
 import duckdb
 
+from app.core.context import get_current_agent_context
 from app.core.orm import AsyncSessionLocal
 from app.services.permission_service import PermissionService
 from app.services.metadata_service import MetadataService
@@ -22,6 +23,7 @@ from app.services.ai.executors.prompts import DataQueryPrompts
 logger = logging.getLogger(__name__)
 
 MAX_FEDERATED_ROWS = 1000
+MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 2
 
 
 def make_markdown_table(columns: list, rows: list) -> str:
@@ -60,8 +62,14 @@ class FederatedQueryExecutor:
         runtime_messages: List[Any],
         system_prompt: str,
         user_question: str,
+        *,
+        _repair_attempt: int = 0,
+        _repair_context: Optional[Dict[str, Any]] = None,
+        _original_user_question: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
+
+        original_user_question = _original_user_question or user_question
         
         async with TraceSpanContext(
             trace_buffer=self.trace_buffer,
@@ -90,10 +98,16 @@ class FederatedQueryExecutor:
                 dataset_dialect_map = self._extract_dialect_map(self.schema_output)
                 plan_prompt = DataQueryPrompts.build_federated_plan_prompt(
                     self.schema_output,
-                    user_question,
+                    original_user_question,
                     dataset_dialect_map=dataset_dialect_map,
                 )
-                plan_messages = system_user_prompt_messages(plan_prompt, user_prompt=user_question)
+                if _repair_context:
+                    plan_prompt = self._build_federated_plan_repair_prompt(
+                        plan_prompt,
+                        _repair_context,
+                        _repair_attempt,
+                    )
+                plan_messages = system_user_prompt_messages(plan_prompt, user_prompt=original_user_question)
                 
                 plan_output = await chat_client.generate_text(plan_messages)
                 plan_output = plan_output.strip()
@@ -137,6 +151,12 @@ class FederatedQueryExecutor:
             try:
                 user_id = self._current_user_id()
                 is_admin = self._current_user_is_admin()
+                current_agent_context = get_current_agent_context()
+                user_dimensions = (
+                    getattr(current_agent_context, "user_dimensions", None)
+                    if current_agent_context is not None
+                    else None
+                )
                 
                 async with AsyncSessionLocal() as session:
                     perm_service = PermissionService(session)
@@ -183,12 +203,14 @@ class FederatedQueryExecutor:
                                     data_source=dataset.data_source,
                                     dataset_name=dataset.name,
                                     user_id=int(user_id) if user_id else None,
+                                    user_dimensions=user_dimensions or None,
+                                    agent_context=current_agent_context,
                                     is_admin=is_admin,
                                     bypass_table_auth=False,
                                 )
                                 sub_span.set_output(res_str)
                             
-                            if res_str.startswith("[TOOL_ERROR]") or res_str.startswith("[Validation Failed]") or res_str.startswith("[Permission Denied]"):
+                            if self._is_sql_tool_error_result(res_str):
                                 raise ValueError(res_str)
                             
                             res_data = json.loads(res_str)
@@ -216,6 +238,37 @@ class FederatedQueryExecutor:
                         except Exception as e:
                             logger.error(f"[FederatedQueryExecutor] Subquery execution failed on dataset {dataset_name}: {e}", exc_info=True)
                             if idx == 0:
+                                if (
+                                    _repair_attempt < MAX_FEDERATED_PLAN_REPAIR_ROUNDS
+                                    and self._is_retryable_federated_plan_error(e)
+                                ):
+                                    yield {
+                                        "type": "log",
+                                        "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                        "title": "修复联邦查询计划",
+                                        "details": (
+                                            f"主表子查询 ({dataset_name}) 执行失败，正在基于数据库错误重新生成完整联邦计划。"
+                                            f"\n错误信息: {str(e)}\nSQL:\n{sub_sql}"
+                                        ),
+                                        "status": "warning",
+                                    }
+                                    repair_context = {
+                                        "stage": f"主表子查询 ({dataset_name})",
+                                        "dataset_name": dataset_name,
+                                        "failed_sql": sub_sql,
+                                        "error": str(e),
+                                        "previous_plan": plan_output,
+                                    }
+                                    async for chunk in self.execute(
+                                        runtime_messages,
+                                        system_prompt,
+                                        original_user_question,
+                                        _repair_attempt=_repair_attempt + 1,
+                                        _repair_context=repair_context,
+                                        _original_user_question=original_user_question,
+                                    ):
+                                        yield chunk
+                                    return
                                 yield {
                                     "type": "log",
                                     "id": sub_log_id,
@@ -229,6 +282,50 @@ class FederatedQueryExecutor:
                                 }
                                 return
                             else:
+                                if self._is_non_degradable_federated_error(e):
+                                    yield {
+                                        "type": "log",
+                                        "id": sub_log_id,
+                                        "title": f"执行子查询 ({dataset_name}) 失败",
+                                        "details": f"错误信息: {str(e)}\nSQL:\n{sub_sql}",
+                                        "status": "error",
+                                    }
+                                    yield {
+                                        "content": f"\n❌ 跨源联邦子查询失败（数据集: '{dataset_name}'）：{str(e)}",
+                                        "status": "error",
+                                    }
+                                    return
+                                if (
+                                    _repair_attempt < MAX_FEDERATED_PLAN_REPAIR_ROUNDS
+                                    and self._is_retryable_federated_plan_error(e)
+                                ):
+                                    yield {
+                                        "type": "log",
+                                        "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                        "title": "修复联邦查询计划",
+                                        "details": (
+                                            f"子查询 ({dataset_name}) 执行失败，正在基于数据库错误重新生成完整联邦计划。"
+                                            f"\n错误信息: {str(e)}\nSQL:\n{sub_sql}"
+                                        ),
+                                        "status": "warning",
+                                    }
+                                    repair_context = {
+                                        "stage": f"子查询 ({dataset_name})",
+                                        "dataset_name": dataset_name,
+                                        "failed_sql": sub_sql,
+                                        "error": str(e),
+                                        "previous_plan": plan_output,
+                                    }
+                                    async for chunk in self.execute(
+                                        runtime_messages,
+                                        system_prompt,
+                                        original_user_question,
+                                        _repair_attempt=_repair_attempt + 1,
+                                        _repair_context=repair_context,
+                                        _original_user_question=original_user_question,
+                                    ):
+                                        yield chunk
+                                    return
                                 yield {
                                     "type": "log",
                                     "id": sub_log_id,
@@ -317,6 +414,37 @@ class FederatedQueryExecutor:
                     
                 except Exception as e:
                     logger.error("[FederatedQueryExecutor] Memory join failed: %s", e, exc_info=True)
+                    if (
+                        _repair_attempt < MAX_FEDERATED_PLAN_REPAIR_ROUNDS
+                        and self._is_retryable_federated_plan_error(e)
+                    ):
+                        yield {
+                            "type": "log",
+                            "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                            "title": "修复联邦查询计划",
+                            "details": (
+                                "内存联邦聚合 SQL 执行失败，正在基于错误重新生成完整联邦计划。"
+                                f"\n错误信息: {str(e)}\nSQL:\n{join_sql}"
+                            ),
+                            "status": "warning",
+                        }
+                        repair_context = {
+                            "stage": "内存联邦聚合计算",
+                            "dataset_name": "federated",
+                            "failed_sql": join_sql,
+                            "error": str(e),
+                            "previous_plan": plan_output,
+                        }
+                        async for chunk in self.execute(
+                            runtime_messages,
+                            system_prompt,
+                            original_user_question,
+                            _repair_attempt=_repair_attempt + 1,
+                            _repair_context=repair_context,
+                            _original_user_question=original_user_question,
+                        ):
+                            yield chunk
+                        return
                     yield {
                         "type": "log",
                         "id": join_log_id,
@@ -347,7 +475,7 @@ class FederatedQueryExecutor:
                     logger.warning("[FederatedQueryExecutor] Failed to save last data result: %s", e)
 
                 # 调用 LLM 做最终的分析和可视化
-                synthesis_prompt = DataQueryPrompts.build_federated_synthesis_prompt(user_question, final_md_table)
+                synthesis_prompt = DataQueryPrompts.build_federated_synthesis_prompt(original_user_question, final_md_table)
                 
                 # 流式输出总结（synthesis_prompt 已含用户问题，user_prompt 用默认值避免重复）
                 llm_stream = await AgentConfigProvider.get_configured_llm(
@@ -368,6 +496,105 @@ class FederatedQueryExecutor:
                 yield {"content": "", "status": "success"}
             finally:
                 duckdb_conn.close()
+
+    @staticmethod
+    def _is_sql_tool_error_result(output: Any) -> bool:
+        text = str(output or "").lstrip()
+        return text.startswith(
+            (
+                "[TOOL_ERROR]",
+                "[Validation Failed]",
+                "[Permission Denied]",
+                "[Security Error]",
+                "[Performance Blocked]",
+            )
+        )
+
+    @staticmethod
+    def _is_retryable_federated_plan_error(error: Any) -> bool:
+        text = str(error or "")
+        if not text.strip():
+            return False
+        lower = text.lower()
+        non_retryable_markers = (
+            "permission denied",
+            "unauthorized",
+            "access denied",
+            "无权访问",
+            "未提供有效的用户身份",
+            "权限不足",
+            "禁止外部访问",
+            "外部访问",
+            "只允许单条 select",
+            "只允许 select/with",
+            "只允许 select",
+            "[security error]",
+        )
+        if any(marker in lower for marker in non_retryable_markers):
+            return False
+        retryable_markers = (
+            "[validation failed]",
+            "[performance blocked]",
+            "ora-",
+            "unknown column",
+            "unknown table",
+            "invalid identifier",
+            "invalid number",
+            "syntax",
+            "unexpected token",
+            "no such column",
+            "no such table",
+            "does not exist",
+        )
+        return any(marker in lower for marker in retryable_markers)
+
+    @staticmethod
+    def _is_non_degradable_federated_error(error: Any) -> bool:
+        text = str(error or "")
+        if not text.strip():
+            return False
+        lower = text.lower()
+        markers = (
+            "permission denied",
+            "unauthorized",
+            "access denied",
+            "无权访问",
+            "未提供有效的用户身份",
+            "权限不足",
+            "[security error]",
+        )
+        return any(marker in lower for marker in markers)
+
+    @staticmethod
+    def _build_federated_plan_repair_prompt(
+        base_prompt: str,
+        repair_context: Dict[str, Any],
+        repair_attempt: int,
+    ) -> str:
+        error = str(repair_context.get("error") or "").strip()
+        failed_sql = str(repair_context.get("failed_sql") or "").strip()
+        previous_plan = str(repair_context.get("previous_plan") or "").strip()
+        stage = str(repair_context.get("stage") or "联邦查询执行").strip()
+        dataset_name = str(repair_context.get("dataset_name") or "").strip()
+        return (
+            f"{base_prompt}\n\n"
+            "【上一轮联邦计划执行失败，需要 repair 后重试】\n"
+            f"repair_attempt: {repair_attempt}\n"
+            f"失败阶段: {stage}\n"
+            f"失败数据集: {dataset_name or '未知'}\n"
+            f"错误信息:\n{error[:2000]}\n\n"
+            f"失败 SQL:\n{failed_sql[:4000]}\n\n"
+            f"上一轮完整联邦计划:\n{previous_plan[:8000]}\n\n"
+            "【本轮 repair 要求】\n"
+            "1. 必须重新输出完整 `<multi_dataset_plan>` XML，不要只输出局部 SQL 或解释文字。\n"
+            "2. 禁止原样重复失败 SQL；必须围绕错误信息最小化修正字段名、表名、JOIN、WHERE、日期转换、时间边界或聚合逻辑。\n"
+            "3. 如果错误包含 ORA-01722 / invalid number，优先检查隐式数字转换、DATE/TIMESTAMP 字段被错误包裹函数、"
+            "字符字段与数字字段比较等问题；Oracle 日期筛选优先使用 DATE 字面量范围，例如 "
+            "`date_col >= DATE '2026-05-01' AND date_col < DATE '2026-06-01'`。\n"
+            "4. 如果错误发生在 `<memory_join>`，请同步校正各 `<sub_query>` 的投影别名与 `<memory_join>` 引用字段，"
+            "确保临时表字段一致。\n"
+            "5. 不得通过扩大权限、跨数据集直连 JOIN、外部文件访问或写操作绕过平台约束。"
+        )
 
     def _current_user_id(self) -> Optional[int]:
         resolver = getattr(self.agent_runner, "_current_user_id", None)

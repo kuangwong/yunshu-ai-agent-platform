@@ -169,6 +169,84 @@ async def test_auto_upgrade_to_federated_flow(test_config, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_federated_turn_type_enters_federated_executor_without_cross_wording(test_config, monkeypatch):
+    @asynccontextmanager
+    async def _noop_session_lock_hold(**kwargs):
+        yield True
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.agentscope_session_lock.hold",
+        _noop_session_lock_hold,
+    )
+
+    classification = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.FEDERATED_DATA_QUERY,
+        reasoning="LLM 判断需要跨数据集关联",
+        requires_fresh_data=True,
+        requires_few_shot=False,
+        requires_sql_query=True,
+        skip_intent_llm=True,
+        intent=IntentType.DATA_QUERY,
+    )
+
+    async def fake_resolve(*args, **kwargs):
+        return classification, None, 0.0
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
+        fake_resolve,
+    )
+
+    async def fake_auto_schema(*args, **kwargs):
+        yield {
+            "type": "log",
+            "title": "自动获取数据集定义",
+            "status": "success",
+        }
+        yield {
+            "__schema_output__": (
+                "dataset: user_ds\n"
+                "table_name: users\n"
+                "---\n"
+                "dataset: hr_ds\n"
+                "table_name: hrmresource"
+            )
+        }
+
+    runner = DataAgentRunner(config=test_config, trace_id="trace-direct-federated", trace_buffer=[])
+    monkeypatch.setattr(runner, "_auto_invoke_get_dataset_schema", fake_auto_schema)
+    monkeypatch.setattr(runner, "_resolve_runtime_tools_from_config", AsyncMock(return_value=[]))
+    monkeypatch.setattr(runner, "_resolve_max_steps", AsyncMock(return_value=4))
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=FakeLLMHandle("native fallback should not run")),
+    )
+
+    async def fail_native_turn(*args, **kwargs):
+        raise AssertionError("FEDERATED_DATA_QUERY should not enter native ReAct path")
+        yield {}
+
+    monkeypatch.setattr(runner, "_run_native_agent_turn", fail_native_turn)
+
+    async def mock_federated_execute(self, *args, **kwargs):
+        yield {"content": "Federated direct result."}
+
+    monkeypatch.setattr(FederatedQueryExecutor, "execute", mock_federated_execute)
+
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "查一下用户和 HR 信息"}]):
+        events.append(chunk)
+
+    assert any(e.get("content") == "Federated direct result." for e in events)
+    assert any(
+        e.get("type") == "log"
+        and "联邦查询" in str(e.get("details", ""))
+        and e.get("turn_type") == DataQueryTurnType.FEDERATED_DATA_QUERY.value
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_federated_graceful_degradation(test_config, monkeypatch):
     # 2. 模拟联邦子查询优雅降级 (非主表子查询失败自愈)
     

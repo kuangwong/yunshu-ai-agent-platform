@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.services.ai.executors.federated_executor import FederatedQueryExecutor, make_markdown_table
+from app.core.context import AgentContext, agent_context, set_agent_context
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -347,6 +348,515 @@ async def test_federated_executor_execution():
          final_saved_data = call_args[1]
          assert final_saved_data["columns"] == [{"name": "name", "type": "string"}, {"name": "power", "type": "number"}]
          assert final_saved_data["items"] == [["DeviceA", 100], ["DeviceB", 200]]
+
+
+@pytest.mark.asyncio
+async def test_federated_executor_repairs_failed_primary_subquery_before_failing():
+    runner = MagicMock()
+    runner.user_info = {"id": 1, "role": "user"}
+    runner.trace_buffer = MagicMock()
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    bad_plan = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="crm_ds" temp_table="t_visit">
+        <![CDATA[
+        SELECT ID, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG
+        WHERE TO_CHAR(FOLLOW_UP_DATE, 'YYYY-MM') = '2026-05'
+        ]]>
+      </sub_query>
+      <memory_join>
+        <![CDATA[
+        SELECT ID, FOLLOW_UP_DATE FROM t_visit
+        ]]>
+      </memory_join>
+    </multi_dataset_plan>
+    """
+    repaired_plan = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="crm_ds" temp_table="t_visit">
+        <![CDATA[
+        SELECT ID, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG
+        WHERE FOLLOW_UP_DATE >= DATE '2026-05-01'
+          AND FOLLOW_UP_DATE < DATE '2026-06-01'
+        ]]>
+      </sub_query>
+      <memory_join>
+        <![CDATA[
+        SELECT ID, FOLLOW_UP_DATE FROM t_visit
+        ]]>
+      </memory_join>
+    </multi_dataset_plan>
+    """
+
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_stream_client = MagicMock()
+
+    async def mock_stream_messages(*args, **kwargs):
+        yield SimpleNamespace(content="5 月拜访记录已查询完成。")
+
+    mock_llm_stream_client.stream_messages = mock_stream_messages
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "stream" if streaming else "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_stream_client if handle == "stream" else mock_llm_client
+
+    mock_ds = MagicMock()
+    mock_ds.id = 101
+    mock_ds.name = "crm_ds"
+    mock_ds.data_source = "oracle_crm"
+
+    async def mock_get_dataset_by_name(session, name):
+        return mock_ds
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return True
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    sql_error = (
+        "[TOOL_ERROR] 本地执行 SQL 失败，错误信息: ORA-01722: invalid number\n\n"
+        "[Executed SQL]:\n"
+        "SELECT ID, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG "
+        "WHERE TO_CHAR(FOLLOW_UP_DATE, 'YYYY-MM') = '2026-05'"
+    )
+    repaired_result = json.dumps({
+        "columns": [{"name": "ID", "type": "number"}, {"name": "FOLLOW_UP_DATE", "type": "date"}],
+        "items": [[1, "2026-05-06"]],
+    })
+
+    with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+         patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+         patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+         patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+         patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[sql_error, repaired_result])):
+        mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+        chunks = []
+        async for chunk in FederatedQueryExecutor(runner, "", ["crm_ds"]).execute([], "", "查询 2026 年 5 月拜访记录"):
+            chunks.append(chunk)
+
+    assert mock_llm_client.generate_text.await_count == 2
+    assert any(
+        chunk.get("type") == "log"
+        and chunk.get("title") == "修复联邦查询计划"
+        and chunk.get("status") == "warning"
+        for chunk in chunks
+    )
+    assert not any("跨源联邦主表子查询失败" in str(chunk.get("content") or "") for chunk in chunks)
+    assert any(chunk.get("title") == "内存联邦聚合计算" and chunk.get("status") == "success" for chunk in chunks)
+    assert "5 月拜访记录已查询完成。" in "".join(chunk.get("content") or "" for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_federated_executor_passes_agent_context_to_sql_core():
+    runner = MagicMock()
+    runner.user_info = {"id": 7, "role": "user"}
+    runner.trace_buffer = []
+    runner._current_user_id.return_value = 7
+    runner._current_user_is_admin.return_value = False
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    ctx = AgentContext(
+        agent_id="agent-1",
+        agent_name="DataAgent",
+        user_id=7,
+        conversation_id="conv-1",
+        user_dimensions={"dept_code": "D001", "org_path": "/root/D001"},
+    )
+    set_agent_context(ctx)
+
+    mock_llm_response = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="crm_ds" temp_table="t_visit">SELECT ID FROM VIEW_AI_VISIT_LOG</sub_query>
+      <memory_join>SELECT ID FROM t_visit</memory_join>
+    </multi_dataset_plan>
+    """
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(return_value=mock_llm_response)
+    mock_llm_stream_client = MagicMock()
+
+    async def mock_stream_messages(*args, **kwargs):
+        yield SimpleNamespace(content="ok")
+
+    mock_llm_stream_client.stream_messages = mock_stream_messages
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "stream" if streaming else "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_stream_client if handle == "stream" else mock_llm_client
+
+    mock_ds = MagicMock()
+    mock_ds.id = 101
+    mock_ds.name = "crm_ds"
+    mock_ds.data_source = "oracle_crm"
+
+    async def mock_get_dataset_by_name(session, name):
+        return mock_ds
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return True
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    execute_mock = AsyncMock(return_value=json.dumps({
+        "columns": [{"name": "ID", "type": "number"}],
+        "items": [[1]],
+    }))
+
+    try:
+        with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+             patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+             patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+             patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+             patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+             patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+             patch("app.services.ai.executors.federated_executor.execute_sql_query_core", execute_mock):
+            mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+            async for _ in FederatedQueryExecutor(runner, "", ["crm_ds"]).execute([], "", "test"):
+                pass
+    finally:
+        agent_context.set(None)
+
+    _, kwargs = execute_mock.await_args
+    assert kwargs["agent_context"] is ctx
+    assert kwargs["user_dimensions"] == {"dept_code": "D001", "org_path": "/root/D001"}
+
+
+@pytest.mark.asyncio
+async def test_federated_executor_permission_failure_does_not_degrade_secondary_query():
+    runner = MagicMock()
+    runner.user_info = {"id": 1, "role": "user"}
+    runner.trace_buffer = []
+    runner._current_user_id.return_value = 1
+    runner._current_user_is_admin.return_value = False
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    mock_llm_response = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
+      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id FROM hrmresource</sub_query>
+      <memory_join>SELECT u.id FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
+    </multi_dataset_plan>
+    """
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(return_value=mock_llm_response)
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_client
+
+    datasets = {
+        "user_ds": SimpleNamespace(id=101, name="user_ds", data_source="mysql_user"),
+        "hr_ds": SimpleNamespace(id=102, name="hr_ds", data_source="mysql_hr"),
+    }
+
+    async def mock_get_dataset_by_name(session, name):
+        return datasets[name]
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return res_id == "101"
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    async def mock_execute_sql_query_core(session, sql, data_source, dataset_name, **kwargs):
+        return json.dumps({"columns": [{"name": "id"}], "items": [[1]]})
+
+    with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+         patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+         patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+         patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+         patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", mock_execute_sql_query_core):
+        mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+        chunks = []
+        async for chunk in FederatedQueryExecutor(runner, "", ["user_ds", "hr_ds"]).execute([], "", "test"):
+            chunks.append(chunk)
+
+    combined = "\n".join(str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
+    assert "无权访问数据集" in combined
+    assert "已自动降级" not in combined
+    assert not any(chunk.get("title") == "内存联邦聚合计算" and chunk.get("status") == "success" for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_federated_executor_repairs_failed_secondary_subquery_before_degrading():
+    runner = MagicMock()
+    runner.user_info = {"id": 1, "role": "user"}
+    runner.trace_buffer = []
+    runner._current_user_id.return_value = 1
+    runner._current_user_is_admin.return_value = False
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    bad_plan = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
+      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT bad_col FROM hrmresource</sub_query>
+      <memory_join>SELECT u.id, h.name FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
+    </multi_dataset_plan>
+    """
+    repaired_plan = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
+      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id, name FROM hrmresource</sub_query>
+      <memory_join>SELECT u.id, h.name FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
+    </multi_dataset_plan>
+    """
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_stream_client = MagicMock()
+
+    async def mock_stream_messages(*args, **kwargs):
+        yield SimpleNamespace(content="secondary repaired")
+
+    mock_llm_stream_client.stream_messages = mock_stream_messages
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "stream" if streaming else "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_stream_client if handle == "stream" else mock_llm_client
+
+    datasets = {
+        "user_ds": SimpleNamespace(id=101, name="user_ds", data_source="mysql_user"),
+        "hr_ds": SimpleNamespace(id=102, name="hr_ds", data_source="mysql_hr"),
+    }
+
+    async def mock_get_dataset_by_name(session, name):
+        return datasets[name]
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return True
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    user_result = json.dumps({"columns": [{"name": "id"}], "items": [[1]]})
+    hr_error = "[TOOL_ERROR] 本地执行 SQL 失败，错误信息: Unknown column 'bad_col'"
+    hr_result = json.dumps({"columns": [{"name": "id"}, {"name": "name"}], "items": [[1, "Alice"]]})
+
+    with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+         patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+         patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+         patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+         patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, hr_error, user_result, hr_result])):
+        mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+        chunks = []
+        async for chunk in FederatedQueryExecutor(runner, "", ["user_ds", "hr_ds"]).execute([], "", "test"):
+            chunks.append(chunk)
+
+    assert mock_llm_client.generate_text.await_count == 2
+    assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
+    assert not any("已自动降级" in str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
+    assert "secondary repaired" in "".join(chunk.get("content") or "" for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_federated_executor_security_error_does_not_degrade_secondary_query():
+    runner = MagicMock()
+    runner.user_info = {"id": 1, "role": "user"}
+    runner.trace_buffer = []
+    runner._current_user_id.return_value = 1
+    runner._current_user_is_admin.return_value = False
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    mock_llm_response = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
+      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id FROM hrmresource</sub_query>
+      <memory_join>SELECT u.id FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
+    </multi_dataset_plan>
+    """
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(return_value=mock_llm_response)
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_client
+
+    datasets = {
+        "user_ds": SimpleNamespace(id=101, name="user_ds", data_source="mysql_user"),
+        "hr_ds": SimpleNamespace(id=102, name="hr_ds", data_source="mysql_hr"),
+    }
+
+    async def mock_get_dataset_by_name(session, name):
+        return datasets[name]
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return True
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    user_result = json.dumps({"columns": [{"name": "id"}], "items": [[1]]})
+    security_error = "[Security Error] Failed to apply data permissions: boom"
+
+    with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+         patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+         patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+         patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+         patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, security_error])):
+        mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+        chunks = []
+        async for chunk in FederatedQueryExecutor(runner, "", ["user_ds", "hr_ds"]).execute([], "", "test"):
+            chunks.append(chunk)
+
+    combined = "\n".join(str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
+    assert "[Security Error]" in combined
+    assert "已自动降级" not in combined
+    assert mock_llm_client.generate_text.await_count == 1
+    assert not any(chunk.get("title") == "内存联邦聚合计算" and chunk.get("status") == "success" for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_federated_executor_repairs_performance_blocked_secondary_query():
+    runner = MagicMock()
+    runner.user_info = {"id": 1, "role": "user"}
+    runner.trace_buffer = []
+    runner._current_user_id.return_value = 1
+    runner._current_user_is_admin.return_value = False
+    runner._save_last_data_result_for_followups = AsyncMock()
+
+    bad_plan = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
+      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id FROM hrmresource JOIN dept</sub_query>
+      <memory_join>SELECT u.id, h.id AS hr_id FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
+    </multi_dataset_plan>
+    """
+    repaired_plan = """
+    <multi_dataset_plan>
+      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
+      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id FROM hrmresource WHERE status = 1</sub_query>
+      <memory_join>SELECT u.id, h.id AS hr_id FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
+    </multi_dataset_plan>
+    """
+    mock_llm_client = MagicMock()
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_stream_client = MagicMock()
+
+    async def mock_stream_messages(*args, **kwargs):
+        yield SimpleNamespace(content="performance repaired")
+
+    mock_llm_stream_client.stream_messages = mock_stream_messages
+
+    async def mock_get_llm(streaming=False, *args, **kwargs):
+        return "stream" if streaming else "plan"
+
+    def fake_chat_client_from_handle(handle):
+        return mock_llm_stream_client if handle == "stream" else mock_llm_client
+
+    datasets = {
+        "user_ds": SimpleNamespace(id=101, name="user_ds", data_source="mysql_user"),
+        "hr_ds": SimpleNamespace(id=102, name="hr_ds", data_source="mysql_hr"),
+    }
+
+    async def mock_get_dataset_by_name(session, name):
+        return datasets[name]
+
+    async def mock_check_permission(user_id, res_type, res_id):
+        return True
+
+    class FakeTraceSpanContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            span = MagicMock()
+            span.set_output = MagicMock()
+            return span
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    user_result = json.dumps({"columns": [{"name": "id"}], "items": [[1]]})
+    performance_error = "[Performance Blocked] SQL 包含没有关联条件的 JOIN 操作"
+    hr_result = json.dumps({"columns": [{"name": "id"}], "items": [[1]]})
+
+    with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
+         patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
+         patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
+         patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
+         patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, performance_error, user_result, hr_result])):
+        mock_session_cls.return_value.__aenter__.return_value = MagicMock()
+
+        chunks = []
+        async for chunk in FederatedQueryExecutor(runner, "", ["user_ds", "hr_ds"]).execute([], "", "test"):
+            chunks.append(chunk)
+
+    assert mock_llm_client.generate_text.await_count == 2
+    assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
+    assert not any("已自动降级" in str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
+    assert "performance repaired" in "".join(chunk.get("content") or "" for chunk in chunks)
 
 
 @pytest.mark.asyncio

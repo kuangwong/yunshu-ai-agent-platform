@@ -1610,13 +1610,17 @@ class DataAgentRunner(BaseExecutor):
 
                 # 跨数据集联邦查询动态升级检测：必须有显式跨数据集意图，schema 补全本身只作为辅助证据。
                 datasets = sorted(_extract_schema_dataset_names(prefetched_schema_output))
-                if _should_upgrade_to_federated_query(prefetched_schema_output, self._standalone_query):
+                classified_as_federated = (
+                    turn_cls.turn_type == DataQueryTurnType.FEDERATED_DATA_QUERY
+                    and len(datasets) > 1
+                )
+                if classified_as_federated or _should_upgrade_to_federated_query(prefetched_schema_output, self._standalone_query):
                     turn_cls.turn_type = DataQueryTurnType.FEDERATED_DATA_QUERY
                     yield {
                         "type": "log",
                         "id": f"chatbi_turn_upgrade_{uuid.uuid4().hex[:8]}",
                         "title": "ChatBI 请求类别升级",
-                        "details": f"检测到请求涉及跨数据集联合查询 (共 {len(datasets)} 个数据集: {', '.join(datasets)})，已自动升级为跨数据集联邦查询。",
+                        "details": f"检测到请求涉及跨数据集联合查询 (共 {len(datasets)} 个数据集: {', '.join(datasets)})，已进入跨数据集联邦查询。",
                         "status": "success",
                         "category": "intent",
                         "turn_type": turn_cls.turn_type.value,

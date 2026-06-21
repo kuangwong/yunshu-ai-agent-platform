@@ -1326,12 +1326,26 @@ onMounted(() => {
                               </select>
                           </div>
                           <div v-else-if="item.key === 'metadata_provider'">
-                              <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
-                                 <option value="local">local (本地元数据)</option>
-                                 <option value="ragflow">ragflow (语义检索 RAG)</option>
-                              </select>
+                              <div class="flex items-center gap-2">
+                                <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block flex-1 min-w-0 sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                                   <option value="local">local (本地元数据)</option>
+                                   <option value="ragflow">ragflow (语义检索 RAG)</option>
+                                </select>
+                                <button
+                                  v-if="item.value === 'local'"
+                                  type="button"
+                                  @click="openRebuildConfirm"
+                                  :disabled="loading.rebuild_vector || !canSave"
+                                  class="inline-flex shrink-0 items-center justify-center py-2 px-3 border border-rose-200 rounded-md shadow-sm text-sm font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 whitespace-nowrap"
+                                  title="重建本地 Redis 元数据与案例向量索引并全量同步"
+                                >
+                                  <ArrowPathIcon v-if="!loading.rebuild_vector" class="h-4 w-4 mr-1.5" />
+                                  <span v-else class="animate-spin h-4 w-4 mr-1.5 border-2 border-rose-400 border-t-transparent rounded-full"></span>
+                                  {{ loading.rebuild_vector ? '重构中...' : '一键重构' }}
+                                </button>
+                              </div>
                               <div v-if="item.value === 'local'" class="mt-2 text-xs text-blue-700 bg-blue-50/50 p-3 rounded-xl border border-blue-100/50 leading-relaxed select-none">
-                                  💡 <strong>本地元数据模式：</strong>直接在本地查询由元数据字典维护的表和字段，并使用全局 Embedding 算法计算向量，通过<strong>本地 Redis (HNSW) 向量索引</strong>进行高速检索，<strong>无需配置下方的 RAGFlow 地址与密钥</strong>。
+                                  💡 <strong>本地元数据模式：</strong>直接在本地查询由元数据字典维护的表和字段，并使用全局 Embedding 算法计算向量，通过<strong>本地 Redis (HNSW) 向量索引</strong>进行高速检索，<strong>无需配置下方的 RAGFlow 地址与密钥</strong>。首次启用、变更 Embedding 模型/维度或索引异常时，请点击右侧<strong>「一键重构」</strong>手动触发全量向量化。
                               </div>
                               <div v-else-if="item.value === 'ragflow'" class="mt-2 text-xs text-amber-700 bg-amber-50/50 p-3 rounded-xl border border-amber-100/50 leading-relaxed select-none">
                                   💡 <strong>RAGFlow 语义检索模式：</strong>需要将本地元数据字典一键同步至 RAGFlow 系统，系统在检索表和字段的描述信息时会调用下方配置的 RAGFlow 网关地址与 API 密钥进行全文 + 向量的混合检索。

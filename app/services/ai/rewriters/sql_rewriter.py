@@ -50,7 +50,7 @@ class SQLRewriter:
             # 3. 处理过滤条件（替换变量 + 字段验证）
             processed_conditions = self._prepare_conditions_with_validation(relevant_filters, user_context, query_tables)
             if not processed_conditions:
-                return sql
+                raise SQLRewriteError("No valid permission filter conditions could be applied")
 
             # 4. 应用条件到AST
             def transform_node(node):
@@ -159,7 +159,7 @@ class SQLRewriter:
         for f in filters:
             cond_str = f.get("condition")
             if not cond_str:
-                continue
+                raise SQLRewriteError("Permission filter condition is empty")
             
             # 1. 替换用户变量
             temp_cond = self._replace_user_variables(cond_str, context)
@@ -171,9 +171,11 @@ class SQLRewriter:
                     prepared.append(cond_expr)
                     logger.debug(f"[SQLRewriter] Applied condition: {temp_cond}")
                 except Exception as e:
-                    logger.warning(f"[SQLRewriter] Failed to parse condition '{temp_cond}': {e}")
+                    logger.error(f"[SQLRewriter] Failed to parse permission condition '{temp_cond}': {e}")
+                    raise SQLRewriteError(f"Permission filter condition parse failed: {e}") from e
             else:
-                logger.warning(f"[SQLRewriter] Skipping invalid condition due to field validation: {temp_cond}")
+                logger.error(f"[SQLRewriter] Invalid permission condition due to field validation: {temp_cond}")
+                raise SQLRewriteError(f"Permission filter condition references unavailable fields: {temp_cond}")
         
         return prepared
 
@@ -187,15 +189,20 @@ class SQLRewriter:
             
             if isinstance(val, str):
                 pattern_with_quotes = f"'{{user.{key}}}'"
+                safe_val = self._quote_sql_string_value(val)
                 if pattern_with_quotes in temp_cond:
-                    temp_cond = temp_cond.replace(f"{{user.{key}}}", str(val))
+                    temp_cond = temp_cond.replace(f"{{user.{key}}}", safe_val)
                 else:
-                    temp_cond = temp_cond.replace(f"{{user.{key}}}", f"'{val}'")
+                    temp_cond = temp_cond.replace(f"{{user.{key}}}", f"'{safe_val}'")
             else:
                 repl_val = str(val) if val is not None else "NULL"
                 temp_cond = temp_cond.replace(f"{{user.{key}}}", repl_val)
         
         return temp_cond
+
+    @staticmethod
+    def _quote_sql_string_value(value: str) -> str:
+        return str(value).replace("'", "''")
 
     def _validate_condition_fields(self, condition: str, query_tables: Set[str]) -> bool:
         """验证条件中的字段是否在查询表中存在"""

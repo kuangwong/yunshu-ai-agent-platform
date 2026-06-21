@@ -1,5 +1,10 @@
 import pytest
-from app.services.ai.rewriters.sql_rewriter import SQLRewriter
+import sqlglot
+from sqlglot import exp
+
+from app.services.ai.rewriters.sql_rewriter import SQLRewriteError, SQLRewriter
+
+pytestmark = pytest.mark.no_infrastructure
 
 def test_basic_rewrite():
     rewriter = SQLRewriter(dialect="clickhouse")
@@ -79,6 +84,47 @@ def test_placeholder_replacer():
     assert len(prepared) > 0
     sql_cond = prepared[0].sql()
     assert "yovole/sh%" in sql_cond
+
+def test_string_user_variable_escapes_single_quotes():
+    rewriter = SQLRewriter(dialect="clickhouse")
+    sql = "SELECT * FROM sys_server_assets"
+    filters = [{"condition": "dept_code = {user.dept}"}]
+    context = {"dept": "O'Reilly"}
+
+    rewritten = rewriter.rewrite(sql, filters, context)
+
+    assert "WHERE" in rewritten
+    assert "dept_code = 'O''Reilly'" in rewritten
+
+def test_string_user_variable_treats_injection_payload_as_literal():
+    rewriter = SQLRewriter(dialect="clickhouse")
+    sql = "SELECT * FROM sys_server_assets"
+    filters = [{"condition": "dept_code = {user.dept}"}]
+    context = {"dept": "x' OR 1=1 --"}
+
+    rewritten = rewriter.rewrite(sql, filters, context)
+
+    where_expr = sqlglot.parse_one(rewritten, read="clickhouse").find(exp.Where).this
+    assert isinstance(where_expr, exp.EQ)
+    assert where_expr.expression.this == "x' OR 1=1 --"
+
+def test_none_user_variable_rewrites_to_null_default_deny():
+    rewriter = SQLRewriter(dialect="clickhouse")
+    sql = "SELECT * FROM sys_server_assets"
+    filters = [{"condition": "dept_id = {user.dept}"}]
+    context = {"dept": None}
+
+    rewritten = rewriter.rewrite(sql, filters, context)
+
+    assert "dept_id = NULL" in rewritten
+
+def test_invalid_permission_condition_fails_closed():
+    rewriter = SQLRewriter(dialect="clickhouse")
+    sql = "SELECT * FROM sys_server_assets"
+    filters = [{"condition": "dept_code = 'unterminated"}]
+
+    with pytest.raises(SQLRewriteError):
+        rewriter.rewrite(sql, filters, {})
 
 def test_oracle_rewrite():
     # Oracle often uses double quotes for identifiers and has distinct syntax

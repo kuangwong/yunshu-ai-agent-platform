@@ -1,5 +1,7 @@
 import pytest
 
+pytestmark = pytest.mark.no_infrastructure
+
 from app.services.ai.empty_result_filter_diagnostic import (
     build_distinct_diagnostic_sql,
     extract_string_filter_literals,

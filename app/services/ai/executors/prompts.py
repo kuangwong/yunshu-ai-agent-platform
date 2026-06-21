@@ -37,6 +37,22 @@ class SharedPrompts:
         "禁止在图表或后续分析段落之前提前输出 quick 按钮。"
     )
 
+    QUICK_SUGGESTIONS_FORMAT = (
+        "【Quick 追问建议 (MUST)】\n"
+        "1. 在回答结束时给出 2-3 个后续追问建议。\n"
+        "2. **输出顺序**：先完成正文、表格、```chart``` 图表，再单独一行写数据来源说明，"
+        "**最后**再输出 quick 区块；禁止把 quick 建议与数据来源写在同一行。\n"
+        "3. **格式**：禁止输出裸文本 `quick: ...` 或单独一行 `quick:问题`；"
+        "必须使用下列 Markdown 结构，每条建议独占一行：\n"
+        "### 💬 您可能还想了解\n"
+        "---\n"
+        "- [🙋 {简短标签}](quick:{完整可发送提问文本})\n"
+        "- [🙋 {简短标签}](quick:{完整可发送提问文本})\n"
+        "4. `quick:` 链接目标必须是完整、可直接发送的中文问题句；"
+        "列表项前缀必须带 🙋，且必须写成 Markdown 链接 `- [🙋 ...](quick:...)`，"
+        "前端才会渲染为可点击按钮。"
+    )
+
     # 非图片附件信息块的标题（紧跟在用户消息后）
     NON_IMAGE_ATTACHMENT_HEADER = "\n\n【用户随附上传了非图片附件信息】："
 
@@ -190,9 +206,66 @@ XML 示例：
 1. 必须使用标准 Markdown 格式进行总结，文字要专业简练。
 2. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
 3. ECharts 图表必须使用标准 ECharts Option 配置。
-4. **数据源与引用说明 (MUST)**：在正文、表格与 ```chart``` 图表之后，于段尾注明当前数据归属的数据集名称（例如：`（* 数据来源：{{数据集名称}}）`），以帮助用户明确数据来源。
+4. **数据源与引用说明 (MUST)**：在正文、表格与 ```chart``` 图表之后、quick 区块之前，单独一行注明数据归属的数据集名称（例如：`（* 数据来源：{{数据集名称}}）`）；多数据集用顿号列出；禁止与 quick 建议混在同一行。
 
-{SharedPrompts.QUICK_SUGGESTIONS_PLACEMENT}
+{SharedPrompts.QUICK_SUGGESTIONS_FORMAT}
+
+【当前用户问题】
+{user_question}
+"""
+
+    @staticmethod
+    def build_federated_node_repair_prompt(
+        *,
+        node_kind: str,
+        user_question: str,
+        schema_context: str,
+        plan_output: str,
+        dataset_name: str,
+        temp_table: str,
+        failed_sql: str,
+        error_text: str,
+        repair_attempt: int,
+        repair_guidance: str,
+        sub_queries_summary: str = "",
+        join_sql: str = "",
+    ) -> str:
+        node_label = "子查询" if node_kind == "sub_query" else "内存联邦聚合 (<memory_join>)"
+        extra = ""
+        if node_kind == "memory_join" and sub_queries_summary:
+            extra = (
+                f"\n【当前各子查询临时表概览】\n{sub_queries_summary}\n"
+                f"当前 memory_join SQL：\n{join_sql[:4000]}\n"
+                "若错误来自字段/别名不一致，可只在 memory_join 中修正引用；"
+                "若根因在子查询投影，请在 repair 说明中指出需同步调整的别名，但本轮只输出修正后的 memory_join SQL。"
+            )
+        elif node_kind == "sub_query":
+            extra = (
+                f"\n数据集：{dataset_name}\n"
+                f"临时表名：{temp_table}\n"
+                "本轮只修正该数据集的 sub_query SQL，不要改动其他 sub_query 或 memory_join。"
+            )
+        return f"""你是联邦查询 SQL 局部修复模块。用户问题与 Schema 如下。
+
+【跨数据集 Schema 定义】
+{schema_context}
+
+【当前联邦计划（仅供参考，勿整份重写）】
+{plan_output[:8000]}
+
+【失败节点】{node_label}
+{extra}
+
+【repair_attempt】{repair_attempt}
+
+{repair_guidance}
+
+【输出格式 (MUST)】
+只输出一个 `<fixed_sql>` 区块，内含修正后的 SQL，必须使用 CDATA：
+<fixed_sql><![CDATA[
+修正后的 SQL
+]]></fixed_sql>
+不要输出解释文字，不要输出完整 multi_dataset_plan。
 
 【当前用户问题】
 {user_question}

@@ -372,25 +372,15 @@ async def test_federated_executor_repairs_failed_primary_subquery_before_failing
       </memory_join>
     </multi_dataset_plan>
     """
-    repaired_plan = """
-    <multi_dataset_plan>
-      <sub_query dataset_name="crm_ds" temp_table="t_visit">
-        <![CDATA[
-        SELECT ID, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG
-        WHERE FOLLOW_UP_DATE >= DATE '2026-05-01'
-          AND FOLLOW_UP_DATE < DATE '2026-06-01'
-        ]]>
-      </sub_query>
-      <memory_join>
-        <![CDATA[
-        SELECT ID, FOLLOW_UP_DATE FROM t_visit
-        ]]>
-      </memory_join>
-    </multi_dataset_plan>
-    """
-
+    repaired_subquery_sql = """
+<fixed_sql><![CDATA[
+SELECT ID, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG
+WHERE FOLLOW_UP_DATE >= DATE '2026-05-01'
+  AND FOLLOW_UP_DATE < DATE '2026-06-01'
+]]></fixed_sql>
+"""
     mock_llm_client = MagicMock()
-    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_subquery_sql])
     mock_llm_stream_client = MagicMock()
 
     async def mock_stream_messages(*args, **kwargs):
@@ -454,7 +444,7 @@ async def test_federated_executor_repairs_failed_primary_subquery_before_failing
     assert mock_llm_client.generate_text.await_count == 2
     assert any(
         chunk.get("type") == "log"
-        and chunk.get("title") == "修复联邦查询计划"
+        and chunk.get("title") == "修复联邦子查询 SQL"
         and chunk.get("status") == "warning"
         for chunk in chunks
     )
@@ -636,15 +626,9 @@ async def test_federated_executor_repairs_failed_secondary_subquery_before_degra
       <memory_join>SELECT u.id, h.name FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
     </multi_dataset_plan>
     """
-    repaired_plan = """
-    <multi_dataset_plan>
-      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
-      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id, name FROM hrmresource</sub_query>
-      <memory_join>SELECT u.id, h.name FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
-    </multi_dataset_plan>
-    """
+    repaired_subquery_sql = """<fixed_sql><![CDATA[SELECT id, name FROM hrmresource]]></fixed_sql>"""
     mock_llm_client = MagicMock()
-    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_subquery_sql])
     mock_llm_stream_client = MagicMock()
 
     async def mock_stream_messages(*args, **kwargs):
@@ -703,7 +687,7 @@ async def test_federated_executor_repairs_failed_secondary_subquery_before_degra
 
     assert sql_exec_mock.await_count == 3
     assert mock_llm_client.generate_text.await_count == 2
-    assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
+    assert any(chunk.get("title") == "修复联邦子查询 SQL" for chunk in chunks)
     assert not any("已自动降级" in str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
     assert "secondary repaired" in "".join(chunk.get("content") or "" for chunk in chunks)
 
@@ -795,15 +779,9 @@ async def test_federated_executor_repairs_performance_blocked_secondary_query():
       <memory_join>SELECT u.id, h.id AS hr_id FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
     </multi_dataset_plan>
     """
-    repaired_plan = """
-    <multi_dataset_plan>
-      <sub_query dataset_name="user_ds" temp_table="t_user">SELECT id FROM users</sub_query>
-      <sub_query dataset_name="hr_ds" temp_table="t_hr">SELECT id FROM hrmresource WHERE status = 1</sub_query>
-      <memory_join>SELECT u.id, h.id AS hr_id FROM t_user u LEFT JOIN t_hr h ON u.id = h.id</memory_join>
-    </multi_dataset_plan>
-    """
+    repaired_subquery_sql = """<fixed_sql><![CDATA[SELECT id FROM hrmresource WHERE status = 1]]></fixed_sql>"""
     mock_llm_client = MagicMock()
-    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_subquery_sql])
     mock_llm_stream_client = MagicMock()
 
     async def mock_stream_messages(*args, **kwargs):
@@ -850,7 +828,7 @@ async def test_federated_executor_repairs_performance_blocked_secondary_query():
          patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
          patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
          patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
-         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, performance_error, user_result, hr_result])):
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, performance_error, hr_result])):
         mock_session_cls.return_value.__aenter__.return_value = MagicMock()
 
         chunks = []
@@ -858,7 +836,7 @@ async def test_federated_executor_repairs_performance_blocked_secondary_query():
             chunks.append(chunk)
 
     assert mock_llm_client.generate_text.await_count == 2
-    assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
+    assert any(chunk.get("title") == "修复联邦子查询 SQL" for chunk in chunks)
     assert not any("已自动降级" in str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
     assert "performance repaired" in "".join(chunk.get("content") or "" for chunk in chunks)
 
@@ -1049,19 +1027,10 @@ async def test_federated_executor_repairs_subquery_time_range_mismatch_before_ex
       </memory_join>
     </multi_dataset_plan>
     """
-    repaired_plan = f"""
-    <multi_dataset_plan>
-      <sub_query dataset_name="crm_ds" temp_table="t_visit">
-        <![CDATA[{good_sql}]]>
-      </sub_query>
-      <memory_join>
-        <![CDATA[SELECT follow_up_person, follow_up_date FROM t_visit]]>
-      </memory_join>
-    </multi_dataset_plan>
-    """
+    fixed_subquery_sql = f"<fixed_sql><![CDATA[{good_sql}]]></fixed_sql>"
 
     mock_llm_client = MagicMock()
-    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, repaired_plan])
+    mock_llm_client.generate_text = AsyncMock(side_effect=[bad_plan, fixed_subquery_sql])
     mock_llm_stream_client = MagicMock()
 
     async def mock_stream_messages(*args, **kwargs):
@@ -1123,7 +1092,7 @@ async def test_federated_executor_repairs_subquery_time_range_mismatch_before_ex
 
     assert execute_mock.await_count == 1
     assert mock_llm_client.generate_text.await_count == 2
-    assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
+    assert any(chunk.get("title") == "修复联邦子查询 SQL" for chunk in chunks)
     assert "上月拜访记录查询完成" in "".join(chunk.get("content") or "" for chunk in chunks)
 
 

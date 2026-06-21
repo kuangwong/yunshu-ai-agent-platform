@@ -83,3 +83,18 @@ def test_build_missing_reusable_result_fallback_includes_quick_buttons():
     assert "结构化查询结果" in content
     assert "(quick:对刚刚的查询结果做可视化分析)" in content
     assert "(quick:查询算力SU回款趋势)" in content
+
+
+def test_build_federated_synthesis_prompt_includes_quick_format_and_data_source_order():
+    content = DataQueryPrompts.build_federated_synthesis_prompt(
+        "上个月各销售拜访次数",
+        "| 销售 | 次数 |\n| --- | ---: |\n| A | 10 |",
+        dataset_names=["HR_ds", "meta_yes_crm_ds"],
+    )
+    assert "HR_ds、meta_yes_crm_ds" in content
+    assert "（* 数据来源：" in content
+    assert "禁止输出裸文本 `quick:" in content
+    assert "### 💬 您可能还想了解" in content
+    assert "- [🙋 {简短标签}](quick:{完整可发送提问文本})" in content
+    assert "quick 区块之前" in content
+    assert "禁止把 quick 建议与数据来源写在同一行" in content

@@ -3265,6 +3265,34 @@ def test_sql_error_repair_message_for_schema_reference_includes_column_guidance(
     assert "字段/表引用修正指引" in repair
 
 
+def test_sql_error_repair_message_for_cross_dataset_scope_guides_federated_path(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-cross-dataset-scope", trace_buffer=[])
+    error_message = (
+        "[Validation Failed] 表 'HRMRESOURCE' 不属于当前指定的数据集 'meta_yes_crm_ds'，"
+        "普通 execute_sql_query 严禁跨数据集或凭空猜表。"
+    )
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_error=True,
+        sql_error_message=error_message,
+        last_sql_error_summary=error_message,
+        last_failed_sql_normalized=(
+            "select * from view_ai_visit_log v "
+            "left join hr_ds.hrmresource r on v.follow_up_person = r.id"
+        ),
+    )
+
+    repair = runner._build_repair_message(state)
+
+    assert "普通 execute_sql_query 只能查询当前 dataset" in repair
+    assert "不要把其他数据集表写进同一条 SQL" in repair
+    assert "跨数据集联邦查询流程" in repair
+    assert "姓名/部门" in repair
+
+
 def test_sql_error_repair_message_for_date_format_error_includes_date_guidance(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 

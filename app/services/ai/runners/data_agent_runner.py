@@ -599,6 +599,16 @@ class DataAgentRunner(BaseExecutor):
         return str(output or "").startswith("[TOOL_ERROR] SQL 预检失败")
 
     @staticmethod
+    def _is_cross_dataset_scope_sql_error(message: Any) -> bool:
+        text = str(message or "")
+        if not text.strip():
+            return False
+        return (
+            "不属于当前指定的数据集" in text
+            or "普通 execute_sql_query 严禁跨数据集" in text
+        )
+
+    @staticmethod
     def _normalize_sql_text(sql: str) -> str:
         return " ".join(str(sql or "").strip().lower().split())
 
@@ -680,10 +690,26 @@ class DataAgentRunner(BaseExecutor):
             "不得继续使用这些字段名。"
         )
 
+    def _cross_dataset_scope_repair_hint(self, message: str) -> str:
+        if not self._is_cross_dataset_scope_sql_error(message):
+            return ""
+        return (
+            "\n\n【跨数据集 SQL 修正要求】上一轮 execute_sql_query 尝试在单数据集 SQL 中引用其他数据集表，"
+            "已被平台拦截。普通 execute_sql_query 只能查询当前 dataset 下的物理表，"
+            "不要把其他数据集表写进同一条 SQL，也不要用 other_ds.table、跨库 schema 前缀或猜测表名绕过门禁。"
+            "如果用户明确要求跨数据集/跨库/联合查询，请回到跨数据集联邦查询流程："
+            "分别在各自 dataset 内生成子查询，再由联邦执行阶段做内存关联。"
+            "如果只是为了展示姓名/部门/客户名称等维度信息，请改为只查询当前数据集的事实字段和外键字段，"
+            "等待后端 relation/维表维度补全，不要手写跨数据集 JOIN。"
+        )
+
     def _sql_repair_taxonomy_hint(self, message: str) -> str:
         text = str(message or "")
         lower = text.lower()
-        if self._is_date_format_sql_error(text):
+        if self._is_cross_dataset_scope_sql_error(text):
+            category = "cross_dataset_scope"
+            focus = "移除单数据集 SQL 中的跨数据集表引用，改走联邦查询或仅查询外键等待维度补全"
+        elif self._is_date_format_sql_error(text):
             category = "date_format"
             focus = "核对日期字段类型、日期字面量格式、TO_DATE/TO_CHAR 或时间边界表达式"
         elif self._is_schema_reference_sql_error(text):
@@ -3623,6 +3649,7 @@ class DataAgentRunner(BaseExecutor):
                 repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
             if self._is_date_format_sql_error(error_text):
                 repair += f"\n\n{DataQueryPrompts.DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE}"
+            repair += self._cross_dataset_scope_repair_hint(error_text)
             return repair
         if state.sql_error:
             error_text = (state.last_sql_error_summary or state.sql_error_message or "").strip()
@@ -3641,6 +3668,7 @@ class DataAgentRunner(BaseExecutor):
                 )
             err_lower = error_text.lower()
             repair += self._invalid_identifier_repair_hint(error_text)
+            repair += self._cross_dataset_scope_repair_hint(error_text)
             if self._is_schema_reference_sql_error(error_text):
                 repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
             if self._is_date_format_sql_error(error_text):

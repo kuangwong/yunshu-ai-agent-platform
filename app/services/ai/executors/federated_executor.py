@@ -23,6 +23,7 @@ from app.services.ai.federated_sql_repair import (
     build_repair_schema_search_keywords,
     build_sql_repair_guidance,
     detect_sql_error,
+    is_cross_dataset_scope_sql_error,
     is_non_retryable_permission_error,
     is_retryable_sql_error,
     merge_repair_schema_snippets,
@@ -356,6 +357,40 @@ class FederatedQueryExecutor:
                                         ),
                                         "status": "error",
                                     }
+                                    return
+
+                                if (
+                                    is_cross_dataset_scope_sql_error(error_text)
+                                    and _repair_attempt < MAX_FEDERATED_PLAN_REPAIR_ROUNDS
+                                ):
+                                    yield {
+                                        "type": "log",
+                                        "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                        "title": "修复联邦查询计划（跨数据集引表）",
+                                        "details": (
+                                            f"子查询 ({dataset_name}) 引用了不属于该数据集的表，"
+                                            "局部 SQL repair 无法解决，正在重新生成完整联邦计划。"
+                                            f"\n错误信息: {error_text}\nSQL:\n{sub_sql}"
+                                        ),
+                                        "status": "warning",
+                                    }
+                                    repair_context = {
+                                        "stage": f"子查询 ({dataset_name}) 跨数据集引表",
+                                        "dataset_name": dataset_name,
+                                        "failed_sql": sub_sql,
+                                        "error": error_text,
+                                        "previous_plan": plan_output,
+                                    }
+                                    async for chunk in self.execute(
+                                        runtime_messages,
+                                        system_prompt,
+                                        original_user_question,
+                                        _repair_attempt=_repair_attempt + 1,
+                                        _repair_context=repair_context,
+                                        _original_user_question=original_user_question,
+                                        _subquery_cache=_subquery_cache,
+                                    ):
+                                        yield chunk
                                     return
 
                                 can_local_repair = is_retryable_sql_error(error_text)

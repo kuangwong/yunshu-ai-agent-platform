@@ -197,12 +197,39 @@ def invalid_identifier_repair_hint(message: str) -> str:
     )
 
 
+def extract_cross_dataset_violation(message: str) -> tuple[str, str]:
+    """从 Validation Failed 文案解析违规表名与当前 dataset。"""
+    text = str(message or "")
+    match = re.search(
+        r"表\s*'([^']+)'\s*不属于当前指定的数据集\s*'([^']+)'",
+        text,
+    )
+    if not match:
+        return "", ""
+    return match.group(1).strip(), match.group(2).strip()
+
+
 def cross_dataset_scope_repair_hint(message: str) -> str:
     if not is_cross_dataset_scope_sql_error(message):
         return ""
+    foreign_table, dataset_name = extract_cross_dataset_violation(message)
+    table_clause = (
+        f"（违规表 `{foreign_table}` 不属于 `{dataset_name}`）"
+        if foreign_table and dataset_name
+        else ""
+    )
     return (
-        "\n\n【跨数据集 SQL 修正要求】单数据集 SQL 中禁止引用其他数据集表。"
-        "联邦查询应分别在各自 dataset 内生成子查询，再由内存关联阶段 join。"
+        "\n\n【跨数据集 SQL 修正要求 — 必须整计划重构，禁止局部修补】"
+        f"{table_clause}\n"
+        "1) 每个 `<sub_query>` 的 SQL 只能引用该 `dataset_name` 下已注册的物理表；"
+        "禁止 IN/JOIN/EXISTS 子查询引用其他数据集表（例如 HR_ds 里写 VIEW_AI_VISIT_LOG）。\n"
+        "2) 正确做法：为违规表单独增加一个 sub_query（归属其真实 dataset），"
+        "在 `<memory_join>` 用 DuckDB 对临时表做 JOIN / IN 过滤。\n"
+        "3) 示例：拜访明细在 crm_ds、人员在 HR_ds 时，应拆成 "
+        "`crm_ds: SELECT follow_up_person FROM visit_view WHERE ...` + "
+        "`HR_ds: SELECT id, name FROM HRMRESOURCE WHERE status=0`，"
+        "再在 memory_join: `FROM t_visit v JOIN t_hr h ON v.follow_up_person = h.id`。\n"
+        "4) 不得通过删 WHERE 条件、写死 ID 列表或猜测表名绕过门禁。"
     )
 
 
@@ -211,7 +238,10 @@ def sql_repair_taxonomy_hint(message: str) -> str:
     lower = text.lower()
     if is_cross_dataset_scope_sql_error(text):
         category = "cross_dataset_scope"
-        focus = "移除单数据集 SQL 中的跨数据集表引用，改走联邦子查询 + 内存关联"
+        focus = (
+            "为违规表新增对应 dataset 的 sub_query，在 memory_join 关联；"
+            "禁止在单 sub_query 内 IN/JOIN 其他数据集表"
+        )
     elif is_date_format_sql_error(text):
         category = "date_format"
         focus = "核对日期字段类型与 TO_DATE/TO_CHAR/DATE 字面量；字符串列勿对列套 TO_CHAR"

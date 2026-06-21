@@ -1,7 +1,10 @@
 from app.services.ai.federated_sql_repair import (
     build_repair_schema_search_keywords,
     build_sql_repair_guidance,
+    cross_dataset_scope_repair_hint,
     detect_sql_error,
+    extract_cross_dataset_violation,
+    is_cross_dataset_scope_sql_error,
     is_invalid_number_sql_error,
     is_retryable_sql_error,
     merge_repair_schema_snippets,
@@ -72,3 +75,18 @@ def test_merge_repair_schema_snippets_skips_tool_error():
     base = "dataset: crm_ds"
     merged = merge_repair_schema_snippets(base, "[Tool Error] Failed to retrieve metadata")
     assert merged == base
+
+
+def test_cross_dataset_scope_hint_requires_plan_split():
+    err = (
+        "[Validation Failed] 表 'VIEW_AI_VISIT_LOG' 不属于当前指定的数据集 'HR_ds'，"
+        "普通 execute_sql_query 严禁跨数据集或凭空猜表。"
+    )
+    assert is_cross_dataset_scope_sql_error(err)
+    table, dataset = extract_cross_dataset_violation(err)
+    assert table == "VIEW_AI_VISIT_LOG"
+    assert dataset == "HR_ds"
+    hint = cross_dataset_scope_repair_hint(err)
+    assert "memory_join" in hint
+    assert "VIEW_AI_VISIT_LOG" in hint
+    assert "整计划重构" in hint

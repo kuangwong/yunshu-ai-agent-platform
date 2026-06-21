@@ -124,6 +124,7 @@ class DataQueryPrompts:
 2. 数据集关联数据源，一个数据集下的所有表都是同一个数据源。不同的数据集可能代表不同的物理数据库实例。
 3. 你不能直接在单个 SQL 中跨数据集 Join。你必须为每个数据集编写一个独立的子查询（`<sub_query>`），将其结果存入一个内存临时表（`temp_table`）。
 4. 在 `<sub_query>` 的 SQL 中，必须只能使用该 `dataset_name` 对应的数据集下的物理表。
+   禁止在子查询里通过 IN / EXISTS / JOIN 引用其他数据集的表（例如 HR_ds 子查询里写 `IN (SELECT ... FROM visit_view)` 且 visit_view 属于 crm_ds）；跨数据集过滤必须在 `<memory_join>` 对临时表完成。
 5. 每个 `<sub_query>` 必须有 `dataset_name` 属性（填入对应的数据集名称）和 `temp_table` 属性（填入你为其命名的临时表，如 `t_energy`, `t_device` 等）。
 6. 在所有子查询执行完后，编写一个 `<memory_join>` 节点，在该节点中，编写一条标准 SQL (支持 DuckDB 语法) 来对所有的临时表进行关联、过滤、分组、聚合或排序计算，输出用户想要的结果。
 7. 子查询排序与粒度（重要，影响结果正确性）：

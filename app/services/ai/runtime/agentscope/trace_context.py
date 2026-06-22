@@ -69,6 +69,8 @@ class TraceSpanContext:
         return self
 
     def exit(self, exc_type=None, exc_val=None, exc_tb=None) -> None:
+        if hasattr(self, "_total_llm_calls_ref") and self._total_llm_calls_ref is not None:
+            self.update_meta("llm_call_count", self._total_llm_calls_ref[0])
         if self._start_time > 0:
             elapsed_ms = (time.perf_counter() - self._start_time) * 1000
             if self.step:

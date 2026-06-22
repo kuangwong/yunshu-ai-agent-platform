@@ -421,6 +421,27 @@ JSON 格式：
         return None
 
 
+def _looks_like_explicit_federated_query(user_question: str) -> bool:
+    """检测用户问题是否包含明确的跨数据集/联邦查询意图。
+
+    用于 LLM 分类结果的兜底校验：LLM 误把单数据集查询归类为联邦查询成本很高
+    （额外一次计划生成 LLM 调用），此函数通过明确关键词过滤降低误升级率。
+    """
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    explicit_terms = (
+        "跨数据集", "跨库", "跨源", "联邦查询", "多数据集",
+        "多个数据集", "不同数据集", "不同库", "联合查询",
+    )
+    if any(term in q for term in explicit_terms):
+        return True
+    # 弱启发式：「关联」+「数据集/数据源」同现时才升级，避免误判单数据集 JOIN 或"数据库连接"等无关语境。
+    has_join_action = any(term in q for term in ("关联", "join", "联结"))
+    has_multi_source_hint = any(term in q for term in ("数据集", "数据源"))
+    return has_join_action and has_multi_source_hint
+
+
 def looks_like_metadata_query(q: str) -> bool:
     """识别诸如 '说明智能体数据集里有哪些可查询字段和适合的分析口径'、'字段说明'、'有什么字段' 等元数据/分析口径的探索提问，
     这些提问虽然不直接查询业务数据，但应该直接交给 AI 结合提示词中的数据集 Schema 进行回答，不应拦截为澄清。
@@ -599,6 +620,22 @@ async def resolve_data_query_turn_classification(
                     "最近对话没有明确的上一轮数据结果上下文，需要先确认是否基于之前的查询结果继续分析",
                     skip_intent_llm=False,
                 )
+
+    # LLM 分类为联邦查询时做规则兜底校验：
+    # 联邦升级成本高（额外一次 LLM 计划生成），必须有明确的跨数据集/跨库意图才允许；
+    # 若用户问题不包含显式跨源关键词，则降级为普通新数据查询，由后续 schema 预拉取阶段再做精细判断。
+    if classification and classification.turn_type == DataQueryTurnType.FEDERATED_DATA_QUERY:
+        if not _looks_like_explicit_federated_query(q):
+            logger.info(
+                "[DataQueryTurnClassifier] LLM 分类为 federated_data_query，但问题中无显式跨源意图关键词，"
+                "降级为 new_data_query（原始 reasoning: %s）",
+                classification.reasoning,
+            )
+            classification = _classification_for_turn_type(
+                DataQueryTurnType.NEW_DATA_QUERY,
+                "LLM 判断为联邦查询，但未检测到明确跨数据集关键词，降级为新数据查询（后续 schema 预拉取阶段可再次升级）",
+                skip_intent_llm=False,
+            )
 
     if classification is None and looks_like_context_action(q):
         classification = DataQueryTurnClassification(

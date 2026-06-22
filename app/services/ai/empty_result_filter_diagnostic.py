@@ -149,11 +149,20 @@ def extract_string_filter_literals(sql: str, *, dialect: str = "clickhouse") -> 
     return _extract_string_filter_literals_fallback(text, main_table)
 
 
-def build_distinct_diagnostic_sql(*, table: str, column: str, limit: int = DISTINCT_CANDIDATE_LIMIT) -> str:
-    table_name = _quote_identifier(table)
-    column_name = _quote_identifier(column)
+def build_distinct_diagnostic_sql(
+    *,
+    table: str,
+    column: str,
+    limit: int = DISTINCT_CANDIDATE_LIMIT,
+    dialect: str = "clickhouse",
+) -> str:
+    table_name = _quote_identifier(table, dialect=dialect)
+    column_name = _quote_identifier(column, dialect=dialect)
     safe_limit = max(1, min(int(limit), DISTINCT_CANDIDATE_LIMIT))
+    if dialect == "oracle":
+        return f"SELECT DISTINCT {column_name} FROM {table_name} FETCH FIRST {safe_limit} ROWS ONLY"
     return f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT {safe_limit}"
+
 
 
 def suggest_close_values(literal: str, candidates: list[str]) -> list[str]:
@@ -606,7 +615,7 @@ async def run_empty_filter_diagnostics(
         if not table:
             continue
 
-        diagnostic_sql = build_distinct_diagnostic_sql(table=table, column=column)
+        diagnostic_sql = build_distinct_diagnostic_sql(table=table, column=column, dialect=dialect)
         result = FilterDiagnosticResult(
             column=column,
             table=table,
@@ -648,6 +657,7 @@ async def run_empty_filter_diagnostics(
             user_id=user_id,
             is_admin=is_admin,
             execute_sql=execute_sql,
+            dialect=dialect,
         )
         results.append(result)
 
@@ -664,6 +674,7 @@ async def _maybe_probe_alternative_columns(
     user_id: Optional[int],
     is_admin: bool,
     execute_sql,
+    dialect: str = "clickhouse",
 ) -> None:
     needs_probe = not result.candidates
     if not needs_probe:
@@ -687,7 +698,7 @@ async def _maybe_probe_alternative_columns(
         return
 
     for alt_column in alternatives[:MAX_ALTERNATIVE_COLUMN_PROBES]:
-        diagnostic_sql = build_distinct_diagnostic_sql(table=result.table, column=alt_column)
+        diagnostic_sql = build_distinct_diagnostic_sql(table=result.table, column=alt_column, dialect=dialect)
         try:
             raw = await execute_sql(
                 sql=diagnostic_sql,
@@ -838,12 +849,15 @@ def _dedupe_filters(filters: list[StringFilterLiteral]) -> list[StringFilterLite
     return deduped
 
 
-def _quote_identifier(name: str) -> str:
+def _quote_identifier(name: str, dialect: str = "clickhouse") -> str:
     cleaned = str(name or "").strip()
     if not cleaned:
         return cleaned
     if re.fullmatch(r"[a-z_][\w$]*", cleaned, flags=re.IGNORECASE):
         return cleaned
+    if dialect == "oracle":
+        escaped = cleaned.replace('"', '""')
+        return f'"{escaped}"'
     escaped = cleaned.replace("`", "``")
     return f"`{escaped}`"
 

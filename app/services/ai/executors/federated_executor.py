@@ -45,13 +45,23 @@ from app.services.ai.time_anchor import (
 
 logger = logging.getLogger(__name__)
 
+
+class FederatedLLMLimitExceededError(ValueError):
+    """Exception raised when the number of LLM calls in a federated query exceeds the maximum limit."""
+    pass
+
+
 MAX_FEDERATED_ROWS = 1000
 # 子查询注册进 DuckDB 时的行上限。必须显著大于最终 join 输出上限，
 # 否则「先截断子查询再 join/聚合」会丢行导致关联缺失、汇总失真。
 MAX_FEDERATED_SUBQUERY_ROWS = 50000
-MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 10
+MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 5
 # 按失败节点（子查询 / memory_join）分别计数，每节点最多局部 repair 次数。
-MAX_FEDERATED_SQL_REPAIR_PER_NODE = 10
+MAX_FEDERATED_SQL_REPAIR_PER_NODE = 4
+# 全局 LLM 调用次数上限（计划生成 1 次 + 各轮 repair）：
+# 超过后直接报错，防止极端情况下无限 repair 造成超长等待和 Token 暴涨。
+# 公式参考：1(计划) + MAX_PLAN_REPAIR(3) + 每节点*2(子查询)*4 + join*4 = 20
+MAX_FEDERATED_TOTAL_LLM_CALLS = 20
 
 
 def make_markdown_table(
@@ -109,6 +119,7 @@ class FederatedQueryExecutor:
         _repair_context: Optional[Dict[str, Any]] = None,
         _original_user_question: Optional[str] = None,
         _subquery_cache: Optional[Dict[str, str]] = None,
+        _total_llm_calls: Optional[list] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
 
@@ -117,6 +128,9 @@ class FederatedQueryExecutor:
         # key = (dataset_name, 归一化 SQL)，仅命中完全相同的成功子查询才复用。
         if _subquery_cache is None:
             _subquery_cache = {}
+        # 全局 LLM 调用次数计数器（跨 repair 递归共享，用可变 list 模拟引用语义）
+        if _total_llm_calls is None:
+            _total_llm_calls = [0]
         # 记录本次执行中发生的「降级留空 / 行截断」情况，最终注入 synthesis，避免把不完整结果当完整结论解读。
         degraded_datasets: list[str] = []
         truncated_notes: list[str] = []
@@ -126,6 +140,7 @@ class FederatedQueryExecutor:
             event_type="agent_execution",
             span_name="FederatedQueryExecutor",
         ) as span:
+            span._total_llm_calls_ref = _total_llm_calls
             
             # 1. 计划生成日志
             plan_log_id = f"fed_plan_{uuid.uuid4().hex[:8]}"
@@ -158,6 +173,21 @@ class FederatedQueryExecutor:
                         _repair_context,
                         _repair_attempt,
                     )
+                # 全局 LLM 调用次数检查（含本次计划生成）
+                _total_llm_calls[0] += 1
+                if _total_llm_calls[0] > MAX_FEDERATED_TOTAL_LLM_CALLS:
+                    yield {
+                        "type": "log",
+                        "id": plan_log_id,
+                        "title": "联邦查询已中止",
+                        "details": f"本次联邦查询已累计发起 {_total_llm_calls[0] - 1} 次 LLM 调用（上限 {MAX_FEDERATED_TOTAL_LLM_CALLS} 次），已停止 repair 以保护服务资源。",
+                        "status": "error",
+                    }
+                    yield {
+                        "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
+                        "status": "error",
+                    }
+                    return
                 plan_messages = system_user_prompt_messages(plan_prompt, user_prompt=original_user_question)
                 
                 plan_output = await chat_client.generate_text(plan_messages)
@@ -209,6 +239,7 @@ class FederatedQueryExecutor:
                         _repair_context=repair_context,
                         _original_user_question=original_user_question,
                         _subquery_cache=_subquery_cache,
+                        _total_llm_calls=_total_llm_calls,
                     ):
                         yield chunk
                     return
@@ -422,6 +453,7 @@ class FederatedQueryExecutor:
                                         _repair_context=repair_context,
                                         _original_user_question=original_user_question,
                                         _subquery_cache=_subquery_cache,
+                                        _total_llm_calls=_total_llm_calls,
                                     ):
                                         yield chunk
                                     return
@@ -502,6 +534,7 @@ class FederatedQueryExecutor:
                                             join_sql=join_sql,
                                             schema_snippet=schema_snippet,
                                             explain_context=explain_context,
+                                            _total_llm_calls=_total_llm_calls,
                                         )
                                         sq["sql"] = sub_sql
                                         new_norm = normalize_sql_text(sub_sql)
@@ -509,6 +542,19 @@ class FederatedQueryExecutor:
                                             failed_sql_signatures.add(norm_sql)
                                         node_repair_count += 1
                                         continue
+                                    except FederatedLLMLimitExceededError as limit_err:
+                                        yield {
+                                            "type": "log",
+                                            "id": sub_log_id,
+                                            "title": "联邦查询已中止",
+                                            "details": str(limit_err),
+                                            "status": "error",
+                                        }
+                                        yield {
+                                            "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
+                                            "status": "error",
+                                        }
+                                        return
                                     except Exception as repair_err:
                                         logger.error(
                                             "[FederatedQueryExecutor] Subquery local repair failed: %s",
@@ -616,6 +662,23 @@ class FederatedQueryExecutor:
                             ),
                             "status": "success",
                         }
+                        # 联邦结果为空时给出明确提示，引导用户排查条件
+                        if not join_rows:
+                            yield {
+                                "content": (
+                                    "SQL 已成功执行跨源关联，但按当前条件未匹配到任何数据行。\n\n"
+                                    "**可能原因：**\n"
+                                    "1. 各数据集子查询的关联键（如人员 ID、客户编码）在实际数据中不存在交集。\n"
+                                    "2. WHERE 条件中的时间范围、状态值等字段取值可能与库中实际数据不匹配。\n"
+                                    "3. 某个子查询因条件过于严格导致返回空集，关联后自然为空。\n\n"
+                                    "**建议：** 适当放宽筛选条件或逐步核查各子查询单独执行时的返回行数。\n\n"
+                                    "**快捷建议：**\n"
+                                    "- [🔍 查看各子查询行数](quick:帮我检查刚才联邦查询中各个子查询单独执行时的返回行数)\n"
+                                    "- [📅 放宽时间范围重试](quick:放宽时间范围，重新查询刚才的联邦数据)"
+                                ),
+                                "status": "success",
+                            }
+                            return
                         break
                     except Exception as e:
                         error_text = str(e)
@@ -655,12 +718,26 @@ class FederatedQueryExecutor:
                                     repeat_blocked=repeat_blocked,
                                     sub_queries=sub_queries,
                                     join_sql=join_sql,
+                                    _total_llm_calls=_total_llm_calls,
                                 )
                                 new_norm = normalize_sql_text(join_sql)
                                 if new_norm == norm_sql:
                                     join_failed_signatures.add(norm_sql)
                                 join_repair_count += 1
                                 continue
+                            except FederatedLLMLimitExceededError as limit_err:
+                                yield {
+                                    "type": "log",
+                                    "id": join_log_id,
+                                    "title": "联邦查询已中止",
+                                    "details": str(limit_err),
+                                    "status": "error",
+                                }
+                                yield {
+                                    "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
+                                    "status": "error",
+                                }
+                                return
                             except Exception as repair_err:
                                 error_text = str(repair_err)
                         yield {
@@ -724,13 +801,32 @@ class FederatedQueryExecutor:
                     column_label_guide=column_label_guide,
                 )
                 
-                # 流式输出总结（synthesis_prompt 已含用户问题，user_prompt 用默认值避免重复）
+                # 全局 LLM 调用次数检查 (Synthesis 阶段)
+                _total_llm_calls[0] += 1
+                if _total_llm_calls[0] > MAX_FEDERATED_TOTAL_LLM_CALLS:
+                    yield {
+                        "type": "log",
+                        "id": f"fed_synthesis_{uuid.uuid4().hex[:8]}",
+                        "title": "联邦查询已中止",
+                        "details": f"本次联邦查询已累计发起 {_total_llm_calls[0] - 1} 次 LLM 调用（上限 {MAX_FEDERATED_TOTAL_LLM_CALLS} 次），已停止 synthesis 以保护服务资源。",
+                        "status": "error",
+                    }
+                    yield {
+                        "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
+                        "status": "error",
+                    }
+                    return
+
+                # 流式输出总结：显式传入 user_prompt，防止某些严格 LLM API（如 Anthropic Claude）
+                # 因 user turn 为空而报错；synthesis_prompt 作为 system，原始用户问题作为 user turn。
                 llm_stream = await AgentConfigProvider.get_configured_llm(
                     streaming=True,
                     config=getattr(self.agent_runner, "config", None),
                 )
                 chat_client_stream = chat_client_from_handle(llm_stream)
-                synthesis_messages = system_user_prompt_messages(synthesis_prompt)
+                synthesis_messages = system_user_prompt_messages(
+                    synthesis_prompt, user_prompt=original_user_question
+                )
                 
                 chunk_count = 0
                 async for msg_chunk in chat_client_stream.stream_messages(synthesis_messages):
@@ -739,7 +835,11 @@ class FederatedQueryExecutor:
                         chunk_count += 1
                         yield {"content": text}
                 
-                logger.info("[FederatedQueryExecutor] Synthesis complete. Total text chunks yielded: %d", chunk_count)
+                logger.info(
+                    "[FederatedQueryExecutor] Synthesis complete. Total text chunks yielded: %d. LLM call count: %d",
+                    chunk_count,
+                    _total_llm_calls[0],
+                )
                 yield {"content": "", "status": "success"}
             finally:
                 duckdb_conn.close()
@@ -784,7 +884,14 @@ class FederatedQueryExecutor:
         join_sql: str,
         schema_snippet: str = "",
         explain_context: str = "",
+        _total_llm_calls: Optional[list[int]] = None,
     ) -> str:
+        if _total_llm_calls is not None:
+            _total_llm_calls[0] += 1
+            if _total_llm_calls[0] > MAX_FEDERATED_TOTAL_LLM_CALLS:
+                raise FederatedLLMLimitExceededError(
+                    f"本次联邦查询已累计发起 {_total_llm_calls[0] - 1} 次 LLM 调用（上限 {MAX_FEDERATED_TOTAL_LLM_CALLS} 次），已停止 repair 以保护服务资源。"
+                )
         repair_guidance = build_sql_repair_guidance(
             error_text,
             failed_sql,

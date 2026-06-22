@@ -174,10 +174,23 @@ class MetadataService:
 
     @staticmethod
     async def get_dataset_by_name(db: AsyncSession, name: str) -> Optional[MetaDataset]:
+        """按名称查找数据集，先精确匹配，再大小写不敏感兜底。
+
+        大模型生成的 dataset_name 可能与元数据中的大小写不一致（如 HR_DS vs HR_ds），
+        此处通过两阶段查询防止因大小写不匹配导致 dataset is None 报错。
+        """
+        # 阶段 1：精确匹配（最常见路径，性能优先）
         result = await db.execute(
             select(MetaDataset).where(MetaDataset.name == name)
         )
-        return result.scalar_one_or_none()
+        ds = result.scalar_one_or_none()
+        if ds is not None:
+            return ds
+        # 阶段 2：大小写不敏感兜底（处理 LLM 生成大小写与元数据不一致的情况）
+        result_ci = await db.execute(
+            select(MetaDataset).where(MetaDataset.name.ilike(name))
+        )
+        return result_ci.scalar_one_or_none()
 
     @staticmethod
     async def _mark_dataset_as_modified(db: AsyncSession, dataset_id: int):

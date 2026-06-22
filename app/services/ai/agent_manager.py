@@ -449,6 +449,11 @@ class AgentManagerService:
         session.add(version)
         await session.commit()
         await session.refresh(version)
+        
+        # Invalidate Router Cache
+        from app.services.ai.router_service import router_service
+        router_service.invalidate_cache()
+        
         return version
 
     @staticmethod
@@ -485,6 +490,11 @@ class AgentManagerService:
         
         await session.commit()
         await session.refresh(version)
+        
+        # Invalidate Router Cache
+        from app.services.ai.router_service import router_service
+        router_service.invalidate_cache()
+        
         return version
 
     @staticmethod
@@ -520,6 +530,11 @@ class AgentManagerService:
         )
         
         await session.commit()
+        
+        # Invalidate Router Cache
+        from app.services.ai.router_service import router_service
+        router_service.invalidate_cache()
+        
         return True
 
     @staticmethod
@@ -548,4 +563,9 @@ class AgentManagerService:
 
         await session.delete(version)
         await session.commit()
+        
+        # Invalidate Router Cache
+        from app.services.ai.router_service import router_service
+        router_service.invalidate_cache()
+        
         return True

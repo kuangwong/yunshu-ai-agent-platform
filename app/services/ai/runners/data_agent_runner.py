@@ -148,6 +148,24 @@ SCHEMA_RETRY_STOPWORDS = (
     "本月",
     "上月",
     "最近",
+    "为您",
+    "到以下",
+    "以下",
+    "数据",
+    "信息",
+    "详情",
+    "quick",
+    "详细",
+    "筛选",
+    "状态",
+    "正常",
+    "导出",
+    "点击",
+    "确认",
+    "选择",
+    "按钮",
+    "卡片",
+    "为您找到",
 )
 SCHEMA_RETRY_SUFFIXES = ("列表", "清单", "明细", "统计")
 _SQL_RESULT_DISPLAY_MAX_ROWS = 15
@@ -179,14 +197,7 @@ def _looks_like_explicit_federated_query(user_question: str) -> bool:
         "不同库",
         "联合查询",
     )
-    if any(term in q for term in explicit_terms):
-        return True
-    # 弱启发式收敛：仅当「关联动作」与明确的多源名词（数据集/数据源）同现才升级。
-    # 此前把裸「表」「库」「连接/合并」纳入会大量误升级（如单数据集内的多表 JOIN、
-    # “数据库连接”“合并报表”等），且 schema enrich 常带 2+ dataset 放大了误判。
-    has_join_action = any(term in q for term in ("关联", "join", "联结"))
-    has_multi_source_hint = any(term in q for term in ("数据集", "数据源"))
-    return has_join_action and has_multi_source_hint
+    return any(term in q for term in explicit_terms)
 
 
 def _should_upgrade_to_federated_query(schema_output: str, user_question: str) -> bool:
@@ -969,6 +980,14 @@ class DataAgentRunner(BaseExecutor):
         sql_for_preflight = self._mask_sql_literals_and_comments(sql)
         alias_to_table: dict[str, str] = {}
         table_displays: dict[str, str] = {}
+        cte_names = {
+            self._normalize_sql_identifier(item)
+            for item in re.findall(
+                r"(?:\bwith\b|,)\s*([A-Za-z_][\w$]*)\s+as\s*\(",
+                sql_for_preflight,
+                flags=re.IGNORECASE,
+            )
+        }
         table_pattern = re.compile(
             r"\b(?:from|join)\s+([A-Za-z_][\w.$]*)(?:\s+(?:as\s+)?([A-Za-z_][\w$]*))?",
             flags=re.IGNORECASE,
@@ -982,10 +1001,19 @@ class DataAgentRunner(BaseExecutor):
             alias = match.group(2) or table
             alias_norm = self._normalize_sql_identifier(alias)
             table_norm = self._normalize_sql_identifier(table)
+            if table_norm in cte_names:
+                continue
             if alias_norm in reserved_aliases:
                 alias_norm = table_norm
             if table_norm not in schema_table_columns:
-                continue
+                available_tables = ", ".join(sorted(schema_table_columns.keys())[:40])
+                return (
+                    "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
+                    f"表 {table} 不在 get_dataset_schema 返回的表列表中。"
+                    f"当前可用表：{available_tables}。"
+                    "请先重新调用 get_dataset_schema 核对物理 table_name，"
+                    "禁止根据 DataQueryIntentFrame、业务术语或中文含义凭空猜测表名。"
+                )
             alias_to_table[alias_norm] = table_norm
             alias_to_table[table_norm] = table_norm
             table_displays[table_norm] = table
@@ -1118,6 +1146,8 @@ class DataAgentRunner(BaseExecutor):
             return ""
         cleaned = re.sub(r"\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?", " ", cleaned)
         cleaned = re.sub(r"\d{1,2}月\d{0,2}日?", " ", cleaned)
+        # 滤除 Emoji 表情及其他非中英文数字杂质符号
+        cleaned = re.sub(r"[^\w\s\u4e00-\u9fff]+", " ", cleaned)
         for word in SCHEMA_RETRY_STOPWORDS:
             cleaned = cleaned.replace(word, " ")
         cleaned = re.sub(r"[?？!！。；;：:，,、\[\]（）(){}<>《》\"'`]+", " ", cleaned)
@@ -1210,12 +1240,20 @@ class DataAgentRunner(BaseExecutor):
         state: _DataRunState,
         user_question: str = "",
     ) -> None:
-        retry_keywords = self._build_controlled_schema_retry_keywords(
-            state.last_schema_keywords,
-            self._schema_search_keywords,
-            self._standalone_query,
-            user_question,
-        )
+        sources = []
+        if state.last_schema_keywords:
+            sources.append(state.last_schema_keywords)
+        if self._schema_search_keywords:
+            sources.append(self._schema_search_keywords)
+
+        # 只有在已提炼的核心检索词均为空时，才落入独立问题及原始输入兜底，以切断原始输入中的 UI 垃圾词对重试词的污染
+        if not sources:
+            if self._standalone_query:
+                sources.append(self._standalone_query)
+            if user_question:
+                sources.append(user_question)
+
+        retry_keywords = self._build_controlled_schema_retry_keywords(*sources)
         state.controlled_schema_retry_keywords = retry_keywords
         state.pending_schema_retry = bool(retry_keywords.strip())
 
@@ -1766,22 +1804,32 @@ class DataAgentRunner(BaseExecutor):
                 "turn_type": turn_cls.turn_type.value,
                 "execution_time_ms": 0,
             }
-            
-            from app.core.orm import AsyncSessionLocal
-            from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
-            async with AsyncSessionLocal() as session:
-                schema_output = await fetch_dataset_schema_core(
-                    session,
-                    keywords=", ".join(sorted(e.datasets)),
-                    user_id=self._runtime_user_id(),
-                    is_admin=bool(self.user_info.get("is_admin") if self.user_info else False),
-                    api_key=None,
+
+            # 优先复用当前轮已预拉取的 Schema（prefetched_schema_output），避免多一次 IO。
+            # 仅当预拉取结果为空时（极少发生：schema 预拉取失败或 UpgradeToFederatedQuery
+            # 在 schema 预拉取之前就抛出）才重新拉取。
+            schema_output = prefetched_schema_output or ""
+            if not schema_output.strip():
+                from app.core.orm import AsyncSessionLocal
+                from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
+                async with AsyncSessionLocal() as session:
+                    schema_output = await fetch_dataset_schema_core(
+                        session,
+                        keywords=", ".join(sorted(e.datasets)),
+                        user_id=self._runtime_user_id(),
+                        is_admin=bool(self.user_info.get("is_admin") if self.user_info else False),
+                        api_key=None,
+                    )
+            else:
+                logger.info(
+                    "[DataAgentRunner][Federated] UpgradeToFederatedQuery: 复用已有 prefetched schema (%d chars)，跳过重新拉取。",
+                    len(schema_output),
                 )
-            
+
             self._last_run_state = _DataRunState(requires_fresh_data=True)
             from app.services.ai.executors.federated_executor import FederatedQueryExecutor
             from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
-            
+
             executor = FederatedQueryExecutor(
                 agent_runner=self,
                 schema_output=schema_output,

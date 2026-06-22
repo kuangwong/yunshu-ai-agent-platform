@@ -251,6 +251,357 @@ class AgentService:
             pass
         return AgentServicePrompts.EMPTY_RESPONSE_FALLBACK
 
+    async def _resolve_and_verify_agent(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        agent_id: Optional[str],
+        agent_name: Optional[str],
+        version_id: Optional[str],
+        enable_multi_agent: bool,
+        user_info: Optional[dict[str, Any]],
+        trace_buffer: list[AgentExecutionStep],
+        user_query: str,
+    ) -> tuple[Any, Any, float, Optional[str]]:
+        """解析并校验智能体配置与权限。
+        返回: (agent_config, route_details, route_elapsed_ms, permission_denied_err_msg)
+        """
+        route_start = asyncio.get_running_loop().time()
+        agent_config, route_details = await AgentContextManager.resolve_agent_config(
+            messages, 
+            agent_id=agent_id, 
+            agent_name=agent_name, 
+            version_id=version_id,
+            enable_multi_agent=enable_multi_agent,
+            user_info=user_info,
+        )
+        route_elapsed_ms = (asyncio.get_running_loop().time() - route_start) * 1000
+
+        if not agent_config:
+            return None, None, route_elapsed_ms, None
+
+        if route_details:
+            logger.info(f"[Router] Routing decision found: {route_details}")
+            from app.services.config_service import ConfigService
+            router_model = await ConfigService.get("llm_model_name") or "DeepSeek-V3.2"
+            r_thought = getattr(route_details, "reasoning", "No reasoning")
+            r_conf = getattr(route_details, "confidence", 0.0)
+            r_agent = getattr(route_details, "agent_id", "unknown")
+            r_turn_labels = getattr(route_details, "turn_labels", []) or []
+            r_relation = getattr(route_details, "relation_to_previous", "unknown")
+            r_action_type = getattr(route_details, "user_action_type", "unknown")
+            
+            trace_buffer.append(AgentExecutionStep(
+                step_number=0,
+                event_type="router",
+                agent_name="Smart Router",
+                model=router_model,
+                tool_name="route_query",
+                tool_input={"query": user_query},
+                tool_output={
+                    "thought": r_thought,
+                    "selected_agent": r_agent,
+                    "confidence": r_conf,
+                    "turn_labels": r_turn_labels,
+                    "relation_to_previous": r_relation,
+                    "user_action_type": r_action_type,
+                },
+                status="success",
+                execution_time_ms=route_elapsed_ms
+            ))
+        else:
+            logger.info("[Router] No routing details (direct agent selection or fallback)")
+
+        if user_info:
+            u_role = user_info.get("role", "")
+            u_id = user_info.get("user_id", user_info.get("id"))
+            if u_role != "admin" and u_id:
+                from app.services.permission_service import PermissionService
+                async with AsyncSessionLocal() as session:
+                    perm_service = PermissionService(session)
+                    agent_id_str = str(agent_config.agent_id)
+                    has_perm = await perm_service.check_permission(int(u_id), "agent", agent_id_str)
+                    if not has_perm:
+                        err_msg = AgentServicePrompts.permission_denied(agent_config.agent_name)
+                        return agent_config, route_details, route_elapsed_ms, err_msg
+
+        return agent_config, route_details, route_elapsed_ms, None
+
+    async def _inject_skills(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        user_query: str,
+        agent_config: Any,
+        skills_log_callback: Optional[callable] = None,
+    ) -> list[str]:
+        """挂载与自动匹配技能，返回 skills_injection。"""
+        active_skills = []
+        if messages and "files" in messages[-1] and messages[-1]["files"]:
+            for file_obj in messages[-1]["files"]:
+                if file_obj.get("type") == "skill":
+                    active_skills.append(file_obj)
+
+        mounted_skill_ids = {s.get("url") for s in active_skills if s.get("url")}
+        skills_injection = []
+
+        if active_skills:
+            import os
+            from app.core.config import settings
+            from app.utils.skill_metadata import parse_skill_frontmatter
+
+            for skill_obj in active_skills:
+                skill_id = skill_obj.get("url")
+                if not skill_id:
+                    continue
+                skill_md_path = os.path.join(settings.SKILLS_DIR, skill_id, "SKILL.md")
+                meta_override = skill_obj.get("skillMeta") or skill_obj.get("skill_meta")
+                if meta_override and isinstance(meta_override, dict):
+                    skill_name = str(meta_override.get("name") or skill_id)
+                    description = str(meta_override.get("description") or "")
+                elif os.path.exists(skill_md_path):
+                    meta = parse_skill_frontmatter(skill_id, skill_md_path)
+                    skill_name = meta.get("name") or skill_obj.get("filename", skill_id).replace(" (技能)", "")
+                    description = meta.get("description") or ""
+                else:
+                    skill_name = skill_obj.get("filename", skill_id).replace(" (技能)", "")
+                    description = ""
+                    logger.warning("[Skills] Skill markdown not found at %s", skill_md_path)
+
+                skills_injection.append(
+                    AgentServicePrompts.skill_summary_injection_block(
+                        skill_name, skill_id, description
+                    )
+                )
+                logger.info("[Skills] Matched mounted skill %s (summary only).", skill_id)
+
+        if user_query:
+            try:
+                from app.services.ai.skill_resolver import resolve_skills_from_query
+
+                for skill_meta in resolve_skills_from_query(user_query):
+                    skill_id = skill_meta.get("id")
+                    if not skill_id or skill_id in mounted_skill_ids:
+                        continue
+                    skill_name = skill_meta.get("name") or skill_id
+                    description = skill_meta.get("description") or ""
+                    skills_injection.append(
+                        AgentServicePrompts.skill_summary_injection_block(
+                            skill_name, skill_id, description
+                        )
+                    )
+                    mounted_skill_ids.add(skill_id)
+                    logger.info("[Skills] Auto-resolved skill %s from query (summary only).", skill_id)
+                    if skills_log_callback:
+                        skills_log_callback(skill_id, skill_name, "")
+            except Exception as resolve_err:
+                logger.warning("[Skills] Failed to auto-resolve skills from query: %s", resolve_err)
+
+        if user_query and not skills_injection:
+            try:
+                from app.services.ai.skill_resolver import (
+                    is_main_general_agent,
+                    scan_relevant_skills,
+                    should_scan_skills_for_query,
+                )
+                from app.services.config_service import ConfigService
+
+                if is_main_general_agent(agent_config):
+                    scan_enabled_raw = await ConfigService.get("skill_auto_scan_enabled", "true")
+                    scan_enabled = str(scan_enabled_raw or "true").strip().lower() in {
+                        "1", "true", "yes", "on",
+                    }
+                    if scan_enabled and should_scan_skills_for_query(user_query):
+                        min_score_raw = await ConfigService.get("skill_auto_scan_min_score", "0.45")
+                        try:
+                            min_score = float(min_score_raw) if min_score_raw is not None else 0.45
+                        except (TypeError, ValueError):
+                            min_score = 0.45
+                        max_results_raw = await ConfigService.get("skill_auto_scan_max_results", "1")
+                        try:
+                            max_scan_results = int(max_results_raw) if max_results_raw is not None else 1
+                        except (TypeError, ValueError):
+                            max_scan_results = 1
+                        max_scan_results = max(1, min(max_scan_results, 3))
+
+                        for skill_meta in scan_relevant_skills(
+                            user_query,
+                            exclude_ids=mounted_skill_ids,
+                            max_results=max_scan_results,
+                            min_score=min_score,
+                        ):
+                            skill_id = skill_meta.get("id")
+                            if not skill_id or skill_id in mounted_skill_ids:
+                                continue
+                            skill_name = skill_meta.get("name") or skill_id
+                            description = skill_meta.get("description") or ""
+                            match_score = skill_meta.get("match_score")
+                            skills_injection.append(
+                                AgentServicePrompts.skill_summary_injection_block(
+                                    skill_name, skill_id, description
+                                )
+                            )
+                            mounted_skill_ids.add(skill_id)
+                            logger.info(
+                                "[Skills] Scanned skill %s from query (score=%s, summary only).",
+                                skill_id,
+                                match_score,
+                            )
+                            if skills_log_callback:
+                                score_hint = f"（相关度 {match_score}）" if match_score is not None else ""
+                                details_msg = (
+                                    f"已根据本轮问题扫描技能库并匹配「{skill_name}」(ID: {skill_id}){score_hint}。"
+                                    f"已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。"
+                                )
+                                skills_log_callback(skill_id, skill_name, details_msg)
+            except Exception as scan_err:
+                logger.warning("[Skills] Failed to scan skills from query: %s", scan_err)
+
+        if skills_injection:
+            MAX_PRELOAD_SKILLS = 5
+            if len(skills_injection) > MAX_PRELOAD_SKILLS:
+                logger.info(f"[Skills] Too many skills ({len(skills_injection)}), truncating to top {MAX_PRELOAD_SKILLS}")
+                skills_injection = skills_injection[:MAX_PRELOAD_SKILLS]
+                skills_injection.append(
+                    "=== [已截断] 系统中已挂载或解析出更多可用技能，出于上下文性能优化，其余技能摘要未全部载入。如有需要，模型应通过调用 list_available_skills 工具获取其余技能详细摘要 ==="
+                )
+
+        return skills_injection
+
+    async def _load_memory_context(
+        self,
+        *,
+        user_info: Optional[dict[str, Any]],
+        early_turn_type: Any,
+        debug_options: Optional[dict[str, Any]],
+        user_query: str,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], Optional[str]]:
+        """加载记忆与 LTM 预加载。
+        返回: (ltm_profile, ltm_loaded_data, memory_recall_hint, preloaded_memories_text)
+        """
+        ltm_profile: Optional[str] = None
+        ltm_loaded_data: Optional[dict] = None
+        ignore_ltm = False
+        if debug_options and debug_options.get("ignore_ltm"):
+            ignore_ltm = True
+        
+        from app.services.ai.turn_classifier import (
+            should_inject_ltm,
+            should_inject_memory_recall_hint,
+            should_run_active_memory_preload,
+        )
+
+        if not ignore_ltm and should_inject_ltm(early_turn_type) and user_info:
+            u_id = user_info.get("user_id", user_info.get("id"))
+            if u_id:
+                try:
+                    from app.services.ai.memory_service import ltm_service
+                    ltm_data = await asyncio.wait_for(ltm_service.fetch_memory(str(u_id)), timeout=0.2)
+                    if ltm_data:
+                        import json
+                        ltm_formatted = json.dumps(ltm_data, ensure_ascii=False, indent=2)
+                        ltm_profile = AgentServicePrompts.ltm_memory_profile(ltm_formatted)
+                        ltm_loaded_data = ltm_data
+                        logger.info(f"[LTM] Successfully loaded memory profile for user {u_id}")
+                except Exception as ltm_err:
+                    logger.warning(f"[LTM] Failed to inject long-term memory for user {u_id}: {ltm_err}")
+
+        memory_recall_hint: Optional[str] = None
+        if should_inject_memory_recall_hint(early_turn_type):
+            try:
+                from app.services.memory_config_service import MemoryConfigService
+                from app.services.ai.memory_recall_policy import CROSS_SESSION_MEMORY_SYSTEM_HINT
+
+                if await MemoryConfigService.get_bool("memory_service_enabled", True):
+                    memory_recall_hint = CROSS_SESSION_MEMORY_SYSTEM_HINT
+            except Exception as mem_hint_err:
+                logger.warning("[Memory] Failed to inject cross-session recall hint: %s", mem_hint_err)
+
+        preloaded_memories_text: Optional[str] = None
+        if should_run_active_memory_preload(early_turn_type) and user_info and user_query:
+            u_id = user_info.get("user_id", user_info.get("id"))
+            if u_id:
+                try:
+                    from app.services.memory_config_service import MemoryConfigService
+                    if await MemoryConfigService.get_bool("memory_service_enabled", True):
+                        from app.services.ai.tools.memory_search_tool import parse_date_from_query
+                        from app.services.ai.daily_summary_service import DailySummaryService
+                        from app.services.ai.memory_index_service import MemoryIndexService
+                        
+                        uid = str(u_id)
+                        target_day = parse_date_from_query(user_query)
+                        preloaded_memories = []
+                        
+                        if target_day:
+                            d_summary = await DailySummaryService.get_daily_summary(uid, target_day)
+                            if d_summary:
+                                preloaded_memories.append(
+                                    AgentServicePrompts.daily_summary_section(target_day, d_summary)
+                                )
+                            d_sessions = await MemoryIndexService.list_session_summaries_for_day(uid, target_day)
+                            if d_sessions:
+                                sess_lines = []
+                                for idx, s in enumerate(d_sessions, 1):
+                                    sess_lines.append(
+                                        AgentServicePrompts.session_summary_line(idx, s)
+                                    )
+                                preloaded_memories.append(
+                                    AgentServicePrompts.day_session_records(target_day, sess_lines)
+                                )
+                        else:
+                            is_recall_intent = any(w in user_query for w in AgentServicePrompts.RECALL_INTENT_KEYWORDS)
+                            if is_recall_intent:
+                                recent_sessions = await MemoryIndexService.list_summaries(uid, limit=3)
+                                if recent_sessions:
+                                    sess_lines = []
+                                    for idx, s in enumerate(recent_sessions, 1):
+                                        sess_lines.append(
+                                            AgentServicePrompts.session_summary_line(idx, s)
+                                        )
+                                    preloaded_memories.append(
+                                        AgentServicePrompts.recent_sessions_section(sess_lines)
+                                    )
+                        
+                        if preloaded_memories:
+                            preloaded_memories_text = AgentServicePrompts.preloaded_memories(preloaded_memories)
+                            logger.info(f"[ActiveMemory] Successfully preloaded memory context for user {u_id}")
+                except Exception as recall_err:
+                    logger.warning(f"[ActiveMemory] Failed to preload memory context: {recall_err}", exc_info=True)
+
+        return ltm_profile, ltm_loaded_data, memory_recall_hint, preloaded_memories_text
+
+    async def _dispatch_executor(
+        self,
+        *,
+        agent_config: Any,
+        user_query: str,
+        messages: list[dict[str, str]],
+        trace_id: str,
+        trace_buffer: list[AgentExecutionStep],
+        debug_options: Optional[dict[str, Any]],
+        permission_options: Optional[dict[str, Any]],
+        user_info: Optional[dict[str, Any]],
+        conversation_id: Optional[str],
+        session_turn: Optional[tuple],
+        route_hints: Optional[dict],
+    ) -> Any:
+        """调度并返回执行器实例。"""
+        executor = await AgentDispatcher.dispatch(
+            agent_config,
+            user_query,
+            messages,
+            trace_id,
+            trace_buffer,
+            debug_options,
+            permission_options,
+            user_info,
+            conversation_id,
+            shared_turn=session_turn,
+            route_hints=route_hints,
+        )
+        return executor
+
+
     async def _run_chat_turn_stream(
         self,
         *,
@@ -278,17 +629,17 @@ class AgentService:
         executor = None
 
         try:
-            # 2. Context Preparation (Loading Config)
-            route_start = asyncio.get_running_loop().time()
-            agent_config, route_details = await AgentContextManager.resolve_agent_config(
-                messages, 
-                agent_id=agent_id, 
-                agent_name=agent_name, 
+            # 1. Resolve and Verify Agent Configuration and Permissions
+            agent_config, route_details, route_elapsed_ms, err_msg = await self._resolve_and_verify_agent(
+                messages=messages,
+                agent_id=agent_id,
+                agent_name=agent_name,
                 version_id=version_id,
                 enable_multi_agent=enable_multi_agent,
                 user_info=user_info,
+                trace_buffer=trace_buffer,
+                user_query=user_query,
             )
-            route_elapsed_ms = (asyncio.get_running_loop().time() - route_start) * 1000
 
             if not agent_config:
                 yield {"content": AgentServicePrompts.NO_AGENT_CONFIG}
@@ -297,10 +648,8 @@ class AgentService:
             route_hints = None
             if agent_id or agent_name:
                 route_hints = {"direct_agent_selection": True}
-            # Emit Routing Logic (New Debug Feature)
+
             if route_details:
-                logger.info(f"[Router] Routing decision found: {route_details}")
-                # Extract fields safely
                 r_thought = getattr(route_details, "reasoning", "No reasoning")
                 r_conf = getattr(route_details, "confidence", 0.0)
                 r_agent = getattr(route_details, "agent_id", "unknown")
@@ -312,8 +661,6 @@ class AgentService:
                     "relation_to_previous": r_relation,
                     "user_action_type": r_action_type,
                 }
-                
-                # 1. Real-time SSE Event
                 yield {
                     "type": "router_log",
                     "thought": r_thought,
@@ -326,52 +673,10 @@ class AgentService:
                     "execution_time_ms": route_elapsed_ms
                 }
 
-                # 2. Permanent Trace Recording (Step 0)
-                # We use a special event_type 'router' to distinguish it in the DB
-                from app.services.config_service import ConfigService
-                router_model = await ConfigService.get("llm_model_name") or "DeepSeek-V3.2"
-
-                trace_buffer.append(AgentExecutionStep(
-                    step_number=0,
-                    event_type="router",
-                    agent_name="Smart Router",
-                    model=router_model,
-                    tool_name="route_query",
-                    tool_input={"query": user_query},
-                    tool_output={
-                        "thought": r_thought,
-                        "selected_agent": r_agent,
-                        "confidence": r_conf,
-                        "turn_labels": r_turn_labels,
-                        "relation_to_previous": r_relation,
-                        "user_action_type": r_action_type,
-                    },
-                    status="success",
-                    execution_time_ms=route_elapsed_ms
-                ))
-            else:
-                logger.info("[Router] No routing details (direct agent selection or fallback)")
-
-            # Permission Check (Enforce Allowed Agents)
-            if user_info:
-                # 1. Determine Identity
-                u_role = user_info.get("role", "")
-                u_id = user_info.get("user_id", user_info.get("id"))
-                
-                # 2. Check (Skip for Admin)
-                if u_role != "admin" and u_id:
-                    from app.services.permission_service import PermissionService
-                    async with AsyncSessionLocal() as session:
-                        perm_service = PermissionService(session)
-                        # Ensure ID is string for check
-                        agent_id_str = str(agent_config.agent_id)
-                        has_perm = await perm_service.check_permission(int(u_id), "agent", agent_id_str)
-                        
-                        if not has_perm:
-                            err_msg = AgentServicePrompts.permission_denied(agent_config.agent_name)
-                            yield {"content": err_msg}
-                            execution_status = "denied"
-                            return
+            if err_msg:
+                yield {"content": err_msg}
+                execution_status = "denied"
+                return
 
             from app.services.ai.knowledge_utils import (
                 build_rag_retrieval_debug_meta,
@@ -383,7 +688,6 @@ class AgentService:
                 messages,
             )
 
-            # 3. Setup Context (Inject user info & api_key for permission checks)
             await AgentContextManager.setup_context(
                 config=agent_config, 
                 debug_options=debug_options,
@@ -394,156 +698,27 @@ class AgentService:
                 trace_buffer=trace_buffer,
             )
 
-            # --- Active Skill Injection ---
-            active_skills = []
-            if messages and "files" in messages[-1] and messages[-1]["files"]:
-                for file_obj in messages[-1]["files"]:
-                    if file_obj.get("type") == "skill":
-                        active_skills.append(file_obj)
+            # 2. Inject Active Skills
+            matched_skills_to_log = []
+            def skills_log_callback(skill_id, skill_name, details_msg):
+                matched_skills_to_log.append((skill_id, skill_name, details_msg))
 
-            mounted_skill_ids = {s.get("url") for s in active_skills if s.get("url")}
-            skills_injection = []
+            skills_injection = await self._inject_skills(
+                messages=messages,
+                user_query=user_query,
+                agent_config=agent_config,
+                skills_log_callback=skills_log_callback,
+            )
 
-            if active_skills:
-                import os
-                from app.core.config import settings
-                from app.utils.skill_metadata import parse_skill_frontmatter
+            for skill_id, skill_name, details_msg in matched_skills_to_log:
+                yield {
+                    "type": "log",
+                    "id": f"skill_load_{skill_id}" if not details_msg else f"skill_scan_{skill_id}",
+                    "title": f"已匹配技能: {skill_name}" if not details_msg else f"已扫描匹配技能: {skill_name}",
+                    "details": details_msg or f"已从技能库匹配「{skill_name}」(ID: {skill_id})。已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。",
+                    "status": "success",
+                }
 
-                for skill_obj in active_skills:
-                    skill_id = skill_obj.get("url")
-                    if not skill_id:
-                        continue
-                    skill_md_path = os.path.join(settings.SKILLS_DIR, skill_id, "SKILL.md")
-                    meta_override = skill_obj.get("skillMeta") or skill_obj.get("skill_meta")
-                    if meta_override and isinstance(meta_override, dict):
-                        skill_name = str(meta_override.get("name") or skill_id)
-                        description = str(meta_override.get("description") or "")
-                    elif os.path.exists(skill_md_path):
-                        meta = parse_skill_frontmatter(skill_id, skill_md_path)
-                        skill_name = meta.get("name") or skill_obj.get("filename", skill_id).replace(" (技能)", "")
-                        description = meta.get("description") or ""
-                    else:
-                        skill_name = skill_obj.get("filename", skill_id).replace(" (技能)", "")
-                        description = ""
-                        logger.warning("[Skills] Skill markdown not found at %s", skill_md_path)
-
-                    skills_injection.append(
-                        AgentServicePrompts.skill_summary_injection_block(
-                            skill_name, skill_id, description
-                        )
-                    )
-                    logger.info("[Skills] Matched mounted skill %s (summary only).", skill_id)
-
-            # 用户口头指定「使用 XX 技能」但未在输入框挂载时，按 name/id 自动解析并注入摘要。
-            if user_query:
-                try:
-                    from app.services.ai.skill_resolver import resolve_skills_from_query
-
-                    for skill_meta in resolve_skills_from_query(user_query):
-                        skill_id = skill_meta.get("id")
-                        if not skill_id or skill_id in mounted_skill_ids:
-                            continue
-                        skill_name = skill_meta.get("name") or skill_id
-                        description = skill_meta.get("description") or ""
-                        skills_injection.append(
-                            AgentServicePrompts.skill_summary_injection_block(
-                                skill_name, skill_id, description
-                            )
-                        )
-                        mounted_skill_ids.add(skill_id)
-                        logger.info("[Skills] Auto-resolved skill %s from query (summary only).", skill_id)
-                        yield {
-                            "type": "log",
-                            "id": f"skill_load_{skill_id}",
-                            "title": f"已匹配技能: {skill_name}",
-                            "details": (
-                                f"已从技能库匹配「{skill_name}」(ID: {skill_id})。"
-                                f"已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。"
-                            ),
-                            "status": "success",
-                        }
-                except Exception as resolve_err:
-                    logger.warning("[Skills] Failed to auto-resolve skills from query: %s", resolve_err)
-
-            # 挂载与口头解析均未命中时：主助手 (main) 按用户问题扫描技能库（关键词流程匹配）。
-            if user_query and not skills_injection:
-                try:
-                    from app.services.ai.skill_resolver import (
-                        is_main_general_agent,
-                        scan_relevant_skills,
-                        should_scan_skills_for_query,
-                    )
-                    from app.services.config_service import ConfigService
-
-                    if is_main_general_agent(agent_config):
-                        scan_enabled_raw = await ConfigService.get("skill_auto_scan_enabled", "true")
-                        scan_enabled = str(scan_enabled_raw or "true").strip().lower() in {
-                            "1", "true", "yes", "on",
-                        }
-                        if scan_enabled and should_scan_skills_for_query(user_query):
-                            min_score_raw = await ConfigService.get("skill_auto_scan_min_score", "0.45")
-                            try:
-                                min_score = float(min_score_raw) if min_score_raw is not None else 0.45
-                            except (TypeError, ValueError):
-                                min_score = 0.45
-                            max_results_raw = await ConfigService.get("skill_auto_scan_max_results", "1")
-                            try:
-                                max_scan_results = int(max_results_raw) if max_results_raw is not None else 1
-                            except (TypeError, ValueError):
-                                max_scan_results = 1
-                            max_scan_results = max(1, min(max_scan_results, 3))
-
-                            for skill_meta in scan_relevant_skills(
-                                user_query,
-                                exclude_ids=mounted_skill_ids,
-                                max_results=max_scan_results,
-                                min_score=min_score,
-                            ):
-                                skill_id = skill_meta.get("id")
-                                if not skill_id or skill_id in mounted_skill_ids:
-                                    continue
-                                skill_name = skill_meta.get("name") or skill_id
-                                description = skill_meta.get("description") or ""
-                                match_score = skill_meta.get("match_score")
-                                skills_injection.append(
-                                    AgentServicePrompts.skill_summary_injection_block(
-                                        skill_name, skill_id, description
-                                    )
-                                )
-                                mounted_skill_ids.add(skill_id)
-                                logger.info(
-                                    "[Skills] Scanned skill %s from query (score=%s, summary only).",
-                                    skill_id,
-                                    match_score,
-                                )
-                                score_hint = f"（相关度 {match_score}）" if match_score is not None else ""
-                                yield {
-                                    "type": "log",
-                                    "id": f"skill_scan_{skill_id}",
-                                    "title": f"已扫描匹配技能: {skill_name}",
-                                    "details": (
-                                        f"已根据本轮问题扫描技能库并匹配「{skill_name}」(ID: {skill_id}){score_hint}。"
-                                        f"已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。"
-                                    ),
-                                    "status": "success",
-                                }
-                except Exception as scan_err:
-                    logger.warning("[Skills] Failed to scan skills from query: %s", scan_err)
-
-            if skills_injection:
-                # 限制最大技能预载摘要数，防止 token 爆炸（Lost in the Middle 优化）
-                MAX_PRELOAD_SKILLS = 5
-                if len(skills_injection) > MAX_PRELOAD_SKILLS:
-                    logger.info(f"[Skills] Too many skills ({len(skills_injection)}), truncating to top {MAX_PRELOAD_SKILLS}")
-                    skills_injection = skills_injection[:MAX_PRELOAD_SKILLS]
-                    skills_injection.append(
-                        "=== [已截断] 系统中已挂载或解析出更多可用技能，出于上下文性能优化，其余技能摘要未全部载入。如有需要，模型应通过调用 list_available_skills 工具获取其余技能详细摘要 ==="
-                    )
-
-            # --- Global Skill Discovery Hint（已有挂载/解析技能时省略，减少 prompt 噪声）---
-            skills_already_loaded = bool(skills_injection) or bool(mounted_skill_ids)
-
-            # --- 按轮次类型裁剪上下文注入（与会话级 Turn 分类共用，不重复调意图 LLM）---
             from app.services.ai.turn_classifier import (
                 TurnType,
                 TurnClassification,
@@ -595,6 +770,7 @@ class AgentService:
                     can_do_data=False,
                 )
                 session_turn = (turn_classification, turn_intent_info, turn_intent_elapsed_ms)
+
             early_turn_type = turn_classification.turn_type
             if can_do_data and turn_classification.turn_type == TurnType.DATA_QUERY_REQUEST:
                 turn_display_label = "ChatBI 请求类别分析"
@@ -617,97 +793,13 @@ class AgentService:
                     trace_buffer=trace_buffer,
                 )
 
-            # --- Long-Term Memory (LTM) Injection ---
-            ltm_profile: Optional[str] = None
-            ltm_loaded_data: Optional[dict] = None
-            ignore_ltm = False
-            if debug_options and debug_options.get("ignore_ltm"):
-                ignore_ltm = True
-            if not ignore_ltm and should_inject_ltm(early_turn_type) and user_info:
-                u_id = user_info.get("user_id", user_info.get("id"))
-                if u_id:
-                    try:
-                        from app.services.ai.memory_service import ltm_service
-                        ltm_data = await asyncio.wait_for(ltm_service.fetch_memory(str(u_id)), timeout=0.2)
-                        if ltm_data:
-                            import json
-                            ltm_formatted = json.dumps(ltm_data, ensure_ascii=False, indent=2)
-                            ltm_profile = AgentServicePrompts.ltm_memory_profile(ltm_formatted)
-                            ltm_loaded_data = ltm_data
-                            logger.info(f"[LTM] Successfully loaded memory profile for user {u_id}")
-                    except Exception as ltm_err:
-                        logger.warning(f"[LTM] Failed to inject long-term memory for user {u_id}: {ltm_err}")
-
-            # --- Cross-session memory recall hint (memory_search tool) ---
-            memory_recall_hint: Optional[str] = None
-            if should_inject_memory_recall_hint(early_turn_type):
-                try:
-                    from app.services.memory_config_service import MemoryConfigService
-                    from app.services.ai.memory_recall_policy import CROSS_SESSION_MEMORY_SYSTEM_HINT
-
-                    if await MemoryConfigService.get_bool("memory_service_enabled", True):
-                        memory_recall_hint = CROSS_SESSION_MEMORY_SYSTEM_HINT
-                except Exception as mem_hint_err:
-                    logger.warning("[Memory] Failed to inject cross-session recall hint: %s", mem_hint_err)
-
-            # --- Dynamic Auto-Memory Ingest (Active Memory) ---
-            preloaded_memories_text: Optional[str] = None
-            if should_run_active_memory_preload(early_turn_type) and user_info and user_query:
-                u_id = user_info.get("user_id", user_info.get("id"))
-                if u_id:
-                    try:
-                        from app.services.memory_config_service import MemoryConfigService
-                        if await MemoryConfigService.get_bool("memory_service_enabled", True):
-                            from app.services.ai.tools.memory_search_tool import parse_date_from_query
-                            from app.services.ai.daily_summary_service import DailySummaryService
-                            from app.services.ai.memory_index_service import MemoryIndexService
-                            
-                            uid = str(u_id)
-                            target_day = parse_date_from_query(user_query)
-                            
-                            preloaded_memories = []
-                            
-                            # 1. 相对/绝对日期精确匹配
-                            if target_day:
-                                # a. 每日摘要
-                                d_summary = await DailySummaryService.get_daily_summary(uid, target_day)
-                                if d_summary:
-                                    preloaded_memories.append(
-                                        AgentServicePrompts.daily_summary_section(target_day, d_summary)
-                                    )
-                                # b. 当天发生的具体会话摘要
-                                d_sessions = await MemoryIndexService.list_session_summaries_for_day(uid, target_day)
-                                if d_sessions:
-                                    sess_lines = []
-                                    for idx, s in enumerate(d_sessions, 1):
-                                        sess_lines.append(
-                                            AgentServicePrompts.session_summary_line(idx, s)
-                                        )
-                                    preloaded_memories.append(
-                                        AgentServicePrompts.day_session_records(target_day, sess_lines)
-                                    )
-                            
-                            # 2. 模糊历史回忆意图匹配
-                            else:
-                                is_recall_intent = any(w in user_query for w in AgentServicePrompts.RECALL_INTENT_KEYWORDS)
-                                if is_recall_intent:
-                                    recent_sessions = await MemoryIndexService.list_summaries(uid, limit=3)
-                                    if recent_sessions:
-                                        sess_lines = []
-                                        for idx, s in enumerate(recent_sessions, 1):
-                                            sess_lines.append(
-                                                AgentServicePrompts.session_summary_line(idx, s)
-                                            )
-                                        preloaded_memories.append(
-                                            AgentServicePrompts.recent_sessions_section(sess_lines)
-                                        )
-                            
-                            # 3. 拼接注入 System Prompt 头部
-                            if preloaded_memories:
-                                preloaded_memories_text = AgentServicePrompts.preloaded_memories(preloaded_memories)
-                                logger.info(f"[ActiveMemory] Successfully preloaded memory context for user {u_id}")
-                    except Exception as recall_err:
-                        logger.warning(f"[ActiveMemory] Failed to preload memory context: {recall_err}", exc_info=True)
+            # 3. Load Memory Context
+            ltm_profile, ltm_loaded_data, memory_recall_hint, preloaded_memories_text = await self._load_memory_context(
+                user_info=user_info,
+                early_turn_type=early_turn_type,
+                debug_options=debug_options,
+                user_query=user_query,
+            )
 
             user_profile = None
             if user_info and should_inject_user_context(early_turn_type):
@@ -715,7 +807,6 @@ class AgentService:
                 user_profile = id_msg.get("content")
 
             from app.core.config import settings
-
             cache_boundary_enabled, cache_reorder_enabled = await resolve_prompt_assembler_flags()
             assembled_prompt = assemble_system_prompt(
                 PromptAssemblyInput(
@@ -723,7 +814,7 @@ class AgentService:
                     agent_config=agent_config,
                     engine_type=agent_config.engine_type or "LOCAL",
                     skills_injection=skills_injection,
-                    skills_already_loaded=skills_already_loaded,
+                    skills_already_loaded=bool(skills_injection),
                     skills_dir=settings.SKILLS_DIR,
                     ltm_profile=ltm_profile,
                     memory_recall_hint=memory_recall_hint,
@@ -745,7 +836,6 @@ class AgentService:
 
             # --- Debug Overrides ---
             if debug_options:
-                # 1. System Prompt Override
                 if debug_options.get("system_prompt_override"):
                     logger.info(f"[Debug] Overriding System Prompt for Trace {trace_id}")
                     agent_config.system_prompt = debug_options["system_prompt_override"]
@@ -757,21 +847,14 @@ class AgentService:
                         "isDebug": True
                     }
                 
-                # 2. Context Injection
                 if debug_options.get("injected_context"):
                     context_data = debug_options["injected_context"]
                     logger.info(f"[Debug] Injecting Context: {context_data}")
-                    
-                    # 1. Standard keys
                     ctx_lines = []
                     for k, v in context_data.items():
                         if k not in ["device_type", "display_hint"]:
                             ctx_lines.append(f"- **{k}**: {v}")
-                    
-                    # 2. Device & UI Optimization (Actionable Instructions)
                     device_type = context_data.get("device_type", "Unknown")
-                    display_hint = context_data.get("display_hint", "")
-                    
                     ui_instr = ""
                     if "移动端" in device_type or "小屏幕" in device_type:
                         ui_instr = AgentServicePrompts.MOBILE_UI_RULES
@@ -783,34 +866,24 @@ class AgentService:
                         "role": "system",
                         "content": AgentServicePrompts.session_runtime_context(context_str, device_type, ui_instr)
                     }
-                    # Insert after User Identity to allow debug context to potentially refine it
                     messages.insert(1, injection_msg)
 
-
-            # --- Raw Prompt Capture (Debug) ---
             if debug_options and debug_options.get("return_raw_prompt"):
                 raw_messages = []
-                # Reconstruct what would be sent to LLM (simplified approximation)
                 raw_messages.extend(messages)
-                
-                # Emit debug event
                 yield {
                     "type": "debug",
                     "subtype": "raw_prompt",
                     "data": raw_messages
                 }
 
-            # Emit Meta Event
             from app.services.config_service import ConfigService
             default_model = await ConfigService.get("llm_model_name") or "DeepSeek-V3.2"
-            
-            # Determine actual model to use
             actual_model = agent_config.model_name or default_model
             if debug_options and debug_options.get("model"):
                 actual_model = debug_options["model"]
                 logger.info(f"[Debug] Overriding Model to: {actual_model}")
 
-            # Update config for downstream use (important for Executors)
             agent_config.model_name = actual_model
 
             meta_event: Dict[str, Any] = {
@@ -836,11 +909,10 @@ class AgentService:
                     logger.warning("[AgentService] Failed to build rag_retrieval meta: %s", rag_meta_err)
             yield meta_event
 
-            # 3. Execution (Branch: Single vs Multi)
+            # 4. Dispatch Executor
             secondary_agents = getattr(route_details, "secondary_agents", []) if route_details else []
             
             if enable_multi_agent and secondary_agents:
-                # --- Multi-Agent Parallel Execution Mode ---
                 async for chunk in self._execute_multi_agent(
                     agent_config,
                     secondary_agents,
@@ -859,19 +931,17 @@ class AgentService:
                     full_response_content = _accumulate_stream_content(full_response_content, chunk)
                     yield chunk
             else:
-                # --- Standard Single Agent Mode ---
-                # Dispatch to Executor
-                executor = await AgentDispatcher.dispatch(
-                    agent_config,
-                    user_query,
-                    messages,
-                    trace_id,
-                    trace_buffer,
-                    debug_options,
-                    permission_options,
-                    user_info,
-                    conversation_id,
-                    shared_turn=session_turn,
+                executor = await self._dispatch_executor(
+                    agent_config=agent_config,
+                    user_query=user_query,
+                    messages=messages,
+                    trace_id=trace_id,
+                    trace_buffer=trace_buffer,
+                    debug_options=debug_options,
+                    permission_options=permission_options,
+                    user_info=user_info,
+                    conversation_id=conversation_id,
+                    session_turn=session_turn,
                     route_hints=route_hints,
                 )
                 
@@ -885,7 +955,6 @@ class AgentService:
                     "execution_time_ms": turn_intent_elapsed_ms,
                 }
 
-                # Execution
                 async for chunk in executor.execute(messages):
                     full_response_content = _accumulate_stream_content(full_response_content, chunk)
                     if chunk.get("type") == "permission_required":
@@ -900,7 +969,7 @@ class AgentService:
                 if callable(resolve_has_data_output):
                     has_data_output = bool(resolve_has_data_output())
 
-            # --- 空响应兜底：本轮成功但模型未产出任何可见文本时，发一条兜底话术，避免前端空白 ---
+            # --- Empty Response Fallback ---
             if (
                 execution_status == "success"
                 and not (full_response_content or "").strip()
@@ -910,7 +979,6 @@ class AgentService:
                     full_response_content = fallback_text
                     yield {"content": fallback_text, "status": "success"}
 
-            # 聚合本轮消耗的 Token 并 yield meta 给前端，同时传给 add_message
             p_tokens, c_tokens, t_tokens = 0, 0, 0
             try:
                 from app.services.ai.audit import aggregate_tokens_from_trace_buffer
@@ -929,10 +997,8 @@ class AgentService:
             if has_data_output and execution_status == "success":
                 yield {"type": "meta", "has_data_output": True}
 
-            # 5. Save Assistant Response to Memory
             if conversation_id and full_response_content:
                 u_id = user_info.get("user_id") if user_info else None
-                # 记录处理本轮的智能体 name(slug)，供下一轮路由做会话粘性
                 handled_by = getattr(agent_config, "agent_name", None) if agent_config else None
                 asyncio.create_task(memory_service.add_message(
                     u_id, 
@@ -962,7 +1028,6 @@ class AgentService:
             end_time = asyncio.get_running_loop().time()
             duration = (end_time - start_time) * 1000
             
-            # 6. Async Audit Logging & History
             if execution_status not in AWAITING_RESUME_STATUSES:
                 asyncio.create_task(AuditManager.log_transaction(
                      trace_id, agent_config, user_query, full_response_content,
@@ -984,6 +1049,7 @@ class AgentService:
                         str(u_id), conversation_id, full_response_content
                     )
                 )
+
 
 
     async def chat_completion(

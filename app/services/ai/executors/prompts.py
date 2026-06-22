@@ -17,6 +17,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.services.ai.time_anchor import build_data_query_time_anchor_block
+from app.services.ai.executors.dataset_navigation_prompts import DatasetNavigationPrompts
 
 
 class SharedPrompts:
@@ -125,6 +126,7 @@ class DataQueryPrompts:
 3. 你不能直接在单个 SQL 中跨数据集 Join。你必须为每个数据集编写一个独立的子查询（`<sub_query>`），将其结果存入一个内存临时表（`temp_table`）。
 4. 在 `<sub_query>` 的 SQL 中，必须只能使用该 `dataset_name` 对应的数据集下的物理表。
    禁止在子查询里通过 IN / EXISTS / JOIN 引用其他数据集的表（例如 HR_ds 子查询里写 `IN (SELECT ... FROM visit_view)` 且 visit_view 属于 crm_ds）；跨数据集过滤必须在 `<memory_join>` 对临时表完成。
+   ⚠️ 特别注意「想提早过滤大表」的场景：即使你担心某个数据集的表数据量很大，也 **严禁** 在该数据集的 `<sub_query>` 中写 `WHERE id IN (SELECT ... FROM 另一数据集的表)` 来提前过滤。正确做法是让该子查询全量返回（或按自身条件过滤），过滤关联逻辑统一放到 `<memory_join>` 的 JOIN / WHERE 条件中完成。
 5. 每个 `<sub_query>` 必须有 `dataset_name` 属性（填入对应的数据集名称）和 `temp_table` 属性（填入你为其命名的临时表，如 `t_energy`, `t_device` 等）。
 6. 在所有子查询执行完后，编写一个 `<memory_join>` 节点，在该节点中，编写一条标准 SQL (支持 DuckDB 语法) 来对所有的临时表进行关联、过滤、分组、聚合或排序计算，输出用户想要的结果。
 7. 子查询排序与粒度（重要，影响结果正确性）：
@@ -140,6 +142,41 @@ class DataQueryPrompts:
 9. 相对时间（上月/本月/今年/最近N天等）必须严格使用下方【当前时间锚点】换算出的 YYYY-MM-DD 起止日期写入各 `<sub_query>` 的 WHERE 条件，禁止臆测年份或月份。
 
 {build_data_query_time_anchor_block()}
+
+【🚨 高频错误：跨数据集过滤——正反例对比（必读！）】
+场景：查询跟进记录（CRM 数据集）并关联销售人员姓名（HR 数据集），且 HR 表数据量大，想只拉取有过跟进的人员。
+
+❌ 错误写法（会导致子查询报错，触发 repair，严禁使用）：
+在 HR 数据集的 <sub_query> 中，用 IN 引用了 CRM 数据集的表：
+  <sub_query dataset_name="HR_ds" temp_table="t_sales">
+    SELECT ID, LASTNAME FROM HRMRESOURCE
+    WHERE ID IN (SELECT DISTINCT FOLLOW_UP_PERSON FROM VIEW_AI_VISIT_LOG)
+    -- ❌ VIEW_AI_VISIT_LOG 属于 CRM 数据集，不属于 HR_ds，此处跨数据集引表！
+  </sub_query>
+
+✅ 正确写法（跨数据集的过滤关联统一在 <memory_join> 完成）：
+  <!-- 子查询 1：只在 CRM 数据集内查询 -->
+  <sub_query dataset_name="crm_ds" temp_table="t_visit_log">
+    <![CDATA[
+    SELECT ID, FOLLOW_UP_PERSON, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG
+    WHERE FOLLOW_UP_DATE >= '2026-06-01'
+    ]]>
+  </sub_query>
+  <!-- 子查询 2：只在 HR 数据集内查询，无需也不允许在此做跨库过滤 -->
+  <sub_query dataset_name="HR_ds" temp_table="t_sales">
+    <![CDATA[
+    SELECT ID, LOGINID, LASTNAME, FIRSTNAME FROM HRMRESOURCE
+    ]]>
+  </sub_query>
+  <!-- 关联过滤统一在内存 JOIN 阶段完成，INNER JOIN 会自动过滤掉无跟进记录的人员 -->
+  <memory_join>
+    <![CDATA[
+    SELECT v.ID, v.FOLLOW_UP_DATE, s.LASTNAME, s.FIRSTNAME
+    FROM t_visit_log v
+    INNER JOIN t_sales s ON v.FOLLOW_UP_PERSON = s.ID
+    ORDER BY v.FOLLOW_UP_DATE DESC
+    ]]>
+  </memory_join>
 
 【输出格式】
 只输出一个 `<multi_dataset_plan>` XML 区块，不要输出任何其他的解释文字、不要包裹 Markdown 标记之外的内容。
@@ -299,12 +336,8 @@ XML 示例：
 
     @staticmethod
     def _portal_time_recommendation_rules() -> str:
-        return (
-            f"{build_data_query_time_anchor_block()}\n\n"
-            "【相对时间推荐规则】\n"
-            "生成示例问题时，若使用「今天/昨天/本周/上周/本月/上月/最近7天/本季度」等相对时间表述，"
-            "必须与上方【当前时间锚点】中的具体日期或区间一致，并在问题中尽量写出明确日期范围。"
-        )
+        return DatasetNavigationPrompts._portal_time_recommendation_rules()
+
 
     # 复用上一轮结果时，用于替换 system_prompt 中的 {dataset_menu} 占位符
     REUSE_DATASET_MENU_PLACEHOLDER = "本轮复用上一轮结构化查询结果，不重新检索数据集。"
@@ -360,19 +393,12 @@ XML 示例：
     @staticmethod
     def quick_link_inline(label: str, target: str) -> str:
         """内联 quick 追问按钮（无列表前缀，可放入表格单元格、引用块等行内场景）。"""
-        target_val = target.strip()
-        if label.startswith("⚡") or target_val.startswith("/switch"):
-            clean_label = label.lstrip("⚡ ").strip()
-            return f"[⚡ {clean_label}](quick:{target_val})"
-        return f"[🙋 {label}](quick:{target_val})"
+        return DatasetNavigationPrompts.quick_link_inline(label, target)
 
     @staticmethod
     def quick_button(label: str, target: str) -> str:
-        target_val = target.strip()
-        if label.startswith("⚡") or target_val.startswith("/switch"):
-            clean_label = label.lstrip("⚡ ").strip()
-            return f"- [⚡ {clean_label}](quick:{target_val})"
-        return f"- [🙋 {label}](quick:{target_val})"
+        return DatasetNavigationPrompts.quick_button(label, target)
+
 
     @staticmethod
     def has_quick_suggestions(text: str) -> bool:
@@ -683,68 +709,20 @@ XML 示例：
 
     @staticmethod
     def _slugify_scene_id(text: str) -> str:
-        slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", str(text or "").strip()).strip("_")
-        return slug[:48] or "dataset_scene"
+        return DatasetNavigationPrompts._slugify_scene_id(text)
 
     @classmethod
     def _dataset_scene_title(cls, block: dict[str, Any]) -> str:
-        display_name = str(block.get("display_name") or "").strip()
-        name = str(block.get("name") or "").strip()
-        return display_name or name or "未命名数据集"
+        return DatasetNavigationPrompts._dataset_scene_title(block)
 
     @classmethod
     def _extract_dataset_tags(cls, block: dict[str, Any], *, max_tags: int = 4) -> list[str]:
-        tags: list[str] = []
-        seen: set[str] = set()
+        return DatasetNavigationPrompts._extract_dataset_tags(block, max_tags=max_tags)
 
-        def add(tag: str) -> None:
-            cleaned = str(tag or "").strip()
-            if not cleaned or cleaned in seen:
-                return
-            seen.add(cleaned)
-            tags.append(cleaned)
-
-        for metric in block.get("metrics") or []:
-            add(str(metric))
-            if len(tags) >= max_tags:
-                return tags[:max_tags]
-
-        for table in block.get("tables") or []:
-            add(str(table.get("term") or ""))
-            if len(tags) >= max_tags:
-                break
-
-        if not tags:
-            return ["明细查询", "统计汇总"]
-        return tags[:max_tags]
 
     @classmethod
     def _infer_dataset_scene(cls, block: dict[str, Any]) -> dict[str, Any]:
-        title = cls._dataset_scene_title(block)
-        description = str(block.get("description") or "").strip()
-        tables = [
-            str(t.get("term") or "").strip()
-            for t in block.get("tables") or []
-            if str(t.get("term") or "").strip()
-        ]
-        table_hint = "、".join(tables[:3]) if tables else "相关表"
-        generic_descriptions = {
-            "no description",
-            "imported via smart wizard",
-            "无",
-            "暂无描述",
-        }
-        if description and description.lower() not in generic_descriptions:
-            summary = f"适合围绕「{title}」查询与分析。{description}"
-        else:
-            summary = (
-                f"适合围绕「{title}」中的{table_hint}发起明细查询、统计汇总与趋势分析。"
-            )
-        return {
-            "title": title,
-            "summary": summary,
-            "tags": cls._extract_dataset_tags(block),
-        }
+        return DatasetNavigationPrompts._infer_dataset_scene(block)
 
     @classmethod
     def _question_templates_for_group(
@@ -754,188 +732,27 @@ XML 示例：
         tables: list[dict[str, Any]],
         metrics: list[str],
     ) -> list[dict[str, str]]:
-        table_terms = [str(t.get("term") or "").strip() for t in tables if str(t.get("term") or "").strip()]
-        primary = table_terms[0] if table_terms else scene_title
-        secondary = table_terms[1] if len(table_terms) > 1 else primary
-        questions: list[dict[str, str]] = [
-            {
-                "label": "查看概览",
-                "query": f"统计{primary}最近30天的数据概览和关键变化",
-                "type": "summary",
-            },
-            {
-                "label": "查询明细",
-                "query": f"查询{primary}最近10条明细记录",
-                "type": "detail",
-            },
-            {
-                "label": "趋势分析",
-                "query": f"分析{secondary}最近一个月的变化趋势",
-                "type": "trend",
-            },
-        ]
-        if metrics:
-            metric = str(metrics[0]).strip()
-            if metric:
-                questions.append(
-                    {
-                        "label": "指标趋势",
-                        "query": f"查询{scene_title}最近6个月的{metric}趋势",
-                        "type": "metric",
-                    }
-                )
-        return questions
+        return DatasetNavigationPrompts._question_templates_for_group(
+            scene_title=scene_title,
+            tables=tables,
+            metrics=metrics,
+        )
+
 
     @classmethod
     def build_dataset_navigation_groups(cls, dataset_menu: str) -> list[dict[str, Any]]:
-        """每个授权数据集生成一张独立场景卡片，标题与标签来自数据集元数据。"""
-        groups: list[dict[str, Any]] = []
+        return DatasetNavigationPrompts.build_dataset_navigation_groups(dataset_menu)
 
-        for block in cls._parse_dataset_blocks(dataset_menu):
-            scene = cls._infer_dataset_scene(block)
-            name = str(block.get("name") or "").strip()
-            display_name = str(block.get("display_name") or "").strip() or name or "未命名数据集"
-            scene_title = scene["title"]
-            tables = [t for t in (block.get("tables") or []) if str(t.get("term") or "").strip()]
-            metrics = [str(m).strip() for m in (block.get("metrics") or []) if str(m).strip()]
-
-            table_terms: list[str] = []
-            table_descriptions: list[dict[str, str]] = []
-            for table in tables:
-                term = str(table.get("term") or "").strip()
-                table_terms.append(term)
-                table_descriptions.append(
-                    {
-                        "name": term,
-                        "description": str(table.get("desc") or "").strip(),
-                    }
-                )
-
-            groups.append(
-                {
-                    "id": cls._slugify_scene_id(name or display_name),
-                    "title": scene_title,
-                    "summary": scene["summary"],
-                    "tags": scene["tags"],
-                    "metrics": metrics,
-                    "questions": cls._question_templates_for_group(
-                        scene_title=scene_title,
-                        tables=tables,
-                        metrics=metrics,
-                    ),
-                    "related_data": [
-                        {
-                            "dataset": name,
-                            "display_name": display_name,
-                            "tables": table_terms,
-                            "table_descriptions": table_descriptions,
-                        }
-                    ],
-                    "followups": [
-                        {
-                            "label": "更多问题",
-                            "query": f"围绕「{scene_title}」，推荐我还能问哪些数据问题",
-                        },
-                        {
-                            "label": "字段说明",
-                            "query": f"说明「{scene_title}」里有哪些可查询字段和适合的分析口径",
-                        },
-                    ],
-                }
-            )
-        return groups
 
     @classmethod
     def _render_group_fallback_section(cls, group: dict[str, Any]) -> list[str]:
-        """单个业务场景卡片：标题 + 示例问题 + 相关数据 + 继续追问。"""
-        lines: list[str] = [f"#### {group['title']}"]
-        lines.append(f"> {group['summary']}")
-        if group.get("tags"):
-            lines.append("> 标签：" + "、".join(group["tags"]))
-        lines.append("")
-        lines.append("**你可以这样问：**")
-        for question in group.get("questions") or []:
-            lines.append(cls.quick_button(question.get("label") or "提问", question.get("query") or ""))
-        lines.append("")
-        lines.append("**相关数据：**")
-        related_items = group.get("related_data") or []
-        if not related_items:
-            lines.append("- 暂无表信息")
-        for related in related_items:
-            related_name = related.get("display_name") or related.get("dataset") or "相关数据"
-            dataset_name = related.get("dataset") or ""
-            related_title = (
-                f"{related_name} ({dataset_name})"
-                if dataset_name and dataset_name != related_name
-                else related_name
-            )
-            lines.append(f"- {related_title}")
-            for table in related.get("table_descriptions") or []:
-                desc = str(table.get("description") or "").strip()
-                suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
-                lines.append(f"  - {table.get('name')}{suffix}")
-            if not related.get("tables"):
-                lines.append("  - 暂无表信息")
-        lines.append("")
-        lines.append("**继续追问：**")
-        for followup in group.get("followups") or []:
-            lines.append(cls.quick_button(followup.get("label") or "继续追问", followup.get("query") or ""))
-        return lines
+        return DatasetNavigationPrompts._render_group_fallback_section(group)
+
 
     @classmethod
     def build_dataset_navigation_fallback(cls, dataset_menu: str) -> str:
-        menu = str(dataset_menu or "").strip()
-        if not menu or "No authorized datasets" in menu:
-            return (
-                "### 📚 我的数据门户\n"
-                "---\n"
-                "> 当前账号暂无可查询的数据集。请联系管理员开通数据权限后，再使用 `{DATASET_PORTAL_SLASH_COMMAND}` 查看导航。\n\n"
-                "### 💬 您可能还想了解\n"
-                "---\n"
-                f"{cls.quick_button('重新查看数据门户', DATASET_PORTAL_SLASH_COMMAND)}\n"
-            )
+        return DatasetNavigationPrompts.build_dataset_navigation_fallback(dataset_menu)
 
-        blocks = cls._parse_dataset_blocks(menu)
-        if blocks:
-            groups = cls.build_dataset_navigation_groups(menu)
-            scene_titles = "、".join(group.get("title", "") for group in groups[:4] if group.get("title"))
-            lines = [
-                "### 📚 我的数据门户",
-                "---",
-                f"> 您当前可访问 **{len(blocks)}** 个数据集，已整理为业务场景卡片。"
-                + (f"主要覆盖：{scene_titles}。" if scene_titles else ""),
-                "",
-            ]
-            for group in groups:
-                lines.extend(cls._render_group_fallback_section(group))
-                lines.append("")
-
-            lines.extend(
-                [
-                    "### 💬 您可能还想了解",
-                    "---",
-                    cls.quick_button("重新查看数据门户", DATASET_PORTAL_SLASH_COMMAND),
-                    "",
-                ]
-            )
-            return "\n".join(lines).strip() + "\n"
-
-        body = menu
-        if len(body) > 2400:
-            body = body[:2400] + "\n... [目录过长已截断]"
-
-        return (
-            "### 📚 我的数据门户\n"
-            "---\n"
-            "暂时无法自动生成导航建议，以下为当前账号可访问的数据集目录（与 ChatBI 一致）：\n\n"
-            "```\n"
-            f"{body}\n"
-            "```\n\n"
-            "您可以直接用自然语言提问，或点击下方按钮重试。\n\n"
-            "### 💬 您可能还想了解\n"
-            "---\n"
-            f"{cls.quick_button('重新查看数据门户', DATASET_PORTAL_SLASH_COMMAND)}\n"
-        )
 
     @staticmethod
     def _sanitize_reasoning_for_user(reasoning: str) -> str:

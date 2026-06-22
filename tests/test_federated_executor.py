@@ -14,6 +14,23 @@ from app.core.context import AgentContext, agent_context, set_agent_context
 pytestmark = pytest.mark.no_infrastructure
 
 
+@pytest.fixture(autouse=True)
+def mock_search_datasets_globally(monkeypatch):
+    async def fake_search_datasets(*args, **kwargs):
+        return []
+    async def fake_load_column_term_map(*args, **kwargs):
+        return {}
+    monkeypatch.setattr(
+        "app.services.metadata_service.MetadataService.search_datasets",
+        fake_search_datasets
+    )
+    monkeypatch.setattr(
+        "app.services.ai.executors.federated_executor.load_column_term_map_for_datasets",
+        fake_load_column_term_map
+    )
+
+
+
 def test_parse_federated_plan_robustness():
     # 构造一个测试执行器
     runner = MagicMock()
@@ -443,7 +460,7 @@ WHERE FOLLOW_UP_DATE >= DATE '2026-05-01'
          patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
          patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
          patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
-         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[sql_error, repaired_result])):
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[sql_error, "[TOOL_ERROR] explain error", repaired_result])):
         mock_session_cls.return_value.__aenter__.return_value = MagicMock()
 
         chunks = []
@@ -680,7 +697,7 @@ async def test_federated_executor_repairs_failed_secondary_subquery_before_degra
 
     # repair 轮的 user_ds 子查询 SQL 与首轮完全一致，会命中子查询结果缓存而不再重跑，
     # 因此 execute_sql_query_core 只会被调用 3 次：user_ok -> hr_fail -> (repair) hr_ok。
-    sql_exec_mock = AsyncMock(side_effect=[user_result, hr_error, hr_result])
+    sql_exec_mock = AsyncMock(side_effect=[user_result, hr_error, "[TOOL_ERROR] explain error", hr_result])
     with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
          patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
          patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
@@ -694,7 +711,7 @@ async def test_federated_executor_repairs_failed_secondary_subquery_before_degra
         async for chunk in FederatedQueryExecutor(runner, "", ["user_ds", "hr_ds"]).execute([], "", "test"):
             chunks.append(chunk)
 
-    assert sql_exec_mock.await_count == 3
+    assert sql_exec_mock.await_count == 4
     assert mock_llm_client.generate_text.await_count == 2
     assert any(chunk.get("title") == "修复联邦子查询 SQL" for chunk in chunks)
     assert not any("已自动降级" in str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
@@ -837,7 +854,7 @@ async def test_federated_executor_repairs_performance_blocked_secondary_query():
          patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
          patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
          patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
-         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, performance_error, hr_result])):
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, performance_error, "[TOOL_ERROR] explain error", hr_result])):
         mock_session_cls.return_value.__aenter__.return_value = MagicMock()
 
         chunks = []
@@ -1099,7 +1116,7 @@ async def test_federated_executor_repairs_subquery_time_range_mismatch_before_ex
         async for chunk in FederatedQueryExecutor(runner, "", ["crm_ds"]).execute([], "", user_question):
             chunks.append(chunk)
 
-    assert execute_mock.await_count == 1
+    assert execute_mock.await_count == 2
     assert mock_llm_client.generate_text.await_count == 2
     assert any(chunk.get("title") == "修复联邦子查询 SQL" for chunk in chunks)
     assert "上月拜访记录查询完成" in "".join(chunk.get("content") or "" for chunk in chunks)

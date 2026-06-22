@@ -206,6 +206,9 @@ class DatasetNavigationPrompts:
             if len(tags) >= max_tags:
                 return tags[:max_tags]
 
+        if tags:
+            return tags[:max_tags]
+
         for table in block.get("tables") or []:
             add(str(table.get("term") or ""))
             if len(tags) >= max_tags:
@@ -354,25 +357,28 @@ class DatasetNavigationPrompts:
         for question in group.get("questions") or []:
             lines.append(cls.quick_button(question.get("label") or "提问", question.get("query") or ""))
         lines.append("")
-        lines.append("**相关数据：**")
         related_items = group.get("related_data") or []
         if not related_items:
-            lines.append("- 暂无表信息")
-        for related in related_items:
-            related_name = related.get("display_name") or related.get("dataset") or "相关数据"
-            dataset_name = related.get("dataset") or ""
-            related_title = (
-                f"{related_name} ({dataset_name})"
-                if dataset_name and dataset_name != related_name
-                else related_name
-            )
-            lines.append(f"- {related_title}")
-            for table in related.get("table_descriptions") or []:
-                desc = str(table.get("description") or "").strip()
-                suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
-                lines.append(f"  - {table.get('name')}{suffix}")
-            if not related.get("tables"):
-                lines.append("  - 暂无表信息")
+            lines.append("**相关数据：** 暂无表信息")
+        else:
+            for idx, related in enumerate(related_items):
+                related_name = related.get("display_name") or related.get("dataset") or "相关数据"
+                dataset_name = related.get("dataset") or ""
+                related_title = (
+                    f"{related_name} ({dataset_name})"
+                    if dataset_name and dataset_name != related_name
+                    else related_name
+                )
+                if idx == 0:
+                    lines.append(f"**相关数据：** {related_title}")
+                else:
+                    lines.append(f"- {related_title}")
+                for table in related.get("table_descriptions") or []:
+                    desc = str(table.get("description") or "").strip()
+                    suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
+                    lines.append(f"  - {table.get('name')}{suffix}")
+                if not related.get("tables"):
+                    lines.append("  - 暂无表信息")
         lines.append("")
         lines.append("**继续追问：**")
         for followup in group.get("followups") or []:
@@ -414,6 +420,7 @@ class DatasetNavigationPrompts:
                     cls.quick_button("重新查看数据门户", DATASET_PORTAL_SLASH_COMMAND),
                 ]
             )
+            return "\n".join(lines)
         body = menu
         if len(body) > 2400:
             body = body[:2400] + "\n... [目录过长已截断]"

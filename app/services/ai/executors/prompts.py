@@ -17,6 +17,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.services.ai.time_anchor import build_data_query_time_anchor_block
+from app.services.ai.executors.dataset_navigation_prompts import DatasetNavigationPrompts
 
 
 class SharedPrompts:

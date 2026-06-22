@@ -962,6 +962,14 @@ class DataAgentRunner(BaseExecutor):
         sql_for_preflight = self._mask_sql_literals_and_comments(sql)
         alias_to_table: dict[str, str] = {}
         table_displays: dict[str, str] = {}
+        cte_names = {
+            self._normalize_sql_identifier(item)
+            for item in re.findall(
+                r"(?:\bwith\b|,)\s*([A-Za-z_][\w$]*)\s+as\s*\(",
+                sql_for_preflight,
+                flags=re.IGNORECASE,
+            )
+        }
         table_pattern = re.compile(
             r"\b(?:from|join)\s+([A-Za-z_][\w.$]*)(?:\s+(?:as\s+)?([A-Za-z_][\w$]*))?",
             flags=re.IGNORECASE,
@@ -975,10 +983,19 @@ class DataAgentRunner(BaseExecutor):
             alias = match.group(2) or table
             alias_norm = self._normalize_sql_identifier(alias)
             table_norm = self._normalize_sql_identifier(table)
+            if table_norm in cte_names:
+                continue
             if alias_norm in reserved_aliases:
                 alias_norm = table_norm
             if table_norm not in schema_table_columns:
-                continue
+                available_tables = ", ".join(sorted(schema_table_columns.keys())[:40])
+                return (
+                    "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
+                    f"表 {table} 不在 get_dataset_schema 返回的表列表中。"
+                    f"当前可用表：{available_tables}。"
+                    "请先重新调用 get_dataset_schema 核对物理 table_name，"
+                    "禁止根据 DataQueryIntentFrame、业务术语或中文含义凭空猜测表名。"
+                )
             alias_to_table[alias_norm] = table_norm
             alias_to_table[table_norm] = table_norm
             table_displays[table_norm] = table

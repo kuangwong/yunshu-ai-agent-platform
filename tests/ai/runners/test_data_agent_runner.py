@@ -3221,6 +3221,45 @@ async def test_sql_preflight_blocks_unknown_alias_column_before_execution(data_c
 
 
 @pytest.mark.asyncio
+async def test_sql_preflight_blocks_table_not_returned_by_schema_before_execution(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return "should not run"
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-preflight-table", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    runner._apply_schema_tool_result(
+        state,
+        "table_name: memory_service_configs\ncolumns: id, service_name, status",
+    )
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({
+        "sql": "SELECT id, name FROM facility_management ORDER BY id",
+    })
+
+    assert invoked is False
+    assert str(result).startswith("[TOOL_ERROR] SQL 预检失败")
+    assert "facility_management" in str(result)
+    assert "不在 get_dataset_schema 返回的表列表中" in str(result)
+    assert "memory_service_configs" in str(result)
+
+
+@pytest.mark.asyncio
 async def test_sql_preflight_allows_known_alias_columns(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
@@ -3250,6 +3289,45 @@ async def test_sql_preflight_allows_known_alias_columns(data_config):
     wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
     result = await wrapped.invoke({
         "sql": "SELECT r.SUPDEPID FROM HRMRESOURCE r WHERE r.BELONGTO = 1",
+    })
+
+    assert invoked is True
+    assert str(result).startswith('{"columns"')
+
+
+@pytest.mark.asyncio
+async def test_sql_preflight_allows_cte_names_when_physical_tables_are_in_schema(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return '{"columns": [{"name": "SUPDEPID"}], "items": [[1]]}'
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-preflight-cte", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    runner._apply_schema_tool_result(
+        state,
+        "table_name: HRMRESOURCE\ncolumns:\n- name: SUPDEPID\n- name: BELONGTO\n",
+    )
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({
+        "sql": (
+            "WITH recent AS (SELECT SUPDEPID, BELONGTO FROM HRMRESOURCE) "
+            "SELECT recent.SUPDEPID FROM recent"
+        ),
     })
 
     assert invoked is True

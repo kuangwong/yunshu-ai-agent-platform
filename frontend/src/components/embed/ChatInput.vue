@@ -364,6 +364,94 @@ const approvalMenuPosition = reactive({
 
 const isMobileViewport = computed(() => props.windowWidth < 640);
 
+const shortcutRowRef = ref<HTMLElement | null>(null);
+const shortcutMeasureRef = ref<HTMLElement | null>(null);
+const visibleSystemCount = ref(Number.POSITIVE_INFINITY);
+const visibleUserCount = ref(Number.POSITIVE_INFINITY);
+let shortcutResizeObserver: ResizeObserver | null = null;
+
+const visibleRowSystemCommands = computed(() =>
+  filteredSystemCommands.value.slice(0, visibleSystemCount.value),
+);
+const visibleRowUserCommands = computed(() =>
+  filteredUserCommands.value.slice(0, visibleUserCount.value),
+);
+const hasHiddenShortcuts = computed(
+  () =>
+    visibleSystemCount.value < filteredSystemCommands.value.length
+    || visibleUserCount.value < filteredUserCommands.value.length,
+);
+const showShortcutDivider = computed(
+  () =>
+    visibleRowSystemCommands.value.length > 0
+    && visibleRowUserCommands.value.length > 0,
+);
+
+const recalcVisibleShortcuts = async () => {
+  await nextTick();
+  const row = shortcutRowRef.value;
+  const measure = shortcutMeasureRef.value;
+  if (!row || !measure) {
+    visibleSystemCount.value = filteredSystemCommands.value.length;
+    visibleUserCount.value = filteredUserCommands.value.length;
+    return;
+  }
+
+  const moreBtn = row.querySelector("[data-shortcut-more]") as HTMLElement | null;
+  const gap = 8;
+  const dividerWidth = 13;
+  let available = row.clientWidth - ((moreBtn?.offsetWidth ?? 0) + gap);
+
+  const sysButtons = Array.from(
+    measure.querySelectorAll<HTMLElement>("[data-measure-sys]"),
+  );
+  const userButtons = Array.from(
+    measure.querySelectorAll<HTMLElement>("[data-measure-user]"),
+  );
+
+  let sysCount = 0;
+  for (const btn of sysButtons) {
+    const need = btn.offsetWidth + (sysCount > 0 ? gap : 0);
+    if (available < need) break;
+    available -= need;
+    sysCount += 1;
+  }
+
+  let userCount = 0;
+  if (userButtons.length > 0 && sysCount > 0 && available >= dividerWidth) {
+    available -= dividerWidth;
+  }
+
+  for (const btn of userButtons) {
+    const need = btn.offsetWidth + (userCount > 0 ? gap : 0);
+    if (available < need) break;
+    available -= need;
+    userCount += 1;
+  }
+
+  visibleSystemCount.value = sysCount;
+  visibleUserCount.value = userCount;
+};
+
+const setupShortcutResizeObserver = () => {
+  shortcutResizeObserver?.disconnect();
+  if (!shortcutRowRef.value) return;
+  shortcutResizeObserver = new ResizeObserver(() => {
+    void recalcVisibleShortcuts();
+  });
+  shortcutResizeObserver.observe(shortcutRowRef.value);
+};
+
+watch(
+  [showShortcutBar, filteredSystemCommands, filteredUserCommands, () => props.windowWidth],
+  async () => {
+    if (!showShortcutBar.value) return;
+    await recalcVisibleShortcuts();
+    setupShortcutResizeObserver();
+  },
+  { deep: true, immediate: true },
+);
+
 const updateApprovalMenuPosition = () => {
   const el = approvalTriggerRef.value;
   if (!el) return;
@@ -422,6 +510,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown);
   window.removeEventListener('resize', handleApprovalMenuLayout);
   window.removeEventListener('scroll', handleApprovalMenuLayout, true);
+  shortcutResizeObserver?.disconnect();
 });
 const showPlusMenu = ref(false);
 const isUploading = ref(false);
@@ -598,19 +687,53 @@ defineExpose({
 
             <!-- 2. Middle Content -->
             <div class="flex-1 min-w-0 relative">
+                <div
+                    ref="shortcutMeasureRef"
+                    class="absolute left-0 top-0 -z-10 h-0 overflow-hidden opacity-0 pointer-events-none"
+                    aria-hidden="true"
+                >
+                    <div class="flex items-center gap-2">
+                        <button
+                            v-for="cmd in filteredSystemCommands"
+                            :key="'measure-sys-' + cmd.id"
+                            data-measure-sys
+                            type="button"
+                            class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 rounded-full whitespace-nowrap flex-shrink-0"
+                        >{{ cmd.label }}</button>
+                        <button
+                            v-for="cmd in filteredUserCommands"
+                            :key="'measure-user-' + cmd.id"
+                            data-measure-user
+                            type="button"
+                            class="px-2.5 py-1 text-[10px] font-bold bg-blue-50 border border-blue-100/50 rounded-full whitespace-nowrap flex-shrink-0"
+                        >{{ cmd.label }}</button>
+                    </div>
+                </div>
                 <transition enter-active-class="transition-all duration-300 ease-out" enter-from-class="opacity-0 -translate-y-2" enter-to-class="opacity-100 translate-y-0" leave-active-class="transition-all duration-200 ease-in" leave-to-class="opacity-0 -translate-y-2">
                     <div class="w-full">
-                        <div v-if="!isDrawerExpanded" class="flex items-center space-x-2">
-                            <div class="flex flex-1 items-center space-x-2 overflow-x-auto no-scrollbar scroll-smooth pr-12">
-                                <template v-for="cmd in filteredSystemCommands" :key="'row-sys-'+cmd.id">
-                                    <button @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-full whitespace-nowrap hover:bg-gray-200 transition-colors">{{ cmd.label }}</button>
-                                </template>
-                                <div class="w-px h-3 bg-gray-200 dark:bg-gray-700 flex-shrink-0"></div>
-                                <template v-for="cmd in filteredUserCommands" :key="'row-user-'+cmd.id">
-                                    <button @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border border-blue-100/50 dark:border-blue-800 rounded-full whitespace-nowrap hover:bg-blue-100 transition-colors">{{ cmd.label }}</button>
-                                </template>
+                        <div v-if="!isDrawerExpanded" ref="shortcutRowRef" class="flex flex-1 min-w-0 items-center gap-2">
+                            <div class="relative flex-1 min-w-0 overflow-hidden">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <template v-for="cmd in visibleRowSystemCommands" :key="'row-sys-'+cmd.id">
+                                        <button @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-full whitespace-nowrap hover:bg-gray-200 transition-colors flex-shrink-0">{{ cmd.label }}</button>
+                                    </template>
+                                    <div v-if="showShortcutDivider" class="w-px h-3 bg-gray-200 dark:bg-gray-700 flex-shrink-0"></div>
+                                    <template v-for="cmd in visibleRowUserCommands" :key="'row-user-'+cmd.id">
+                                        <button @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border border-blue-100/50 dark:border-blue-800 rounded-full whitespace-nowrap hover:bg-blue-100 transition-colors flex-shrink-0">{{ cmd.label }}</button>
+                                    </template>
+                                </div>
+                                <div
+                                    v-if="hasHiddenShortcuts"
+                                    class="absolute right-0 top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-l from-white via-white/90 to-transparent dark:from-gray-900 dark:via-gray-900/90"
+                                    aria-hidden="true"
+                                />
                             </div>
-                            <button @click="openCommandDrawer" class="absolute right-0 top-0 bottom-0 bg-gradient-to-l from-white via-white dark:from-gray-900 dark:via-gray-900 pl-6 pr-1 flex items-center text-[10px] font-black text-primary hover:opacity-80 transition-all z-10">
+                            <button
+                                data-shortcut-more
+                                type="button"
+                                @click="openCommandDrawer"
+                                class="flex-shrink-0 inline-flex items-center text-[10px] font-black text-primary hover:opacity-80 transition-all whitespace-nowrap"
+                            >
                                 更多 <svg class="w-3 h-3 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7" /></svg>
                             </button>
                         </div>

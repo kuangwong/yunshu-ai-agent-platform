@@ -2,7 +2,11 @@ from typing import List, Dict, Any
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-from app.core.v1_api_access import build_api_resource_id
+from app.core.v1_api_access import (
+    ASSIGNABLE_V1_API_RESOURCES,
+    build_api_resource_id,
+    is_assignable_v1_api_path,
+)
 
 class ApiDiscoveryService:
     @staticmethod
@@ -51,3 +55,14 @@ class ApiDiscoveryService:
                     })
                     
         return resources
+
+    @staticmethod
+    def get_assignable_v1_api_resources(app: FastAPI) -> List[Dict[str, Any]]:
+        """Return permission-assignable V1 APIs; fall back to static list if route scan is empty."""
+        discovered = [
+            api for api in ApiDiscoveryService.get_v1_api_resources(app)
+            if is_assignable_v1_api_path(api["path"])
+        ]
+        if discovered:
+            return discovered
+        return [dict(item) for item in ASSIGNABLE_V1_API_RESOURCES]

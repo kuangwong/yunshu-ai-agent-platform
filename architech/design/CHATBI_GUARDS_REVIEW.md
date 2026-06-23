@@ -1,6 +1,6 @@
 # ChatBI 门禁（Guards）完整性分析
 
-> 基于 `data_agent_runner.py` + `executors/prompts.py` + `CHAT_BI_DESIGN.md` 整理
+> 基于 `app/services/ai/runners/chatbi/` 域模块 + `data_agent_runner.py`（薄编排）+ `executors/prompts.py` + `CHAT_BI_DESIGN.md` 整理
 
 ---
 
@@ -68,7 +68,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `execute()` 复用分支；`_synthesize_from_last_data_result` |
+| 实现位置 | `turn_handlers.dispatch_early_turn`；`synthesis.synthesize_from_last_data_result` |
 | 触发条件 | `turn_type == REUSE_PREVIOUS_RESULT` |
 | 无历史结果时 | 返回错误 log + `NO_REUSABLE_RESULT` 提示，直接 return |
 | 有历史结果时 | 跳过 Schema/SQL，进入 `_synthesize_from_last_data_result` |
@@ -79,7 +79,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `_auto_invoke_get_dataset_schema()` + `_is_schema_fatal()` |
+| 实现位置 | `schema_prefetch.auto_invoke_get_dataset_schema`；`schema_fatal.is_schema_fatal`；`react_stream.yield_schema_fatal_abort` |
 | 触发条件 | 新查数路径下平台自动调用 `get_dataset_schema` |
 | 三种硬终止 | ① `schema_service_unavailable`（RAGFlow 不可用）<br>② `no_authorized_schema`（无授权数据集）<br>③ `rag_not_synced`（已授权但未同步 RAG） |
 | 后续动作 | 立即调用 `_yield_schema_fatal_abort`，不进入 ReAct |
@@ -90,7 +90,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_wrap_tools_with_schema_gate()` |
+| 实现位置 | `tool_gate_wrapper.wrap_tools_with_schema_gate` |
 | 触发条件 | 模型调用 `execute_sql_query` 但 `schema_completed=False` |
 | 返回内容 | `SCHEMA_GATE_PREFIX` 错误字符串，SQL 不实际执行 |
 | 作用 | 在工具函数层面强制顺序：Schema → SQL |
@@ -101,7 +101,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_wrap_tools_with_schema_gate()`（与 G3 同包装器） |
+| 实现位置 | `tool_gate_wrapper.wrap_tools_with_schema_gate`（与 G3 同包装器） |
 | 触发条件 | 模型在同一轮 ReAct 中提交了已成功执行过的相同 SQL |
 | 返回内容 | `SQL_REPEAT_GATE_PREFIX` + 缓存结果注入 |
 | 作用 | 防止重复查询、Token 浪费和幻觉循环 |
@@ -112,7 +112,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `on_text_block_delta()`、`_emit_final_guard()` |
+| 实现位置 | `react_stream.stream_agentscope_events`（含 `on_text_block_delta`）；`react_stream.emit_final_guard` |
 | 触发条件 | `state.ready_to_answer == False` 时模型输出文字 |
 | 实现方式 | 把 delta 存入 `blocked_content`，不 yield 给用户 |
 | 最终兜底 | 整个 ReAct 结束后 `_emit_final_guard` 输出拦截提示 |
@@ -124,7 +124,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_is_sql_plan_enabled()`、`_should_require_sql_plan()`、`on_text_block_delta` |
+| 实现位置 | `sql_gates.should_require_sql_plan`；`repair_policy`；`react_stream` |
 | 开关 | `debug_options.enable_sql_plan`（Embed / 调试页 `enableSqlPlan`；默认关闭时 G6/G11 不生效） |
 | 触发条件 | 开关开启 **且** 新查数路径 **且** 问题含高风险关键词（率/占比/同比/趋势/Top/JOIN/分组等，见 `_should_require_sql_plan`） |
 | 要求 | 执行 SQL 前须在模型输出中给出 `<sql_plan>{...JSON...}</sql_plan>`（前端 `MessageRenderer` + `SqlPlanCard` 可结构化展示） |
@@ -138,7 +138,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
+| 实现位置 | `repair_policy.build_repair_message`（G7–G11 共用） |
 | 触发条件 | `sql_before_schema=True`（SQL 在 Schema 之前被触发） |
 | 修复动作 | 注入强约束提示 + `ToolChoice(mode="get_dataset_schema")` 强制首选 |
 
@@ -148,7 +148,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
+| 实现位置 | `repair_policy.build_repair_message`（G7–G11 共用） |
 | 触发条件 | `schema_miss=True` 且非无授权 |
 | 修复动作 | 要求换更宽泛关键词重试 + `ToolChoice(mode="get_dataset_schema")` |
 
@@ -158,7 +158,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
+| 实现位置 | `repair_policy.build_repair_message`（G7–G11 共用） |
 | 触发条件 | `sql_error=True` |
 | 修复动作 | 注入错误信息 + `ToolChoice(mode="required")` 强制调用工具 |
 | 致命错误 | `sql_fatal_error=True`（权限拒绝/表不存在）→ 直接终止，不进修复轮 |
@@ -169,10 +169,10 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
+| 实现位置 | `repair_policy.build_repair_message`（G7–G11 共用） |
 | 触发条件 | `empty_sql_result=True` |
 | 修复动作 | 要求先用诊断 SQL 复查筛选条件/JOIN/CTE |
-| 诊断 SQL 识别 | `_is_diagnostic_sql()` 识别 SHOW/DISTINCT LIMIT/COUNT without GROUP/LIMIT<=10 |
+| 诊断 SQL 识别 | `sql_gates.is_diagnostic_sql` |
 
 ---
 
@@ -180,7 +180,7 @@
 
 | 属性 | 内容 |
 |------|------|
-| 实现位置 | `data_agent_runner.py` — `_build_repair_message()` |
+| 实现位置 | `repair_policy.build_repair_message`（G7–G11 共用） |
 | 触发条件 | `sql_plan_missing=True`（高风险查询未提供计划） |
 | 修复动作 | 要求补充 `<sql_plan>` 再执行 SQL，tool_choice=None（让模型自由输出计划） |
 

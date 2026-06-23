@@ -518,9 +518,10 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | 文件 | 职责 |
 |------|------|
 | `app/services/ai/executors/data_executor.py` | 薄封装 |
-| `app/services/ai/runners/data_agent_runner.py` | ChatBI 守卫（结构化业务意图帧、schema 前置、SQL 修复、复用上一轮结果） |
+| `app/services/ai/runners/data_agent_runner.py` | ChatBI 薄编排（`_execute_raw`、Runner 门面） |
+| `app/services/ai/runners/chatbi/` | ChatBI 域模块（守卫、ReAct、Schema 预取等，见 `README.md`） |
 
-在 AgentScope ReAct 之上叠加 `_DataRunState` 护栏；新查数会先生成 `DataQueryIntentFrame`，用于 Schema keywords 派生、字段绑定自检、空结果语义修复，并通过“用户需求分析”trace 卡片展示；事件映射与 Assistant 共用 `event_stream.py`。
+在 AgentScope ReAct 之上叠加 `DataRunState`（`chatbi/run_state.py`）护栏；守卫逻辑分布在 `app/services/ai/runners/chatbi/` 各域模块，Runner 负责编排与向后兼容门面。新查数会先生成 `DataQueryIntentFrame`（`schema_prefetch`），用于 Schema keywords 派生、字段绑定自检、空结果语义修复，并通过“用户需求分析”trace 卡片展示；ReAct 主循环与修复轮在 `native_turn`，事件映射在 `react_stream`。
 
 ChatBI 流式正文中的 `<sql_plan>{...}</sql_plan>` 由前端 `MessageRenderer.vue` + `SqlPlanCard.vue`（`sqlPlan.ts`）解析为结构化卡片，与后端 G6 门禁配合。
 
@@ -572,7 +573,7 @@ ChatBI 流式正文中的 `<sql_plan>{...}</sql_plan>` 由前端 `MessageRendere
 | ChatBI 请求类别分析 | `app/services/ai/data_query_turn_classifier.py` |
 | 执行分发 | `app/services/ai/dispatcher.py` |
 | 执行器（薄封装） | `app/services/ai/executors/` |
-| Runner（Knowledge / Assistant / ChatBI） | `knowledge_agent_runner.py`、`assistant_agent_runner.py`、`data_agent_runner.py` |
+| Runner（Knowledge / Assistant / ChatBI） | `knowledge_agent_runner.py`、`assistant_agent_runner.py`、`data_agent_runner.py`；ChatBI 域模块见 `runners/chatbi/` |
 | AgentScope 运行时 | `app/services/ai/runtime/agentscope/`（`event_stream.py`、`tools.py`、`confirmations.py`） |
 | 执行器提示词 | `app/services/ai/executors/prompts.py` |
 | AgentScope 架构说明 | [../AGENTSCOPE_RUNTIME.md](../AGENTSCOPE_RUNTIME.md) |

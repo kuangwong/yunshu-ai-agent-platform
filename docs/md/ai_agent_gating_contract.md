@@ -17,7 +17,8 @@
 - `app/services/ai/dispatcher.py`
 - `app/services/ai/agent_service.py`
 - `app/services/ai/data_query_turn_classifier.py`
-- `app/services/ai/runners/data_agent_runner.py`
+- `app/services/ai/runners/data_agent_runner.py`（薄编排与 Runner 门面）
+- `app/services/ai/runners/chatbi/`（ChatBI 守卫与 ReAct 域实现，见 `README.md`）
 - `app/services/ai/runners/assistant_agent_runner.py`
 - `app/services/ai/tool_nudge_policy.py`
 - `app/services/ai/skill_resolver.py`

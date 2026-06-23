@@ -585,20 +585,9 @@ async def get_available_resources(
     meta_datasets = await MetadataService.get_datasets(db)
     datasets = [{"id": str(d.id), "name": d.display_name or d.name, "key": str(d.id)} for d in meta_datasets]
     
-    # 3. APIs
-    all_apis = ApiDiscoveryService.get_v1_api_resources(request.app)
-    # Filter: Only show /users/ and /schema endpoints (Hide /chat as they are globally whitelisted)
-    apis = [
-        api for api in all_apis 
-        if (
-            api["path"].startswith("/api/v1/users") or 
-            api["path"].startswith("/api/v1/schema") or
-            api["path"] == "/api/v1/chatbi/sql/execute"
-        )
-    ]
-    # Format APIs to match UI expectation if needed, or keep as is.
-    # ApiDiscoveryService returns dict with id, name, description, group.
-    
+    # 3. APIs (runtime scan with static fallback for multi-instance / split deployments)
+    apis = ApiDiscoveryService.get_assignable_v1_api_resources(request.app)
+
     return {
         "agents": agents,
         "metadata": datasets,

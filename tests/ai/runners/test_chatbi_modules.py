@@ -1,0 +1,216 @@
+"""Unit tests for extracted ChatBI domain modules."""
+
+import pytest
+
+from app.services.ai.runners.chatbi.constants import DATA_REPAIR_BUDGETS
+from app.services.ai.runners.chatbi.federated_upgrade import should_upgrade_to_federated_query
+from app.services.ai.runners.chatbi.repair_policy import (
+    build_repair_message,
+    current_repair_kind,
+    repair_budget_exhausted,
+    reset_state_for_repair,
+)
+from app.services.ai.runners.chatbi.run_state import DataRunState
+from app.services.ai.runners.chatbi.schema_retry import (
+    build_controlled_schema_retry_keywords,
+    clean_schema_retry_phrase,
+    prepare_controlled_schema_retry_keywords,
+)
+from app.services.ai.runners.chatbi.sql_gates import (
+    build_sql_schema_preflight_error,
+    detect_sql_static_risk,
+    extract_schema_table_columns,
+    is_schema_gate_block,
+    normalize_sql_text,
+)
+from app.services.ai.runners.chatbi.sql_repair_hints import invalid_identifier_repair_hint
+from app.services.ai.runners.chatbi.sql_result_parser import (
+    detect_empty_result,
+    detect_ratio_anomaly,
+    detect_sql_error,
+    try_parse_json_output,
+)
+from app.services.ai.runners.chatbi.state_serialization import pending_state_to_data_run_state
+from app.services.ai.runners.chatbi.turn_handlers import EARLY_EXIT_TURN_TYPES
+from app.services.ai.runners.chatbi.schema_prefetch import (
+    clean_schema_fallback_query,
+    is_invalid_schema_search_keywords,
+    should_rewrite_contextual_new_data_query,
+)
+from app.services.ai.runners.chatbi.few_shot import skip_few_shot_log
+
+
+pytestmark = pytest.mark.no_infrastructure
+
+
+def test_federated_upgrade_requires_explicit_cross_dataset_intent():
+    schema_output = """
+dataset: energy_ds
+table_name: energy_usage
+columns: device_id, power
+
+# [跨数据集关联补全: asset_ds.asset_info]
+dataset: asset_ds
+table_name: asset_info
+columns: id, owner
+"""
+    assert should_upgrade_to_federated_query(schema_output, "查一下本月能耗超标的设备") is False
+    assert should_upgrade_to_federated_query(schema_output, "跨数据集关联能耗数据和资产数据，查维保人员") is True
+    assert should_upgrade_to_federated_query(schema_output, "在这个数据集里把这两张表关联查询一下") is False
+
+
+def test_clean_schema_retry_phrase_filters_emoji_and_ui_stopwords():
+    assert clean_schema_retry_phrase("机房 🙋") == "机房"
+    cleaned = clean_schema_retry_phrase("为您找到以下数据 机房的 信息 详细")
+    assert "为您" not in cleaned
+    assert "数据" not in cleaned
+    assert "机房" in cleaned
+
+
+def test_prepare_controlled_schema_retry_keywords():
+    state = DataRunState()
+    state.last_schema_keywords = "机房"
+    prepare_controlled_schema_retry_keywords(
+        state,
+        schema_search_keywords="机房 列表",
+        standalone_query="为您 到以下数据 机房的 信息 🙋",
+        user_question="为您 到以下数据 机房的 信息 🙋 机房详情",
+    )
+    keywords = state.controlled_schema_retry_keywords
+    assert "机房" in keywords
+    assert "为您" not in keywords
+    assert "🙋" not in keywords
+
+
+def test_build_controlled_schema_retry_keywords_fallback():
+    keywords = build_controlled_schema_retry_keywords("为您 到以下数据 机房的 信息 🙋")
+    assert "机房" in keywords
+    assert "为您" not in keywords
+
+
+def test_detect_sql_static_risk_join_and_order_by():
+    assert detect_sql_static_risk("SELECT a FROM t JOIN u") != ""
+    assert detect_sql_static_risk("SELECT * FROM demo") == ""
+    assert "ORDER BY 后不能接 AND ROWNUM" in detect_sql_static_risk(
+        "SELECT * FROM demo ORDER BY id AND ROWNUM <= 10"
+    )
+
+
+def test_sql_schema_preflight_error_unknown_column():
+    schema = {"demo": ["id", "status"]}
+    sql = "SELECT d.missing FROM demo d"
+    err = build_sql_schema_preflight_error(sql, schema)
+    assert "SQL 预检失败" in err
+    assert "missing" in err
+
+
+def test_extract_schema_table_columns_from_inline_format():
+    output = "table_name: demo\ncolumns: id, status, total"
+    cols = extract_schema_table_columns(output)
+    assert "demo" in cols
+    assert "id" in cols["demo"]
+
+
+def test_sql_result_parser_empty_and_error():
+    assert detect_empty_result({"rows": []}) is not None
+    ok, _ = detect_sql_error('[{"id": 1}]')
+    assert ok is False
+    err, msg = detect_sql_error("ORA-00904: invalid identifier")
+    assert err is True
+    assert "ORA" in msg
+
+
+def test_detect_ratio_anomaly():
+    parsed = {"rows": [{"success_rate": 2.5}]}
+    anomaly, reason = detect_ratio_anomaly(parsed)
+    assert anomaly is True
+    assert "success_rate" in reason
+
+
+def test_invalid_identifier_repair_hint():
+    hint = invalid_identifier_repair_hint('ORA-00904: "T"."BAD_COL": invalid identifier')
+    assert "BAD_COL" in hint
+
+
+def test_repair_policy_kind_and_budget():
+    state = DataRunState(requires_fresh_data=True, sql_before_schema=True)
+    assert current_repair_kind(state) == "sql_before_schema"
+    assert repair_budget_exhausted(state) is False
+    state.repair_attempts["sql_before_schema"] = DATA_REPAIR_BUDGETS["sql_before_schema"]
+    assert repair_budget_exhausted(state) is True
+
+
+def test_build_repair_message_for_schema_miss():
+    state = DataRunState(schema_miss=True, controlled_schema_retry_keywords="机房 列表")
+    msg = build_repair_message(state)
+    assert "Schema 重试要求" in msg
+    assert "机房 列表" in msg
+
+
+def test_reset_state_for_repair_clears_sql_flags():
+    state = DataRunState(
+        sql_completed=True,
+        sql_error=True,
+        empty_sql_result=True,
+        full_content="draft",
+    )
+    reset_state_for_repair(state)
+    assert state.sql_completed is False
+    assert state.sql_error is False
+    assert state.full_content == ""
+
+
+def test_pending_state_roundtrip():
+    state = DataRunState(schema_completed=True, last_schema_keywords="demo")
+    pending = {"data_run_state": {"schema_completed": True, "last_schema_keywords": "demo"}}
+    restored, meta = pending_state_to_data_run_state(pending)
+    assert restored.schema_completed is True
+    assert restored.last_schema_keywords == "demo"
+    assert meta == {}
+
+
+def test_is_schema_gate_block_prefix():
+    assert is_schema_gate_block("[SCHEMA_GATE] blocked") is True
+    assert is_schema_gate_block("ok") is False
+
+
+def test_normalize_sql_text():
+    assert normalize_sql_text("  SELECT  1  ") == "select 1"
+
+
+def test_try_parse_json_output_list():
+    assert try_parse_json_output('[{"a": 1}]') == [{"a": 1}]
+
+
+def test_early_exit_turn_types():
+    from app.services.ai.data_query_turn_classifier import DataQueryTurnType
+
+    assert DataQueryTurnType.FORMAT_CORRECTION in EARLY_EXIT_TURN_TYPES
+    assert DataQueryTurnType.REUSE_PREVIOUS_RESULT in EARLY_EXIT_TURN_TYPES
+    assert DataQueryTurnType.CLARIFICATION_OR_NON_DATA in EARLY_EXIT_TURN_TYPES
+    assert DataQueryTurnType.NEW_DATA_QUERY not in EARLY_EXIT_TURN_TYPES
+
+
+def test_clean_schema_fallback_query():
+    assert "上海机房" in clean_schema_fallback_query("查询上海机房 PUE 趋势")
+    assert "查询" not in clean_schema_fallback_query("查询上海机房 PUE 趋势")
+
+
+def test_is_invalid_schema_search_keywords():
+    assert is_invalid_schema_search_keywords("") is True
+    assert is_invalid_schema_search_keywords("关键词") is True
+    assert is_invalid_schema_search_keywords("机房 PUE") is False
+
+
+def test_should_rewrite_contextual_new_data_query():
+    from app.services.ai.runtime.agentscope.compat import HumanMessage
+
+    messages = [HumanMessage(content="查上周 PUE"), HumanMessage(content="那本月呢")]
+    assert should_rewrite_contextual_new_data_query("那本月呢", messages) is True
+    assert should_rewrite_contextual_new_data_query("查询上海机房本月 PUE", messages) is False
+
+
+def test_skip_few_shot_log_shape():
+    log = skip_few_shot_log()
+    assert log["title"] == "跳过经验库检索"
+    assert log["type"] == "log"

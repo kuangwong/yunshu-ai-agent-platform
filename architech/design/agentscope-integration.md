@@ -362,12 +362,14 @@ workspace = LocalWorkspace(
 - PermissionEngine
 - 流式 SSE 事件映射
 
-**平台专属逻辑（ChatBI 特有）**：
-- Schema 检索前置（预取表结构，并发并入工具结果）
-- SQL 计划推演（`_should_require_sql_plan`，须 `debug_options.enable_sql_plan=true` 才启用 G6/G11）
-- 意图改写触发的历史截断（当 `standalone_query ≠ user_question` 时，只保留最近 3 轮 Human/AI 对话，6 条消息）
-- DataBlock 图表块提取（`data_tools.py`，从工具结果中解析可视化数据）
+**平台专属逻辑（ChatBI 特有，实现于 `app/services/ai/runners/chatbi/`）**：
+- Schema 检索前置（`schema_prefetch`，预取表结构）
+- SQL 计划推演（`sql_gates.should_require_sql_plan`，须 `debug_options.enable_sql_plan=true` 才启用 G6/G11）
+- 意图改写触发的历史截断（`native_turn`，当 `standalone_query ≠ user_question` 时只保留最近 3 轮 Human/AI）
+- DataBlock 图表块提取（`data_tools.py`）
 - 流式 `<sql_plan>` 块由前端 `SqlPlanCard` 结构化展示
+
+域模块索引见 `app/services/ai/runners/chatbi/README.md`。
 
 ### 4.3 KnowledgeAgentRunner ✅（深度集成）
 

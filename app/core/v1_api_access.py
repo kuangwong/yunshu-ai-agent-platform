@@ -6,6 +6,42 @@ from starlette.routing import Match
 
 V1_API_PREFIX = "/api/v1"
 
+# 权限页可分配的外部 API（运行时路由扫描失败时的静态兜底）
+ASSIGNABLE_V1_API_RESOURCES: list[dict[str, str]] = [
+    {
+        "id": "GET:/api/v1/users/profile",
+        "name": "获取用户画像",
+        "description": "获取当前或指定用户的详细信息（包括角色和权限）。",
+        "group": "V1 用户服务",
+        "method": "GET",
+        "path": "/api/v1/users/profile",
+    },
+    {
+        "id": "POST:/api/v1/schema",
+        "name": "检索元数据 Schema",
+        "description": "统一 Schema 检索接口，根据配置路由到 Local Service 或 RAGFlow。",
+        "group": "V1 Schema服务",
+        "method": "POST",
+        "path": "/api/v1/schema",
+    },
+    {
+        "id": "POST:/api/v1/chatbi/sql/execute",
+        "name": "执行 ChatBI 只读 SQL",
+        "description": "校验 API Key 与权限后执行只读 SELECT 语句。",
+        "group": "V1 ChatBI",
+        "method": "POST",
+        "path": "/api/v1/chatbi/sql/execute",
+    },
+]
+
+
+def is_assignable_v1_api_path(path: str) -> bool:
+    return (
+        path.startswith(f"{V1_API_PREFIX}/users")
+        or path.startswith(f"{V1_API_PREFIX}/schema")
+        or path == f"{V1_API_PREFIX}/chatbi/sql/execute"
+    )
+
 
 def build_api_resource_id(method: str, path: str) -> str:
     return f"{method.upper()}:{path}"
@@ -87,7 +123,7 @@ def build_api_permission_alias_map(app: FastAPI) -> dict[str, str]:
     from app.services.api_discovery_service import ApiDiscoveryService
 
     alias_map: dict[str, str] = {}
-    for resource in ApiDiscoveryService.get_v1_api_resources(app):
+    for resource in ApiDiscoveryService.get_assignable_v1_api_resources(app):
         canonical_id = str(resource.get("id") or "")
         if not canonical_id:
             continue

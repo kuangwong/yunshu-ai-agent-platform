@@ -44,3 +44,27 @@ def test_is_v1_api_whitelisted():
     assert is_v1_api_whitelisted("/api/v1/chatbi/sql/execute") is False
     assert is_v1_api_whitelisted("/api/v1/tasks/123") is True
     assert is_v1_api_whitelisted("/api/v1/users/profile") is False
+
+
+def test_assignable_v1_api_resources_constant_has_three_entries():
+    from app.core.v1_api_access import ASSIGNABLE_V1_API_RESOURCES
+
+    assert len(ASSIGNABLE_V1_API_RESOURCES) == 3
+    ids = {item["id"] for item in ASSIGNABLE_V1_API_RESOURCES}
+    assert ids == {
+        "GET:/api/v1/users/profile",
+        "POST:/api/v1/schema",
+        "POST:/api/v1/chatbi/sql/execute",
+    }
+
+
+def test_get_assignable_v1_api_resources_uses_static_fallback_when_scan_empty():
+    from fastapi import FastAPI
+
+    from app.services.api_discovery_service import ApiDiscoveryService
+
+    empty_app = FastAPI()
+    apis = ApiDiscoveryService.get_assignable_v1_api_resources(empty_app)
+
+    assert len(apis) == 3
+    assert apis[0]["id"] == "GET:/api/v1/users/profile"

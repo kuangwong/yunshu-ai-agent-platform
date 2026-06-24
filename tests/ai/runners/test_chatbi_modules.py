@@ -134,6 +134,8 @@ def test_sql_schema_preflight_still_blocks_unknown_column_with_order_by_alias():
         "LEFT JOIN HRMRESOURCE hr ON v.FOLLOW_UP_PERSON = hr.ID "
         "ORDER BY unknown_col DESC"
     )
+    err = build_sql_schema_preflight_error(sql, schema, dialect="oracle")
+    assert "unknown_col" in err.lower()
 
 
 def test_sql_schema_preflight_error_unknown_column():

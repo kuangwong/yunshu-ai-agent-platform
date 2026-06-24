@@ -4,11 +4,14 @@ from app.services.ai.federated_sql_repair import (
     cross_dataset_scope_repair_hint,
     detect_sql_error,
     extract_cross_dataset_violation,
+    infer_select_columns_regex_fallback,
     is_cross_dataset_scope_sql_error,
     is_invalid_number_sql_error,
     is_retryable_sql_error,
     merge_repair_schema_snippets,
     normalize_sql_text,
+    parse_fixed_sql_from_llm_response,
+    sanitize_repaired_sql_content,
     try_deterministic_invalid_identifier_repair,
 )
 
@@ -141,3 +144,42 @@ def test_try_deterministic_invalid_identifier_repair_strips_where_predicate():
     assert fixed is not None
     assert "CUSTOMER_NAME = 'ACME'" not in fixed.upper().replace(" ", "")
     assert "OPP_CODE" in fixed.upper()
+
+
+def test_infer_select_columns_regex_fallback_extracts_aliases():
+    sub_sql = """
+    SELECT co.OPP_CODE, co.CLUE_CODE, co.OPP_STATUS, co.opp_customer_name, co.CUSTOMER_NAME
+    FROM VIEW_AI_CULEOPP co
+    """
+    cols = infer_select_columns_regex_fallback(sub_sql)
+    assert cols == ["OPP_CODE", "CLUE_CODE", "OPP_STATUS", "opp_customer_name", "CUSTOMER_NAME"]
+
+
+def test_parse_fixed_sql_from_llm_response_strips_prompt_leakage():
+    raw = """<fixed_sql><![CDATA[
+WITH t AS (SELECT 1 AS id)
+SELECT id FROM t
+]]></fixed_sql>
+memory_join 只能引用各 sub_query 已 SELECT 的列
+"""
+    sql = parse_fixed_sql_from_llm_response(raw)
+    assert sql.startswith("WITH t AS")
+    assert "只能引用" not in sql
+
+
+def test_parse_fixed_sql_from_llm_response_rejects_unclosed_prompt_echo():
+    raw = """WITH t AS (SELECT 1) SELECT * FROM t
+memory_join 只能引用各 sub_query 已 SELECT 的列
+请只修正下方失败 SQL
+"""
+    try:
+        parse_fixed_sql_from_llm_response(raw)
+        assert False, "should raise"
+    except ValueError as exc:
+        assert "未能找到" in str(exc) or "不是有效 SQL" in str(exc)
+
+
+def test_sanitize_repaired_sql_content_truncates_at_prompt_marker():
+    dirty = "SELECT 1\n-- comment\nmemory_join 只能引用各 sub_query"
+    cleaned = sanitize_repaired_sql_content(dirty)
+    assert cleaned == "SELECT 1\n-- comment"

@@ -21,6 +21,179 @@ def normalize_sql_text(sql: str) -> str:
     return " ".join(str(sql or "").strip().lower().split())
 
 
+# LLM repair 输出中常见的 prompt 回显标记；截断后避免当作 SQL 执行。
+FIXED_SQL_PROMPT_LEAK_MARKERS: tuple[str, ...] = (
+    "memory_join 只能引用",
+    "请只修正下方",
+    "【SQL 修正要求】",
+    "【输出格式",
+    "【Schema 核对要求】",
+    "【完整数据库错误信息",
+    "【SQL Repair Taxonomy】",
+    "【字段/表引用修正指引】",
+    "【memory_join 字段约束",
+    "repair_attempt",
+    "不要输出解释文字",
+    "本轮只输出修正后的",
+    "禁止原样重复提交",
+)
+
+
+def infer_select_columns_regex_fallback(sub_sql: str) -> list[str]:
+    """sqlglot 解析失败时，从 SELECT ... FROM 提取列名/别名（供降级留空保留 schema）。"""
+    text = str(sub_sql or "")
+    match = re.search(r"\bSELECT\b(.*?)\bFROM\b", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+
+    select_part = match.group(1)
+    fragments: list[str] = []
+    depth = 0
+    buf: list[str] = []
+    for ch in select_part:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            part = "".join(buf).strip()
+            if part:
+                fragments.append(part)
+            buf = []
+        else:
+            buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        fragments.append(tail)
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for expr in fragments:
+        if not expr or expr.strip() == "*":
+            continue
+        col_name = ""
+        as_match = re.search(
+            r"\bAS\s+([`\"']?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$",
+            expr,
+            re.IGNORECASE,
+        )
+        if as_match:
+            col_name = as_match.group(2)
+        else:
+            dot_match = re.search(r"\.([`\"']?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$", expr)
+            if dot_match:
+                col_name = dot_match.group(2)
+            else:
+                bare_match = re.match(
+                    r"^([`\"']?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$",
+                    expr.strip(),
+                )
+                if bare_match:
+                    col_name = bare_match.group(2)
+        if not col_name:
+            continue
+        key = col_name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(col_name)
+    return names
+
+
+def sanitize_repaired_sql_content(content: str) -> str:
+    """去掉 LLM 回显的 prompt 片段，只保留可执行的 SELECT/WITH SQL。"""
+    import html as html_module
+
+    text = html_module.unescape(str(content or "").strip())
+    if text.startswith("<![CDATA[") and text.endswith("]]>"):
+        text = text[9:-3].strip()
+    elif text.startswith("<![CDATA["):
+        text = text[9:].strip()
+    elif text.endswith("]]>"):
+        text = text[:-3].strip()
+
+    for marker in FIXED_SQL_PROMPT_LEAK_MARKERS:
+        idx = text.find(marker)
+        if idx >= 0:
+            text = text[:idx].rstrip()
+
+    text = text.rstrip("，,。.; \t\n")
+    if not text:
+        return ""
+    if not re.match(r"^(SELECT|WITH)\b", text, re.IGNORECASE):
+        return ""
+    return text.strip()
+
+
+def parse_fixed_sql_from_llm_response(raw: str) -> str:
+    """从 LLM repair 输出解析 fixed_sql；禁止将整段 prompt 回显当作 SQL。"""
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("联邦 SQL 局部 repair 输出为空。")
+
+    content = ""
+    closed = re.search(r"<fixed_sql>(.*?)</fixed_sql>", text, re.DOTALL | re.IGNORECASE)
+    if closed:
+        content = closed.group(1).strip()
+    else:
+        opened = re.search(r"<fixed_sql>\s*(?:<!\[CDATA\[)?", text, re.IGNORECASE)
+        if opened:
+            content = text[opened.end() :].strip()
+        else:
+            fence = re.search(r"```(?:sql)?\s*(.*?)(?:```|$)", text, re.DOTALL | re.IGNORECASE)
+            if fence:
+                content = fence.group(1).strip()
+
+    if not content:
+        raise ValueError(
+            "联邦 SQL 局部 repair 未能找到 <fixed_sql> 或 ```sql 代码块。"
+            f" LLM 输出:\n{text[:2000]}"
+        )
+
+    result = sanitize_repaired_sql_content(content)
+    if not result:
+        raise ValueError(
+            "联邦 SQL 局部 repair 解析结果不是有效 SQL（可能被 prompt 污染或未以 SELECT/WITH 开头）。"
+            f" LLM 输出:\n{text[:2000]}"
+        )
+    return result
+
+
+def build_degraded_temp_table_memory_join_hint(
+    temp_table_schemas: dict[str, list[str]] | None,
+    degraded_temp_tables: set[str] | None,
+) -> str:
+    """memory_join repair 时提示哪些临时表已降级留空。"""
+    if not temp_table_schemas:
+        return ""
+    degraded = {str(name).strip() for name in (degraded_temp_tables or set()) if str(name).strip()}
+    if not degraded:
+        return ""
+
+    lines: list[str] = [
+        "\n\n【已降级临时表 — memory_join 必读】",
+        "以下临时表对应子查询执行失败，已在内存中注册为 0 行空表，仅保留列结构供 LEFT JOIN：",
+    ]
+    for table_name, cols in temp_table_schemas.items():
+        if table_name not in degraded:
+            continue
+        col_list = ", ".join(cols) if cols else "(无列)"
+        if cols == ["_degraded"]:
+            lines.append(
+                f"- `{table_name}`：子查询完全降级，**禁止**在 memory_join 中 JOIN/SELECT 该表任何列；"
+                "请删除对该表的全部引用，仅使用其他临时表输出结果。"
+            )
+        else:
+            lines.append(
+                f"- `{table_name}`：columns=[{col_list}]，行数=0。"
+                "可 LEFT JOIN 但该表所有字段值均为 NULL，勿使用 INNER JOIN 过滤主表。"
+            )
+    lines.append(
+        "禁止在 SQL 注释或正文中复述上述规则文字；只输出 `<fixed_sql>` 内的 DuckDB SQL。"
+    )
+    return "\n".join(lines)
+
+
 def build_repair_schema_search_keywords(
     failed_sql: str,
     *,

@@ -312,6 +312,8 @@ XML 示例：
                 "ORDER BY 引用了未 SELECT 的列时，必须删除该排序键（例如去掉 `v.ID`），不要原样重复失败 SQL。\n"
                 "本轮只输出修正后的 memory_join SQL，不能改 sub_query；"
                 "因此缺列时只能删除 memory_join 中的无效引用，不能指望补 SELECT。\n"
+                "⚠️ 输出必须且只能是 `<fixed_sql><![CDATA[ ... ]]></fixed_sql>` 包裹的 DuckDB SQL，"
+                "禁止在 SQL 后追加解释文字或复述本提示中的中文规则。\n"
             )
         elif node_kind == "sub_query":
             extra = (

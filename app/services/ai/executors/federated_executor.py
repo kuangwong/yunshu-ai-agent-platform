@@ -28,14 +28,17 @@ from app.services.ai.federated_column_labels import (
     merge_column_term_maps,
 )
 from app.services.ai.federated_sql_repair import (
+    build_degraded_temp_table_memory_join_hint,
     build_repair_schema_search_keywords,
     build_sql_repair_guidance,
     detect_sql_error,
+    infer_select_columns_regex_fallback,
     is_cross_dataset_scope_sql_error,
     is_non_retryable_permission_error,
     is_retryable_sql_error,
     merge_repair_schema_snippets,
     normalize_sql_text,
+    parse_fixed_sql_from_llm_response,
     try_deterministic_invalid_identifier_repair,
 )
 from app.services.sql_query_execution_service import dialect_from_data_source
@@ -310,6 +313,7 @@ class FederatedQueryExecutor:
                     perm_service = PermissionService(session)
                     subquery_citation_sources: list[dict[str, Any]] = []
                     temp_table_schemas: dict[str, list[str]] = {}
+                    degraded_temp_tables: set[str] = set()
 
                     for idx, sq in enumerate(sub_queries):
                         dataset_name = sq["dataset_name"]
@@ -679,6 +683,7 @@ class FederatedQueryExecutor:
                                     return
 
                                 degraded_datasets.append(dataset_name)
+                                degraded_temp_tables.add(temp_table)
                                 yield {
                                     "type": "log",
                                     "id": sub_log_id,
@@ -883,6 +888,7 @@ class FederatedQueryExecutor:
                                         sub_queries=sub_queries,
                                         join_sql=join_sql,
                                         temp_table_schemas=temp_table_schemas,
+                                        degraded_temp_tables=degraded_temp_tables,
                                         _total_llm_calls=_total_llm_calls,
                                     )
                                 except FederatedLLMLimitExceededError as limit_err:
@@ -1050,30 +1056,20 @@ class FederatedQueryExecutor:
                 duckdb_conn.close()
 
     @staticmethod
-    def _parse_fixed_sql_response(raw: str) -> str:
-        text = str(raw or "").strip()
-        match = re.search(r"<fixed_sql>(.*?)</fixed_sql>", text, re.DOTALL | re.IGNORECASE)
-        content = match.group(1).strip() if match else text
-        if content.startswith("<![CDATA[") and content.endswith("]]>"):
-            content = content[9:-3].strip()
-        elif content.startswith("<![CDATA["):
-            content = content[9:].strip()
-        elif content.endswith("]]>"):
-            content = content[:-3].strip()
-        return html.unescape(content).strip()
-
-    @staticmethod
     def _summarize_subqueries_for_prompt(
         sub_queries: list[dict[str, str]],
         temp_table_schemas: dict[str, list[str]] | None = None,
+        degraded_temp_tables: set[str] | None = None,
     ) -> str:
         lines: list[str] = []
+        degraded = degraded_temp_tables or set()
         for sq in sub_queries:
             temp_table = str(sq.get("temp_table") or "")
             cols = (temp_table_schemas or {}).get(temp_table)
             col_part = f", columns=[{', '.join(cols)}]" if cols else ""
+            degraded_part = ", status=已降级留空(0行)" if temp_table in degraded else ""
             lines.append(
-                f"- dataset={sq.get('dataset_name')}, temp_table={temp_table}{col_part}, "
+                f"- dataset={sq.get('dataset_name')}, temp_table={temp_table}{col_part}{degraded_part}, "
                 f"sql={str(sq.get('sql') or '')[:500]}"
             )
         return "\n".join(lines)
@@ -1096,6 +1092,7 @@ class FederatedQueryExecutor:
         schema_snippet: str = "",
         explain_context: str = "",
         temp_table_schemas: dict[str, list[str]] | None = None,
+        degraded_temp_tables: set[str] | None = None,
         _total_llm_calls: Optional[list[int]] = None,
     ) -> str:
         if _total_llm_calls is not None:
@@ -1124,16 +1121,20 @@ class FederatedQueryExecutor:
             sub_queries_summary=self._summarize_subqueries_for_prompt(
                 sub_queries,
                 temp_table_schemas,
+                degraded_temp_tables,
             ),
             join_sql=join_sql,
             schema_snippet=schema_snippet,
             explain_context=explain_context,
         )
+        if node_kind == "memory_join":
+            prompt += build_degraded_temp_table_memory_join_hint(
+                temp_table_schemas,
+                degraded_temp_tables,
+            )
         messages = system_user_prompt_messages(prompt, user_prompt=user_question)
         raw = await chat_client.generate_text(messages)
-        fixed_sql = self._parse_fixed_sql_response(raw)
-        if not fixed_sql:
-            raise ValueError(f"联邦 SQL 局部 repair 未能解析 fixed_sql。LLM 输出:\n{raw[:2000]}")
+        fixed_sql = parse_fixed_sql_from_llm_response(raw)
         return fixed_sql
 
     async def _refresh_schema_snippet_for_repair(
@@ -1298,6 +1299,8 @@ class FederatedQueryExecutor:
                 parse_err,
                 exc_info=True,
             )
+        if not col_names:
+            col_names = infer_select_columns_regex_fallback(sub_sql)
         return col_names
 
     @staticmethod

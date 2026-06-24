@@ -31,6 +31,7 @@ class DataQuerySemanticIntent:
     filters: list[SemanticIntentFilter] = field(default_factory=list)
     time_range: str = ""
     grain: str = ""
+    target_datasets: list[str] = field(default_factory=list)
     reasoning: str = ""
 
     def has_content(self) -> bool:
@@ -42,6 +43,7 @@ class DataQuerySemanticIntent:
             or self.filters
             or self.time_range
             or self.grain
+            or self.target_datasets
         )
 
 
@@ -211,6 +213,7 @@ def parse_semantic_intent_payload(content: str, *, fallback_question: str = "") 
         filters=filters,
         time_range=_as_clean_str(data.get("time_range"), max_len=80),
         grain=_as_clean_str(data.get("grain"), max_len=80),
+        target_datasets=_as_str_list(data.get("target_datasets")),
         reasoning=_as_clean_str(data.get("reasoning"), max_len=200),
     )
     return _sanitize_intent_scope(intent, fallback_question=fallback_question)
@@ -234,11 +237,12 @@ def derive_keywords_from_semantic_intent(intent: DataQuerySemanticIntent | None,
     for dimension in intent.dimensions:
         add(dimension)
     for item in intent.filters:
-        add(item.phrase)
         for expected in item.expected_column_types:
             add(expected)
     if intent.grain:
         add(intent.grain)
+    for ds in intent.target_datasets:
+        add(ds)
     if not terms and intent.goal:
         for token in re.split(r"[\s,，、]+", intent.goal):
             add(token)
@@ -278,6 +282,7 @@ def semantic_intent_from_dict(data: Any) -> DataQuerySemanticIntent | None:
         filters=filters,
         time_range=_as_clean_str(data.get("time_range"), max_len=80),
         grain=_as_clean_str(data.get("grain"), max_len=80),
+        target_datasets=_as_str_list(data.get("target_datasets")),
         reasoning=_as_clean_str(data.get("reasoning"), max_len=200),
     )
     return intent if intent.has_content() else None
@@ -288,6 +293,7 @@ def build_semantic_intent_prompt(
     standalone_query: str,
     example_context: str,
     conversation_context: str = "",
+    available_datasets: str = "",
 ) -> str:
     context_block = ""
     if str(conversation_context or "").strip():
@@ -308,10 +314,12 @@ def build_semantic_intent_prompt(
         '"expected_column_types":["应优先绑定的字段语义或常见物理名"],'
         '"avoid_column_types":["容易误绑的字段语义或物理名"],'
         '"relation":"exact_value|alias|parent_region_or_scope|category_scope|contains|unknown"}],'
-        '"time_range":"时间范围或无","grain":"聚合粒度或明细粒度","reasoning":"一句话说明"}\n\n'
+        '"time_range":"时间范围或无","grain":"聚合粒度或明细粒度",'
+        '"target_datasets":["猜测的目标数据集名称"],"reasoning":"一句话说明"}\n\n'
         "【核心约束原则】\n"
         "1. 严格限制 keywords 和 dimensions，严禁脑补与需求扩大化：\n"
-        "   - keywords 必须严格基于用户原始问题中显式提到的核心实体词、特征属性词或明确要求的主题词进行提取，禁止做无根据的行业联想扩展（例如：用户问“客户列表”，则仅提取“客户 列表”，禁止自行联想扩展出“CRM”、“会员体系”、“组织架构”等无关行业词汇）。\n"
+        "   - keywords 仅用于匹配元数据的表名、字段名和字段描述。严禁包含具体的业务数据值（如具体的人名、特定的日期/时间、具体的金额数值等）。对于带有具体值的过滤条件，应提取其背后的业务属性概念（如将‘蒋公律’提取为‘员工/跟进人’，将‘5月份’提取为‘时间/月份’）作为 keyword。如果用户意图明显属于某个数据集，必须将其名称包含在 keywords 中以提高检索精度。\n"
+        "   - target_datasets 必须从【可用数据集菜单】中挑选最符合用户意图的一个或多个数据集名称。如果不确定则为空。\n"
         "   - dimensions 必须是用户原始问题中显式提到或强烈暗示的维度（例如：用户问“各区域的销售额”，则 dimensions 包含“区域”）。如果用户仅请求了“所有/全部 + 对象 + 列表/明细”（如“所有客户列表”），而没有提到任何具体的属性或维度，则 dimensions 只能输出对应的对象实体名称本身（如“客户”），严禁擅自脑补或补充其他具体属性字段（如“客户等级”、“客户地址”等）作为 dimensions。\n"
         "2. 正确区分“全量范围”与“过滤条件”：\n"
         "   - filters 仅用于表示过滤/筛选条件（即限制数据范围的具体条件，如特定的时间、特定的空间、特定的状态、特定的属性取值等）。\n"
@@ -332,6 +340,7 @@ def build_semantic_intent_prompt(
         '  "filters": [],\n'
         '  "time_range": "无",\n'
         '  "grain": "明细粒度",\n'
+        '  "target_datasets": [],\n'
         '  "reasoning": "用户只要求获取所有客户的基础信息列表，没有提及任何具体的属性字段（如等级或地址），也没有过滤限制条件（“所有客户”代表全量范围，不应提取为 filter）。"\n'
         "}\n\n"
         "示例二：带具体筛选条件的列表查询\n"
@@ -348,11 +357,13 @@ def build_semantic_intent_prompt(
         '  ],\n'
         '  "time_range": "无",\n'
         '  "grain": "明细粒度",\n'
+        '  "target_datasets": [],\n'
         '  "reasoning": "用户要求获取产品的明细列表，但限定了北京地域和在售状态，应将其作为 filters 提取。而“所有”表示全量范围，不应作为 filter 提取。"\n'
         "}\n\n"
         f"【用户原始问题】\n{user_question}\n\n"
         f"【独立查数问题】\n{standalone_query}\n\n"
-        f"【命中的历史案例线索】\n{example_context}"
+        f"【命中的历史案例线索】\n{example_context}\n\n"
+        f"【可用数据集菜单】\n{available_datasets or '（未提供，请根据业务常识推理）'}"
         f"{context_block}"
     )
 
@@ -371,6 +382,8 @@ def format_semantic_intent_context(intent: DataQuerySemanticIntent | None) -> st
         lines.append(f"- 时间范围: {intent.time_range}")
     if intent.grain:
         lines.append(f"- 粒度: {intent.grain}")
+    if intent.target_datasets:
+        lines.append(f"- 猜测目标数据集: {'、'.join(intent.target_datasets)}")
     for item in intent.filters:
         detail = f"- 筛选: `{item.phrase}`"
         if item.semantic_type:

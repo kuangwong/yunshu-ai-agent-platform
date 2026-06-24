@@ -133,12 +133,21 @@ async def plan_schema_search_keywords(
     examples: List[Dict[str, Any]],
     runtime_messages: List[Any] | None = None,
 ) -> str:
+    try:
+        user_id = getattr(runner.config, "user_id", None)
+        is_admin = getattr(runner.config, "is_admin", False)
+        dataset_menu = await AgentConfigProvider.get_dataset_menu(user_id=user_id, is_admin=is_admin)
+    except Exception as e:
+        logger.warning("[DataAgentRunner] Failed to fetch dataset menu for schema prefetch: %s", e)
+        dataset_menu = ""
+
     fallback_query = clean_schema_fallback_query((standalone_query or user_question or "").strip())[:300]
     prompt = build_semantic_intent_prompt(
         user_question=user_question,
         standalone_query=standalone_query,
         example_context=example_schema_keyword_context(examples),
         conversation_context=semantic_intent_recent_context(runtime_messages or []),
+        available_datasets=dataset_menu,
     )
     try:
         model = await AgentConfigProvider.get_configured_llm(streaming=False, config=runner.config)

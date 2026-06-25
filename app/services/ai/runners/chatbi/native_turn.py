@@ -200,7 +200,7 @@ async def run_native_agent_turn(
             reason="main-loop content followed by a repair condition",
         ):
             yield chunk
-    if state.full_content:
+    if state.full_content and not runner._current_repair_kind(state):
         async for chunk in _finalize_content_and_persist(
             runner,
             state=state,
@@ -285,7 +285,7 @@ async def run_native_agent_turn(
                 yield chunk
         if state.full_content and runner._should_replace_generic_empty_failure_reply(state):
             state.full_content = format_empty_filter_result_content(state.empty_filter_diagnostics)
-        if state.full_content:
+        if state.full_content and not runner._current_repair_kind(state):
             async for chunk in _finalize_content_and_persist(
                 runner,
                 state=state,

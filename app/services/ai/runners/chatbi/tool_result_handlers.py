@@ -359,16 +359,14 @@ def apply_sql_tool_result(
 
     state.empty_sql_reason = ""
     state.empty_sql_result = False
-    if is_diag and state.expecting_final_sql_after_diagnostic:
-        if (
-            state.diagnostic_sql_pending_final
-            and runner._result_has_data_rows(parsed_output)
-        ):
-            state.expecting_final_sql_after_diagnostic = False
-            state.diagnostic_sql_pending_final = False
-        else:
+    if is_diag:
+        if runner._result_has_data_rows(parsed_output):
+            # Diagnostic SQL only samples candidate values; never treat it as the final answer.
             state.diagnostic_sql_pending_final = True
+            state.expecting_final_sql_after_diagnostic = True
             return parsed_output, False
+        # Empty diagnostic probe: keep exploring instead of marking business SQL complete.
+        return parsed_output, False
 
     state.expecting_final_sql_after_diagnostic = False
     state.diagnostic_sql_pending_final = False

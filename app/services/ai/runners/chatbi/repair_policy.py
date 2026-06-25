@@ -459,7 +459,9 @@ def resolve_repair_tool_choice(state: DataRunState) -> Any | None:
         return ToolChoice(mode="required")
     if state.duration_anomaly:
         return ToolChoice(mode="execute_sql_query")
-    if state.sql_error or state.empty_sql_result or state.diagnostic_sql_pending_final:
+    if state.empty_sql_result or state.diagnostic_sql_pending_final:
+        return ToolChoice(mode="execute_sql_query")
+    if state.sql_error:
         return ToolChoice(mode="required")
     if (
         state.requires_fresh_data

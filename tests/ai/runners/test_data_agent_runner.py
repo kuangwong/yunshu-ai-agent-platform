@@ -2136,6 +2136,41 @@ def test_resolve_repair_tool_choice_forces_sql_after_schema(data_config):
     assert choice.mode == "execute_sql_query"
 
 
+def test_resolve_repair_tool_choice_forces_sql_for_empty_result(data_config):
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-force-sql-empty", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        empty_sql_result=True,
+        empty_sql_text="SELECT * FROM demo WHERE status = 'x'",
+    )
+    choice = runner._resolve_repair_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "execute_sql_query"
+
+
+def test_resolve_repair_tool_choice_forces_sql_for_diagnostic_pending(data_config):
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-force-sql-diag", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        diagnostic_sql_pending_final=True,
+    )
+    choice = runner._resolve_repair_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "execute_sql_query"
+
+
 def test_resolve_initial_tool_choice_forces_sql_after_prefetched_schema(data_config):
     from agentscope.tool import ToolChoice
 
@@ -2431,6 +2466,7 @@ def test_diagnostic_sql_success_requires_final_sql_before_answer(data_config):
 
     assert state.sql_completed is True
     assert state.diagnostic_sql_pending_final is True
+    assert state.expecting_final_sql_after_diagnostic is True
     assert state.ready_to_answer is False
     assert runner._current_repair_kind(state) == "diagnostic_sql_pending_final"
     assert "诊断 SQL" in runner._build_repair_message(state)
@@ -2443,6 +2479,41 @@ def test_diagnostic_sql_success_requires_final_sql_before_answer(data_config):
 
     assert state.diagnostic_sql_pending_final is False
     assert state.ready_to_answer is True
+
+
+def test_first_turn_diagnostic_sql_with_data_blocks_answer(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-first-diag", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT DISTINCT months_diff FROM contracts LIMIT 20"},
+        output={"rows": [{"months_diff": "0"}, {"months_diff": "3"}]},
+    )
+
+    assert should_save is False
+    assert state.diagnostic_sql_pending_final is True
+    assert state.expecting_final_sql_after_diagnostic is True
+    assert state.ready_to_answer is False
+    assert runner._current_repair_kind(state) == "diagnostic_sql_pending_final"
+
+
+def test_empty_diagnostic_sql_does_not_mark_business_sql_complete(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-empty-diag", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT DISTINCT months_diff FROM contracts LIMIT 20"},
+        output={"columns": [{"name": "months_diff"}], "items": []},
+    )
+
+    assert should_save is False
+    assert state.diagnostic_sql_pending_final is False
+    assert state.empty_sql_result is True
+    assert state.ready_to_answer is False
 
 
 def test_final_empty_sql_after_diagnostic_can_answer_no_data(data_config):

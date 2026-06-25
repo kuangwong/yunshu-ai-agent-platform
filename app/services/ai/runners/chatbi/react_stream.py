@@ -355,6 +355,12 @@ async def stream_agentscope_events(
             return
         if state.halt_current_react:
             logger.info("[DataAgentRunner] SQL result requires repair. Stopping current ReAct stream.")
+            if state.full_content and runner._current_repair_kind(state):
+                async for chunk in runner._retract_provisional_content_before_repair(
+                    state,
+                    reason="halt after SQL tool result requires repair",
+                ):
+                    yield chunk
             break
 
     if emit_final_guard:

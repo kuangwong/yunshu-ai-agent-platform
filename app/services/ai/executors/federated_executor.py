@@ -410,10 +410,54 @@ class FederatedQueryExecutor:
                                 if is_err:
                                     raise ValueError(err_msg or res_str)
 
-                                _subquery_cache[cache_key] = res_str
                                 res_data = json.loads(res_str)
                                 col_names = [col["name"] for col in res_data.get("columns", [])]
                                 raw_items = res_data.get("items") or res_data.get("rows") or []
+                                if not raw_items and not cache_hit:
+                                    empty_retry = await self._try_empty_filter_auto_repair(
+                                        session,
+                                        sub_sql=sub_sql,
+                                        dataset=dataset,
+                                        user_id=user_id,
+                                        is_admin=is_admin,
+                                        user_dimensions=user_dimensions,
+                                        agent_context=current_agent_context,
+                                    )
+                                    if empty_retry and empty_retry.attempted:
+                                        yield {
+                                            "type": "log",
+                                            "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                            "title": "平台自动修正筛选并重试",
+                                            "details": (
+                                                f"{empty_retry.summary}\n\n```sql\n{empty_retry.corrected_sql}\n```"
+                                                if empty_retry.corrected_sql and empty_retry.summary
+                                                else (
+                                                    f"```sql\n{empty_retry.corrected_sql}\n```"
+                                                    if empty_retry.corrected_sql
+                                                    else (empty_retry.summary or "空结果筛选探查已完成。")
+                                                )
+                                            ),
+                                            "status": (
+                                                "success"
+                                                if empty_retry.has_rows and not empty_retry.error
+                                                else "warning"
+                                            ),
+                                        }
+                                    if empty_retry and empty_retry.corrected_sql:
+                                        sub_sql = empty_retry.corrected_sql
+                                        sq["sql"] = sub_sql
+                                    if (
+                                        empty_retry
+                                        and empty_retry.raw_output
+                                        and empty_retry.has_rows
+                                    ):
+                                        res_str = empty_retry.raw_output
+                                        res_data = empty_retry.parsed_output or json.loads(res_str)
+                                        col_names = [col["name"] for col in res_data.get("columns", [])]
+                                        raw_items = res_data.get("items") or res_data.get("rows") or []
+                                        cache_key = f"{dataset.name}::{self._normalize_sub_sql(sub_sql)}"
+
+                                _subquery_cache[cache_key] = res_str
                                 items = self._limit_rows(raw_items, max_rows=MAX_FEDERATED_SUBQUERY_ROWS)
                                 if len(raw_items) > len(items):
                                     limit_note = (
@@ -1304,6 +1348,97 @@ class FederatedQueryExecutor:
         if len(formatted) > 3000:
             formatted = formatted[:3000] + "\n... [EXPLAIN 输出已截断]"
         return formatted
+
+    async def _try_empty_filter_auto_repair(
+        self,
+        session: Any,
+        *,
+        sub_sql: str,
+        dataset: Any,
+        user_id: Optional[int],
+        is_admin: bool,
+        user_dimensions: Any,
+        agent_context: Any,
+    ):
+        from app.services.ai.chatbi_sql_query_binding import (
+            bindings_to_table_columns,
+            extract_schema_table_bindings,
+        )
+        from app.services.ai.empty_result_filter_diagnostic import (
+            format_repair_diagnostic_block,
+            run_automatic_filter_retry,
+            run_empty_filter_diagnostics,
+            sql_has_string_literal_filters,
+        )
+
+        if not sql_has_string_literal_filters(sub_sql):
+            return None
+        dataset_name = str(getattr(dataset, "name", "") or "").strip()
+        data_source = str(getattr(dataset, "data_source", "") or "").strip()
+        if not dataset_name or not data_source:
+            return None
+
+        schema_table_columns: dict[str, list[str]] | None = None
+        if self.sql_query_binding is not None:
+            bound_columns = self.sql_query_binding.schema_table_columns()
+            schema_table_columns = bound_columns if bound_columns else None
+        if not schema_table_columns:
+            schema_table_columns = bindings_to_table_columns(
+                extract_schema_table_bindings(self.schema_output)
+            ) or None
+
+        user_id_int = int(user_id) if user_id else None
+
+        async def _execute_sql(**kwargs: Any) -> str:
+            return await execute_sql_query_core(
+                session,
+                user_id=user_id_int,
+                user_dimensions=user_dimensions or None,
+                agent_context=agent_context,
+                is_admin=is_admin,
+                bypass_table_auth=False,
+                sql_query_binding=self.sql_query_binding,
+                **kwargs,
+            )
+
+        try:
+            diagnostics = await run_empty_filter_diagnostics(
+                sql=sub_sql,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=user_id_int,
+                is_admin=is_admin,
+                execute_sql=_execute_sql,
+                schema_table_columns=schema_table_columns,
+            )
+            if not diagnostics:
+                return None
+            diagnostic_summary = format_repair_diagnostic_block(diagnostics)
+            retry = await run_automatic_filter_retry(
+                sql=sub_sql,
+                diagnostics=diagnostics,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=user_id_int,
+                is_admin=is_admin,
+                execute_sql=_execute_sql,
+            )
+            if not retry.attempted:
+                return None
+            if diagnostic_summary:
+                retry.summary = (
+                    f"{diagnostic_summary}\n\n{retry.summary}".strip()
+                    if retry.summary
+                    else diagnostic_summary
+                )
+            return retry
+        except Exception as exc:
+            logger.warning(
+                "[FederatedQueryExecutor] Empty filter auto retry skipped on %s: %s",
+                dataset_name,
+                exc,
+            )
+            return None
 
     async def _try_where_condition_auto_repair(
         self,

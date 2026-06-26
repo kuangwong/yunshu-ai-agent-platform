@@ -204,6 +204,7 @@ class AgentContextManager:
         api_key: Optional[str] = None,
         conversation_id: Optional[str] = None,
         knowledge_dataset_ids: Optional[List[str]] = None,
+        authorized_attachment_paths: Optional[List[str]] = None,
         require_explicit_dataset: bool = False,
         trace_buffer: Optional[List[Any]] = None,
     ):
@@ -312,5 +313,6 @@ class AgentContextManager:
             is_admin=is_admin_val,
             api_key=api_key_val,
             user_dimensions=user_dims,
+            authorized_attachment_paths=list(authorized_attachment_paths or []),
             trace_buffer=trace_buffer or []
         ))

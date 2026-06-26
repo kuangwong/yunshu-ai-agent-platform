@@ -150,6 +150,16 @@ TEXT_PREVIEW_EXTENSIONS = {
     ".log", ".env"
 }
 
+OFFICE_PREVIEW_EXTENSIONS = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
+}
+
 @router.get(
     "/preview",
     summary="预览服务器文件内容",
@@ -218,6 +228,12 @@ async def preview_file(
         return FileResponse(
             safe_path,
             media_type="application/pdf",
+        )
+    elif ext in OFFICE_PREVIEW_EXTENSIONS:
+        return FileResponse(
+            safe_path,
+            media_type=OFFICE_PREVIEW_EXTENSIONS[ext],
+            filename=os.path.basename(safe_path),
         )
     else:
         raise HTTPException(status_code=400, detail="不支持预览该类型的文件。")

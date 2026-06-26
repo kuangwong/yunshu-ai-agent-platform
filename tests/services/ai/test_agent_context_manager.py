@@ -43,6 +43,31 @@ async def test_setup_context_frontend_specified():
     # 检查是否回写回 config.engine_config
     assert set(config.engine_config.get("dataset_ids")) == {ID_USER_CHECKED_1, ID_USER_CHECKED_2}
 
+
+@pytest.mark.asyncio
+async def test_setup_context_keeps_authorized_attachment_paths():
+    config = ChatConfig(
+        agent_id="test-agent",
+        agent_name="Test Agent",
+        model_name="DeepSeek",
+        temperature=0.7,
+        system_prompt="prompt",
+        tools=[],
+        capabilities=[],
+        engine_config={"dataset_ids": [ID_AGENT_BOUND_1]},
+    )
+
+    await AgentContextManager.setup_context(
+        config=config,
+        user_info={"user_id": 1, "role": "user"},
+        knowledge_dataset_ids=[ID_USER_CHECKED_1],
+        authorized_attachment_paths=["/app/data/uploads/report.xlsx"],
+    )
+
+    ctx = get_current_agent_context()
+    assert ctx is not None
+    assert ctx.authorized_attachment_paths == ["/app/data/uploads/report.xlsx"]
+
 @pytest.mark.asyncio
 async def test_setup_context_fallback_user_permissions():
     # 测试前端未传，普通用户，合并智能体配置与用户权限绑定的知识库

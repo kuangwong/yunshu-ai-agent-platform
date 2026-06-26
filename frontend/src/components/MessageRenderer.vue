@@ -107,6 +107,22 @@ interface ContentSegment {
     return lastOpen > lastClose;
   };
 
+  const FILE_PATH_EXTENSIONS =
+    'md|csv|txt|py|js|ts|sh|sql|json|pdf|html|css|yaml|yml|log|env|docx?|xlsx?|xlsm|pptx?';
+  const FILE_PATH_SEGMENT = String.raw`[^/\s<>"'，。；：！？、]+`;
+  const filePathRegex = new RegExp(
+    String.raw`(?:\./|/)?(?:${FILE_PATH_SEGMENT}/)+${FILE_PATH_SEGMENT}\.(?:${FILE_PATH_EXTENSIONS})`,
+    'giu',
+  );
+
+  const appendOpenLinkToPath = (pathVal: string) => {
+    const canvasUrl = `canvas://file?path=${encodeURIComponent(pathVal)}`;
+    return `${pathVal}<a href="${canvasUrl}" class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-bold ml-1.5 text-[10.5px]" title="点击在画布中打开文件" style="cursor: pointer;">[打开]</a>`;
+  };
+
+  const injectOpenLinksForPaths = (text: string) =>
+    text.replace(filePathRegex, (pathVal) => appendOpenLinkToPath(pathVal));
+
   /**
    * 后处理：修复被 Markdown 引擎“误杀”转义的 HTML
    */
@@ -159,17 +175,14 @@ interface ContentSegment {
       return `###HTML_TAG_PLACEHOLDER_${tags.length - 1}###`;
     });
 
-    // 正则路径匹配：支持绝对路径（以 / 开始）或带斜杠的相对路径，以常见代码、文本、数据及 PDF 扩展名结尾
-    const pathRegex = /(?:\.\/|\/)?(?:[a-zA-Z0-9_\-\.]+\/)+[a-zA-Z0-9_\-\.]+\.(?:md|csv|txt|py|js|ts|sh|sql|json|pdf|html|css|yaml|yml|log|env)/gi;
-
-    textWithPlaceholders = textWithPlaceholders.replace(pathRegex, (pathVal) => {
-      const canvasUrl = `canvas://file?path=${encodeURIComponent(pathVal)}`;
-      return `${pathVal}<a href="${canvasUrl}" class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-bold ml-1.5 text-[10.5px]" title="点击在画布中打开文件" style="cursor: pointer;">[打开]</a>`;
-    });
+    textWithPlaceholders = injectOpenLinksForPaths(textWithPlaceholders);
 
     res = textWithPlaceholders.replace(/###HTML_TAG_PLACEHOLDER_(\d+)###/g, (_match, idx) => {
       return tags[parseInt(idx, 10)] ?? "";
     });
+
+    // 兜底：Markdown 反引号会把路径包进 <code>，上面占位符还原后再处理一次 code 内文本
+    res = res.replace(/<code>([^<]*)<\/code>/gi, (_match, inner) => `<code>${injectOpenLinksForPaths(inner)}</code>`);
 
     return res;
   };

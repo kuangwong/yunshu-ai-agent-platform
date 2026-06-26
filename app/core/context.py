@@ -35,6 +35,7 @@ class AgentContext(BaseModel):
     is_admin: bool = False
     api_key: Optional[str] = None
     user_dimensions: Dict[str, Any] = Field(default_factory=dict)
+    authorized_attachment_paths: List[str] = Field(default_factory=list)
     
     # Execution details for tracing (displayed in frontend)
     trace_logs: List[str] = Field(default_factory=list)

@@ -125,3 +125,21 @@ def test_system_executive_tool_names_are_current():
     assert "write_local_file" not in ToolRegistry._registry
     assert "execute_system_command" not in ToolRegistry._registry
     assert "manage_system_process" not in ToolRegistry._registry
+
+
+@pytest.mark.asyncio
+async def test_office_runtime_tools_have_explicit_permissions():
+    specs = await ToolRegistry.get_runtime_tools([
+        "excel_document_read",
+        "excel_document_write",
+        "word_document_read",
+        "word_document_write",
+    ])
+
+    assert [spec.name for spec in specs] == [
+        "excel_document_read",
+        "excel_document_write",
+        "word_document_read",
+        "word_document_write",
+    ]
+    assert [spec.permission_scope for spec in specs] == ["read", "ask", "read", "ask"]

@@ -23,7 +23,7 @@ from app.services.ai.runtime.session_run_lane import (
     ConversationRunBusyError,
     conversation_run_lane,
 )
-from app.services.ai.executors.common import extract_tokens_from_message
+from app.services.ai.executors.common import _attachment_abs_path, extract_tokens_from_message
 from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
 from app.core.orm import AsyncSessionLocal
 
@@ -75,6 +75,18 @@ class AgentService:
             role=role,
         )
         return {"role": "system", "content": content}
+
+    @staticmethod
+    def _authorized_attachment_paths(messages: List[Dict[str, Any]]) -> List[str]:
+        """Return server-resolved paths for attachments present in this chat context."""
+        paths = {
+            _attachment_abs_path(file_obj)
+            for message in messages or []
+            if message.get("role") == "user"
+            for file_obj in message.get("files") or []
+            if file_obj.get("url")
+        }
+        return sorted(path for path in paths if path)
 
     async def chat_completion_stream(
         self,
@@ -695,6 +707,7 @@ class AgentService:
                 api_key=api_key,
                 conversation_id=conversation_id,
                 knowledge_dataset_ids=request_knowledge_dataset_ids,
+                authorized_attachment_paths=self._authorized_attachment_paths(messages),
                 trace_buffer=trace_buffer,
             )
 
@@ -789,6 +802,7 @@ class AgentService:
                     api_key=api_key,
                     conversation_id=conversation_id,
                     knowledge_dataset_ids=request_knowledge_dataset_ids,
+                    authorized_attachment_paths=self._authorized_attachment_paths(messages),
                     require_explicit_dataset=True,
                     trace_buffer=trace_buffer,
                 )

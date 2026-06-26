@@ -176,6 +176,23 @@ async def test_general_chat_injects_route_hints_as_weak_system_hint(chat_config)
     assert "不要机械服从" in system_content
     assert any(chunk.get("content") == "ok" for chunk in events)
 
+
+def test_route_hints_expose_data_semantic_evidence_for_delegation():
+    """Main 应看到已复用的数据语义，并被要求走真实数据获取路径。"""
+    from app.services.ai.executors.prompts import AssistantPrompts
+    from app.services.ai.intent_service import IntentType
+
+    hint = AssistantPrompts.route_hints({
+        "semantic_intent": IntentType.DATA_QUERY,
+        "semantic_confidence": 0.91,
+        "semantic_reasoning": "请求系统结构化记录",
+    })
+
+    assert "semantic_intent: DATA_QUERY" in hint
+    assert "0.91" in hint
+    assert "sub_agent_call" in hint
+
+
 @pytest.mark.asyncio
 async def test_standard_tool_call(chat_config, mock_tool):
     """系统隐式 legacy 工具应转 RuntimeToolSpec，不再触发手写 ReAct。"""

@@ -267,6 +267,7 @@ async def stream_agentscope_events(
             or state.duration_anomaly
             or state.diagnostic_sql_pending_final
             or state.tool_loop_fuse_triggered
+            or runner._is_schema_fatal(state)
         )
         runner._sync_pending_data_run_state(state, stream_state)
         runner._increment_step()

@@ -360,6 +360,7 @@ async def resolve_turn_classification(
     conversation_id: Optional[str] = None,
     knowledge_dataset_ids: Optional[List[str]] = None,
     agent_has_knowledge_binding: bool = False,
+    intent_evidence: Optional[IntentResponse] = None,
 ) -> Tuple[TurnClassification, Optional[IntentResponse], float]:
     """启发式 + 意图 LLM 的统一分类入口（Dispatcher 使用）。"""
     has_last_data_result = False
@@ -377,10 +378,13 @@ async def resolve_turn_classification(
     intent_info = None
     intent_elapsed_ms = 0.0
     if classification is None:
-        intent_start = time.time()
-        prior_messages = messages[:-1] if messages else None
-        intent_info = await intent_service.identify_intent(user_query, history=prior_messages)
-        intent_elapsed_ms = (time.time() - intent_start) * 1000
+        if intent_evidence is not None:
+            intent_info = intent_evidence
+        else:
+            intent_start = time.time()
+            prior_messages = messages[:-1] if messages else None
+            intent_info = await intent_service.identify_intent(user_query, history=prior_messages)
+            intent_elapsed_ms = (time.time() - intent_start) * 1000
         has_knowledge_binding = bool(knowledge_dataset_ids or agent_has_knowledge_binding)
         classification = classify_turn_from_intent(
             intent_info,
@@ -422,6 +426,7 @@ async def resolve_turn_for_session(
     conversation_id: Optional[str] = None,
     knowledge_dataset_ids: Optional[List[str]] = None,
     agent_has_knowledge_binding: bool = False,
+    intent_evidence: Optional[IntentResponse] = None,
 ) -> SharedTurn:
     """AgentService 统一入口：启发式优先，判不准则调用意图 LLM。"""
     return await resolve_turn_classification(
@@ -432,4 +437,5 @@ async def resolve_turn_for_session(
         conversation_id=conversation_id,
         knowledge_dataset_ids=knowledge_dataset_ids,
         agent_has_knowledge_binding=agent_has_knowledge_binding,
+        intent_evidence=intent_evidence,
     )

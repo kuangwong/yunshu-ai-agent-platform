@@ -2,8 +2,10 @@ from typing import List, Optional
 import json
 import logging
 from app.core.llm.client import get_llm_async
+from app.services.ai.intent_service import IntentResponse, IntentType, intent_service
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+from app.services.ai.turn_classifier import AMBIGUOUS_INTENT_CONFIDENCE_THRESHOLD
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -13,6 +15,7 @@ class RouteResult(BaseModel):
     secondary_agents: List[str] = []
     confidence: float
     reasoning: str
+    intent_info: Optional[IntentResponse] = None
     turn_labels: List[str] = []
     relation_to_previous: str = "unknown"
     user_action_type: str = "unknown"
@@ -245,19 +248,22 @@ class RouterService:
                     user_action_type="chat",
                 )
 
+        intent_info = await self._resolve_intent_evidence(user_input, history)
+        routing_agents = self._constrain_candidates_by_intent(agents_metadata, intent_info)
+
         # 2. Unified LLM Routing
         # 路由提示词内置在代码中（DEFAULT_SYSTEM_PROMPT），不再从数据库配置读取，
         # 避免运营在配置页误改导致路由失准。
         system_prompt = self.DEFAULT_SYSTEM_PROMPT
-        agents_str = self._build_agents_context(agents_metadata)
+        agents_str = self._build_agents_context(routing_agents)
         history_str = self._build_history_context(
             history,
             last_agent_name,
             user_input=user_input,
-            agents_metadata=agents_metadata,
+            agents_metadata=routing_agents,
         )
         
-        fallback_agent_name = self._resolve_fallback_agent_name(agents_metadata)
+        fallback_agent_name = self._resolve_fallback_agent_name(routing_agents)
         formatted_prompt = (
             system_prompt
             .replace("{agents_context}", agents_str)
@@ -288,13 +294,61 @@ class RouterService:
                     raise ValueError(f"Unparseable router response: {content[:200]!r}")
 
                 logger.info(f"LLM Routing Response (attempt {attempt + 1}): {content}")
-                return self._build_route_result(result_json, agents_metadata, enable_multi_agent)
+                route_result = self._build_route_result(
+                    result_json,
+                    routing_agents,
+                    enable_multi_agent,
+                    intent_info=intent_info,
+                )
+                if route_result is not None:
+                    return route_result
+                return self._fallback_to_general(
+                    agents_metadata,
+                    "Router returned no eligible candidate",
+                    intent_info=intent_info,
+                )
             except Exception as e:  # noqa: BLE001 - retry then fall back
                 last_error = e
                 logger.warning(f"Routing attempt {attempt + 1} failed: {e}")
 
         logger.error(f"Routing failed after retries: {last_error}. Falling back to General Chat.")
-        return self._fallback_to_general(agents_metadata, f"Routing exception ({str(last_error)})")
+        return self._fallback_to_general(
+            agents_metadata,
+            f"Routing exception ({str(last_error)})",
+            intent_info=intent_info,
+        )
+
+    @staticmethod
+    async def _resolve_intent_evidence(
+        user_input: str,
+        history: Optional[List[dict]],
+    ) -> Optional[IntentResponse]:
+        """Resolve agent-independent semantic evidence without blocking route fallback."""
+        try:
+            return await intent_service.identify_intent(user_input, history=history)
+        except Exception as exc:  # noqa: BLE001 - routing must remain available on model failure
+            logger.warning("Semantic evidence failed before routing: %s", exc)
+            return None
+
+    def _constrain_candidates_by_intent(
+        self,
+        agents: List[dict],
+        intent_info: Optional[IntentResponse],
+    ) -> List[dict]:
+        """Use high-confidence semantic evidence as a capability constraint, not a domain keyword rule."""
+        if (
+            not intent_info
+            or intent_info.intent != IntentType.DATA_QUERY
+            or intent_info.confidence < AMBIGUOUS_INTENT_CONFIDENCE_THRESHOLD
+        ):
+            return agents
+
+        data_agents = [
+            agent
+            for agent in agents
+            if self._is_data_query_agent(agents, agent.get("name"))
+        ]
+        return data_agents or agents
 
     def _build_history_context(
         self,
@@ -437,6 +491,8 @@ class RouterService:
         result_json: dict,
         agents_metadata: List[dict],
         enable_multi_agent: bool,
+        *,
+        intent_info: Optional[IntentResponse] = None,
     ) -> Optional[RouteResult]:
         confidence = result_json.get("confidence", 0.5)
         target_name = result_json.get("agent_name")
@@ -460,12 +516,17 @@ class RouterService:
             return self._fallback_to_general(
                 agents_metadata,
                 f"Low confidence ({confidence}) for agent selection. Reason: {reasoning}",
+                intent_info=intent_info,
             )
 
         target_agent = self._match_agent(target_name, agents_metadata)
         if not target_agent:
             logger.warning(f"Router suggested unknown agent: {target_name}. Falling back to General Chat.")
-            return self._fallback_to_general(agents_metadata, f"Router returned unknown agent: {target_name}")
+            return self._fallback_to_general(
+                agents_metadata,
+                f"Router returned unknown agent: {target_name}",
+                intent_info=intent_info,
+            )
 
         resolved_secondaries: List[str] = []
         if enable_multi_agent and secondary_names:
@@ -479,6 +540,7 @@ class RouterService:
             secondary_agents=resolved_secondaries,
             confidence=confidence,
             reasoning=reasoning,
+            intent_info=intent_info,
             turn_labels=turn_labels,
             relation_to_previous=relation_to_previous,
             user_action_type=user_action_type,
@@ -574,13 +636,20 @@ class RouterService:
             return str(agent["name"])
         return self.FALLBACK_AGENT_NAMES[-1]
 
-    def _fallback_to_general(self, agents: List[dict], reason: str) -> Optional[RouteResult]:
+    def _fallback_to_general(
+        self,
+        agents: List[dict],
+        reason: str,
+        *,
+        intent_info: Optional[IntentResponse] = None,
+    ) -> Optional[RouteResult]:
         fallback_agent = self._find_fallback_agent(agents)
         if fallback_agent:
             return RouteResult(
                 agent_id=fallback_agent['id'],
                 confidence=0.1,
                 reasoning=f"Fallback: {reason}",
+                intent_info=intent_info,
                 turn_labels=["ambiguous"],
                 relation_to_previous="unknown",
                 user_action_type="unknown",

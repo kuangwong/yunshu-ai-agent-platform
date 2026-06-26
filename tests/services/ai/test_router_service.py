@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 from app.services.ai.router_service import RouterService, RouteResult
-from app.services.ai.intent_service import should_inherit_data_agent_session
+from app.services.ai.intent_service import IntentResponse, IntentType, should_inherit_data_agent_session
 
 # --- Mocks ---
 
@@ -14,7 +14,14 @@ async def init_infrastructure():
          patch("app.core.database.close_db", new_callable=AsyncMock), \
          patch("app.core.redis.init_redis", new_callable=AsyncMock), \
          patch("app.core.redis.close_redis", new_callable=AsyncMock), \
-         patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock):
+         patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock), \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify:
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.GENERAL,
+            confidence=0.95,
+            reasoning="测试默认通用语义",
+            entities=[],
+        )
         yield
 
 @pytest.fixture
@@ -438,6 +445,73 @@ async def test_route_query_datacenter_list_uses_chatbi(mock_agents_metadata):
     routed_messages = mock_chat.generate_text.call_args[0][0]
     system_prompt = routed_messages[0].content[0].text
     assert "客户/员工/产品/工单/审批等业务记录或数据列表" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_route_query_constrains_candidates_for_high_confidence_data_intent(mock_agents_metadata):
+    """高置信结构化数据意图只在具备数据能力的候选中路由，不依赖业务对象词。"""
+    service = RouterService()
+    evidence = IntentResponse(
+        intent=IntentType.DATA_QUERY,
+        confidence=0.91,
+        reasoning="请求系统结构化记录",
+        entities=["任意业务对象"],
+    )
+    router_response = json.dumps({
+        "thought": "在数据候选中选择 SQL 分析专家",
+        "agent_name": "ChatBI",
+        "confidence": 0.9,
+    })
+    mock_chat = _mock_chat_client(router_response)
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+        mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = evidence
+        mock_get_llm.return_value = object()
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query("列出某个系统中的全部记录")
+
+    assert result.agent_id == "agent-chatbi"
+    assert result.intent_info == evidence
+    routed_messages = mock_chat.generate_text.call_args.args[0]
+    system_prompt = routed_messages[0].content[0].text
+    assert "ID: ChatBI" in system_prompt
+    assert "ID: general-chat" not in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_route_query_data_evidence_survives_invalid_constrained_route(mock_agents_metadata):
+    """受约束候选的路由模型失败时，应回落 Main 并保留语义供其委派。"""
+    service = RouterService()
+    evidence = IntentResponse(
+        intent=IntentType.DATA_QUERY,
+        confidence=0.91,
+        reasoning="请求系统结构化记录",
+        entities=[],
+    )
+    mock_chat = _mock_chat_client(json.dumps({
+        "thought": "错误返回不存在的候选",
+        "agent_name": "not-in-candidates",
+        "confidence": 0.9,
+    }))
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+        mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = evidence
+        mock_get_llm.return_value = object()
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query("列出某个系统中的全部记录")
+
+    assert result.agent_id == "agent-general"
+    assert result.intent_info == evidence
 
 
 @pytest.mark.asyncio

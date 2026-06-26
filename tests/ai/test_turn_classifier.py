@@ -770,6 +770,34 @@ async def test_data_query_turn_classifier_uses_llm_for_explicit_new_query():
 
 
 @pytest.mark.asyncio
+async def test_resolve_turn_reuses_routing_intent_evidence_without_second_llm_call():
+    """外层已完成语义识别时，通用会话分类不得再次调用意图模型。"""
+    evidence = IntentResponse(
+        intent=IntentType.DATA_QUERY,
+        confidence=0.9,
+        reasoning="请求结构化记录",
+        entities=[],
+    )
+
+    with patch(
+        "app.services.ai.intent_service.intent_service.identify_intent",
+        new_callable=AsyncMock,
+    ) as mock_identify:
+        classification, intent_info, elapsed_ms = await resolve_turn_for_session(
+            "列出任意记录",
+            [{"role": "user", "content": "列出任意记录"}],
+            can_do_data=False,
+            intent_evidence=evidence,
+        )
+
+    mock_identify.assert_not_awaited()
+    assert classification.intent == IntentType.DATA_QUERY
+    assert classification.turn_type == TurnType.GENERAL
+    assert intent_info == evidence
+    assert elapsed_ms == 0.0
+
+
+@pytest.mark.asyncio
 async def test_data_query_turn_classifier_falls_back_to_rules_when_llm_invalid():
     llm = object()
     chat_client = _mock_chat_client("not json")

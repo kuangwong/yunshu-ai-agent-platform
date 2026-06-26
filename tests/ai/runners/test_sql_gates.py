@@ -124,6 +124,20 @@ def test_is_diagnostic_sql_patterns():
     assert is_diagnostic_sql("DESCRIBE demo_table")
 
 
+def test_is_diagnostic_sql_allows_aggregate_summary_and_filtered_count():
+    leave_sql = (
+        "SELECT COUNT(*) AS leave_count, SUM(NVL(QJSCT,0)) AS total_days "
+        "FROM FORMTABLE_MAIN_11 "
+        "WHERE TO_DATE(QJRQQ, 'YYYY-MM-DD') "
+        "BETWEEN TO_DATE('2025-07-01', 'YYYY-MM-DD') AND TO_DATE('2026-01-31', 'YYYY-MM-DD')"
+    )
+    assert not is_diagnostic_sql(leave_sql)
+    assert not is_diagnostic_sql(
+        "SELECT COUNT(*) AS cnt FROM orders WHERE status = 'ACTIVE'"
+    )
+    assert is_diagnostic_sql("SELECT COUNT(*) FROM orders")
+
+
 # --- Schema 预检：列/表 ---
 
 

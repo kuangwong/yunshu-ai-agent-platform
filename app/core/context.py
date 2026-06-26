@@ -35,6 +35,7 @@ class AgentContext(BaseModel):
     is_admin: bool = False
     api_key: Optional[str] = None
     user_dimensions: Dict[str, Any] = Field(default_factory=dict)
+    authorized_attachment_paths: List[str] = Field(default_factory=list)
     
     # Execution details for tracing (displayed in frontend)
     trace_logs: List[str] = Field(default_factory=list)
@@ -42,6 +43,11 @@ class AgentContext(BaseModel):
 
     # Delegation control
     delegation_depth: int = 0
+    delegation_call_counts: Dict[str, int] = Field(default_factory=dict)
+    delegation_agent_call_counts: Dict[str, int] = Field(default_factory=dict)
+
+    # Runtime tool approval (inherited by sub_agent_call delegation)
+    permission_options: Dict[str, Any] = Field(default_factory=dict)
 
     # Queue for streaming sub-agent log/progress chunks back to client
     event_queue: Optional[Any] = None

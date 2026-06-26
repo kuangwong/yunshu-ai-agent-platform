@@ -36,6 +36,7 @@ READ_ONLY_TOOL_NAMES = {
     "fetch_static_web_url",
     "web_search_baidu",
     "system_http_request",
+    "sub_agent_call",
 }
 
 @dataclass(frozen=True)

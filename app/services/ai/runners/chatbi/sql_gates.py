@@ -957,6 +957,12 @@ def detect_sql_static_risk(sql: str) -> str:
     return ""
 
 
+_NON_COUNT_AGGREGATE_RE = re.compile(
+    r"\b(SUM|AVG|MAX|MIN|LISTAGG|WM_CONCAT|MEDIAN|STDDEV|VARIANCE)\s*\(",
+    re.IGNORECASE,
+)
+
+
 def is_diagnostic_sql(sql: str) -> bool:
     sql_upper = " ".join(str(sql or "").upper().split())
     if any(x in sql_upper for x in ("SHOW TABLES", "SHOW COLUMNS", "DESCRIBE ", "DESC ")):
@@ -964,6 +970,11 @@ def is_diagnostic_sql(sql: str) -> bool:
     if "SELECT DISTINCT" in sql_upper and "LIMIT" in sql_upper:
         return True
     if "COUNT(" in sql_upper and "GROUP BY" not in sql_upper:
+        # 多聚合汇总（如 COUNT+SUM）或带 WHERE 的过滤统计，视为最终业务 SQL，非探路诊断。
+        if _NON_COUNT_AGGREGATE_RE.search(sql_upper):
+            return False
+        if re.search(r"\bWHERE\b", sql_upper):
+            return False
         return True
     if " IS NOT NULL" in sql_upper and ("ROWNUM <=" in sql_upper or " LIMIT " in sql_upper or "FETCH FIRST" in sql_upper):
         if re.search(r"\bSELECT\b[\s\S]{0,200}\bFROM\b", sql_upper):

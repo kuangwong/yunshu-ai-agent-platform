@@ -2559,6 +2559,28 @@ def test_first_turn_diagnostic_sql_with_data_blocks_answer(data_config):
     assert runner._current_repair_kind(state) == "diagnostic_sql_pending_final"
 
 
+def test_aggregate_summary_sql_is_final_business_query(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-agg-summary", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    leave_sql = (
+        "SELECT COUNT(*) AS leave_count, SUM(NVL(QJSCT,0)) AS total_days "
+        "FROM FORMTABLE_MAIN_11 "
+        "WHERE TO_DATE(QJRQQ, 'YYYY-MM-DD') "
+        "BETWEEN TO_DATE('2025-07-01', 'YYYY-MM-DD') AND TO_DATE('2026-01-31', 'YYYY-MM-DD')"
+    )
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": leave_sql},
+        output={"rows": [{"leave_count": 1727, "total_days": 3122.7}]},
+    )
+
+    assert should_save is True
+    assert state.diagnostic_sql_pending_final is False
+    assert state.ready_to_answer is True
+
+
 def test_empty_diagnostic_sql_does_not_mark_business_sql_complete(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 

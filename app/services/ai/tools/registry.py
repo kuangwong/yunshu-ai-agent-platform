@@ -28,6 +28,8 @@ from app.services.ai.tools.memory_ltm_tools import (
 )
 from app.services.ai.tools.memory_search_tool import memory_search
 from app.services.ai.tools.agent_delegate_tool import sub_agent_call
+from app.services.ai.tools.excel_document_tool import excel_document_read, excel_document_write
+from app.services.ai.tools.word_document_tool import word_document_read, word_document_write
 from app.models.tool import SysApiTool
 from app.models.mcp import McpToolCache
 from app.core.orm import AsyncSessionLocal
@@ -55,6 +57,13 @@ AGENTSCOPE_BUILTIN_TOOL_ALIASES: Dict[str, str] = {
     "glob_files": "Glob",
     "glob": "Glob",
     "Glob": "Glob",
+}
+
+OFFICE_TOOL_PERMISSION_SCOPES = {
+    "excel_document_read": "read",
+    "excel_document_write": "ask",
+    "word_document_read": "read",
+    "word_document_write": "ask",
 }
 
 
@@ -116,6 +125,10 @@ class ToolRegistry:
         "delete_user_preference": delete_user_preference,
         "memory_search": memory_search,
         "sub_agent_call": sub_agent_call,
+        "excel_document_read": excel_document_read,
+        "excel_document_write": excel_document_write,
+        "word_document_read": word_document_read,
+        "word_document_write": word_document_write,
     }
 
     # Cache for DB Tools
@@ -205,6 +218,14 @@ class ToolRegistry:
         data_tool_spec = cls._create_chatbi_runtime_tool_spec(name)
         if data_tool_spec is not None:
             return data_tool_spec
+
+        if name in OFFICE_TOOL_PERMISSION_SCOPES:
+            tool = cls._registry[name]
+            return runtime_tool_spec_from_legacy_tool(
+                tool,
+                source_type="static",
+                permission_scope=OFFICE_TOOL_PERMISSION_SCOPES[name],
+            )
 
         db_tool = await cls._load_db_tool_with_source(name)
         if db_tool:

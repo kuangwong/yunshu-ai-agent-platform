@@ -297,6 +297,26 @@ const availableTools = [
     isSystem: true,
   },
   {
+    name: "excel_document_read",
+    description: "读取 Excel 工作簿结构或指定单元格区域",
+    isSystem: true,
+  },
+  {
+    name: "excel_document_write",
+    description: "创建或修改 Excel 副本，并生成可下载文件",
+    isSystem: true,
+  },
+  {
+    name: "word_document_read",
+    description: "读取 Word 文档结构或分页段落内容",
+    isSystem: true,
+  },
+  {
+    name: "word_document_write",
+    description: "创建或修改 Word 副本，并生成可下载文件",
+    isSystem: true,
+  },
+  {
     name: "read_file",
     description: "AgentScope Read：按行读取文件内容，运行时替代旧 read_file",
     isSystem: true,
@@ -425,6 +445,8 @@ const groupedTools = computed(() => {
 
     if (name.includes('sql') || name.includes('dataset') || name.includes('bi_') || name.includes('olap')) {
       groups.chatbi.tools.push(tool);
+    } else if (name.startsWith('excel_document') || name.startsWith('word_document')) {
+      groups.office.tools.push(tool);
     } else if (name.includes('knowledge') || name.includes('rag') || name.includes('kb_') || name.includes('document')) {
       groups.knowledge.tools.push(tool);
     } else if (

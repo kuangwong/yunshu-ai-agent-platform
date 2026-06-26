@@ -3572,6 +3572,24 @@ const handleOpenCanvas = async (payload: { type: 'html' | 'code' | 'mermaid' | '
       const urlObj = new URL(payload.content.replace('canvas://', 'http://localhost/'));
       const filePath = urlObj.searchParams.get('path') || '';
       const resolvedUrl = resolveFileUrl(filePath);
+      const officeExtensions = ['.docx', '.doc', '.xlsx', '.xls', '.xlsm', '.pptx', '.ppt'];
+      const normalizedPath = filePath.toLowerCase().split('?')[0].split('#')[0];
+      const isOfficeFile = officeExtensions.some((ext) => normalizedPath.endsWith(ext));
+
+      if (isOfficeFile) {
+        const response = await axios.get(resolvedUrl, { responseType: 'blob' });
+        const filename = filePath.split('/').pop() || 'download';
+        const blobUrl = URL.createObjectURL(response.data);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+        showToast(`已开始下载 ${filename}`, 'success');
+        return;
+      }
 
       if (payload.type === 'pdf' || payload.type === 'image' || payload.type === 'csv') {
         // 对于二进制或结构化媒体资源，使用 axios 携带 header 发送安全请求，并将响应流转为 blob URL 零泄露渲染

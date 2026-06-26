@@ -6,7 +6,7 @@ import re
 import asyncio
 from typing import List, Optional, AsyncGenerator, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.orm import get_db_session
@@ -22,6 +22,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+public_router = APIRouter()
+
+
+@public_router.get("/generated-files/{artifact_id}")
+async def download_generated_file(artifact_id: str, token: str):
+    from app.services.ai.tools.generated_file_service import resolve_for_download
+
+    artifact = resolve_for_download(artifact_id, token)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="文件不存在或已过期")
+    return FileResponse(
+        artifact.path,
+        media_type=artifact.mime_type,
+        filename=artifact.filename,
+    )
 
 class SkillMeta(BaseModel):
     id: Optional[str] = Field(default=None, description="技能 ID")

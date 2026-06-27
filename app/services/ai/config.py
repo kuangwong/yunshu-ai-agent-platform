@@ -243,7 +243,7 @@ class AgentConfigProvider:
             return menu + f"  (System Error: Failed to load dataset menu)"
 
     @staticmethod
-    async def get_dataset_menu(user_id: Optional[int] = None, is_admin: bool = False) -> str:
+    async def get_dataset_menu(user_id: Optional[int] = None, is_admin: bool = False, force_refresh: bool = False) -> str:
         """
         Fetches authorized datasets to assist LLM reasoning. Cached via Redis per user.
         """
@@ -252,13 +252,14 @@ class AgentConfigProvider:
         
         # 1. Try Cache (按用户隔离，admin 共享一个 key)
         cache_key = f"agent:dataset_menu:{'admin' if is_admin else user_id or 'anon'}"
-        try:
-            if redis:
-                cached_menu = await redis.get(cache_key)
-                if cached_menu:
-                    return cached_menu
-        except Exception as e:
-            logger.warning(f"Redis error for dataset menu: {e}")
+        if not force_refresh:
+            try:
+                if redis:
+                    cached_menu = await redis.get(cache_key)
+                    if cached_menu:
+                        return cached_menu
+            except Exception as e:
+                logger.warning(f"Redis error for dataset menu: {e}")
 
         # 2. Cache Miss: Fetch from DB
         content = await AgentConfigProvider._generate_dataset_menu_content(user_id, is_admin)
@@ -294,3 +295,18 @@ class AgentConfigProvider:
             asyncio.create_task(DatasetNavigationService.warm_up_navigation_caches_background())
         except Exception as e:
             logger.error(f"Failed to refresh dataset menu cache: {e}")
+
+    @staticmethod
+    async def invalidate_dataset_menu_cache(user_id: Optional[int] = None, is_admin: bool = False):
+        """
+        Invalidate dataset menu cache for a specific user.
+        """
+        from app.core.redis import get_redis
+        try:
+            redis = await get_redis()
+            if redis:
+                cache_key = f"agent:dataset_menu:{'admin' if is_admin else user_id or 'anon'}"
+                await redis.delete(cache_key)
+                logger.info(f"Dataset menu cache invalidated for key: {cache_key}")
+        except Exception as e:
+            logger.warning(f"Failed to invalidate dataset menu cache for user {user_id}: {e}")

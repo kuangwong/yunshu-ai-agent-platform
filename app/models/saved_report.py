@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import relationship
 
 from app.core.orm import Base
@@ -61,4 +61,24 @@ class PortalSavedReportShare(Base):
     __table_args__ = (
         Index("idx_portal_saved_report_shares_target", "target_type", "target_id"),
         Index("ux_portal_saved_report_share_target", "report_id", "target_type", "target_id", unique=True),
+    )
+
+
+class PortalSavedReportUserPref(Base):
+    __tablename__ = "portal_saved_report_user_prefs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    report_id = Column(String(64), ForeignKey("portal_saved_reports.id"), nullable=False, index=True)
+    user_id = Column(BigInteger, ForeignKey("ai_agent_users.id"), nullable=False, index=True)
+    is_favorite = Column(Boolean, nullable=False, default=False)
+    pinned_at = Column(DateTime, nullable=True)
+    last_viewed_at = Column(DateTime, nullable=True)
+    run_count = Column(Integer, nullable=False, default=0)
+    last_run_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    __table_args__ = (
+        Index("ux_portal_saved_report_user_pref", "report_id", "user_id", unique=True),
+        Index("idx_portal_saved_report_user_pref_user", "user_id", "pinned_at", "last_run_at"),
     )

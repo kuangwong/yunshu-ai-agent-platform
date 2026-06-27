@@ -197,3 +197,5 @@
 | Excel 文档工具 (Excel Document Tools) | `tests/ai/tools/test_excel_document_tool.py` | **Excel 读写**：验证 `excel_document_read`（inspect/read_range）与 `excel_document_write`（create/update_cells/append_rows）及 artifact 发布。 | ✅ 通过 | 2026-06-26 |
 | 生成文件下载服务 (Generated File Download) | `tests/ai/tools/test_generated_file_service.py`, `tests/api/v1/test_generated_file_download.py` | **私有下载链接**：验证 artifact manifest 发布、token 鉴权、`GET /api/v1/chat/generated-files/{artifact_id}` 下载与过期失效。 | ✅ 通过 | 2026-06-26 |
 | ChatBI Schema 检索失败快速熔断拦截 (ChatBI Schema Fatal Early Interrupt) | `app/services/ai/runners/chatbi/react_stream.py` | **Schema 检索熔断拦截**：验证在 ReAct 循环中，每次工具调用后进行 `state.halt_current_react` 判定时，若检测到 Schema 致命错误（例如连续 2 次检索未命中数据集定义），则能够立刻触发熔断打断当前流，避免大模型死磕空转。 | ✅ 已完成 | 2026-06-26 |
+| 黄金 SQL 报表优化 (Saved Reports Optimization) | `tests/api/portal/test_saved_reports.py` | **黄金报表偏好与并发防爆**：验证收藏/置顶/运行统计个人偏好持久化及接口；验证列表根据置顶和时间倒序排列；验证有参和无参报表执行前 preview 实时渲染与 precheck SQL 权限；验证 `_get_or_create_report_user_pref` 在高并发下的嵌套子事务 `begin_nested()` 防 IntegrityError 冲突回滚重试机制。 | ✅ 通过 | 2026-06-27 |
+

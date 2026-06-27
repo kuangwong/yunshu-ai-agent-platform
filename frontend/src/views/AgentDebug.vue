@@ -568,6 +568,18 @@ const showSaveReportModal = ref(false);
 const isSavingReport = ref(false);
 const isEditingReport = ref(false);
 const editingReportId = ref<string | null>(null);
+const showReportRunModal = ref(false);
+const pendingSavedReport = ref<SavedReportPayload | null>(null);
+const isPreviewingSavedReport = ref(false);
+const reportRunPreview = ref<any | null>(null);
+const reportRunForm = ref({
+  dateRange: 'month_start_to_today',
+  startDate: '',
+  endDate: '',
+  monthRange: 'last_6_completed_months',
+  startMonth: '',
+  endMonth: '',
+});
 const saveReportForm = ref({
   title: '',
   description: '',
@@ -629,6 +641,16 @@ const detectSavedReportDateTemplate = (sql: string) => {
     ],
     default_params: { month_range: 'last_6_completed_months' },
   };
+};
+
+const todayDateString = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const todayMonthString = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
 const parseSavedReportTags = (input: string) => {
@@ -869,7 +891,7 @@ const renderSavedReportDataToMarkdown = (data: any): string => {
 const extractSavedReportExecuteErrorMessage = (error: any) => {
   const statusCode = error?.response?.status;
   const responseData = error?.response?.data || {};
-  const rawDetail = responseData?.detail ?? error.response?.data?.message ?? responseData?.error;
+  const rawDetail = responseData?.detail ?? responseData?.message ?? responseData?.error;
   const rawMessage = typeof rawDetail === 'object' ? JSON.stringify(rawDetail) : String(rawDetail || '');
   const combined = `${rawMessage} ${error?.message || ''}`;
   const lower = combined.toLowerCase();
@@ -888,14 +910,147 @@ const extractSavedReportExecuteErrorMessage = (error: any) => {
   return cleaned || '报表执行失败，暂时无法获取结果。请稍后重试，或联系管理员检查报表配置与数据权限。';
 };
 
-const handleExecuteSavedReport = async (report: {
-  id: string;
-  title: string;
-  sql_content: string;
-  default_params?: Record<string, any>;
-  analysis_mode?: string;
-}) => {
+const savedReportNeedsRunOptions = (report: SavedReportPayload) => {
+  return report.mode === 'param_sql' && Array.isArray(report.params_schema) && report.params_schema.length > 0;
+};
+
+const savedReportUsesMonthRange = (report?: SavedReportPayload | null) => {
+  return Boolean(report?.params_schema?.some((item: any) => item?.type === 'month_range' || item?.name === 'month_range'));
+};
+
+let suppressSavedReportRunPreviewWatch = false;
+
+const prepareSavedReportRunForm = (report: SavedReportPayload) => {
+  suppressSavedReportRunPreviewWatch = true;
+  const defaults = report.default_params || {};
+  reportRunForm.value = {
+    dateRange: String(defaults.date_range || 'month_start_to_today'),
+    startDate: String(defaults.start_date || todayDateString()),
+    endDate: String(defaults.end_date || todayDateString()),
+    monthRange: String(defaults.month_range || 'last_6_completed_months'),
+    startMonth: String(defaults.start_month || todayMonthString()),
+    endMonth: String(defaults.end_month || todayMonthString()),
+  };
+  nextTick(() => {
+    suppressSavedReportRunPreviewWatch = false;
+  });
+};
+
+const buildSavedReportRunParams = () => {
+  if (savedReportUsesMonthRange(pendingSavedReport.value)) {
+    const params: Record<string, any> = {
+      month_range: reportRunForm.value.monthRange,
+    };
+    if (reportRunForm.value.monthRange === 'custom_month_range') {
+      params.start_month = reportRunForm.value.startMonth;
+      params.end_month = reportRunForm.value.endMonth;
+    }
+    return params;
+  }
+  const params: Record<string, any> = {
+    date_range: reportRunForm.value.dateRange,
+  };
+  if (reportRunForm.value.dateRange === 'custom_range') {
+    params.start_date = reportRunForm.value.startDate;
+    params.end_date = reportRunForm.value.endDate;
+  }
+  return params;
+};
+
+let savedReportPreviewSeq = 0;
+let savedReportPreviewAbort: AbortController | null = null;
+
+const previewSavedReportRun = async () => {
+  const report = pendingSavedReport.value;
+  if (!report) return;
+  const seq = ++savedReportPreviewSeq;
+  savedReportPreviewAbort?.abort();
+  const controller = new AbortController();
+  savedReportPreviewAbort = controller;
+  isPreviewingSavedReport.value = true;
+  reportRunPreview.value = null;
+  try {
+    const res = await axios.post(`/api/portal/saved-reports/${report.id}/preview`, {
+      params: buildSavedReportRunParams(),
+      analysis_mode: 'auto',
+    }, { signal: controller.signal });
+    if (seq !== savedReportPreviewSeq) return;
+    reportRunPreview.value = res.data?.data || null;
+  } catch (error: any) {
+    if (controller.signal.aborted || seq !== savedReportPreviewSeq) return;
+    console.error("Failed to preview saved report:", error);
+    reportRunPreview.value = {
+      rendered_sql: report.sql_content,
+      permission_status: 'unknown',
+      permission_message: extractSavedReportExecuteErrorMessage(error),
+      can_run: true,
+    };
+  } finally {
+    if (seq === savedReportPreviewSeq) {
+      isPreviewingSavedReport.value = false;
+    }
+  }
+};
+
+let savedReportPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+
+const scheduleSavedReportPreview = (immediate = false) => {
+  if (!showReportRunModal.value || !pendingSavedReport.value) return;
+  if (!immediate && suppressSavedReportRunPreviewWatch) return;
+  if (savedReportPreviewTimer) clearTimeout(savedReportPreviewTimer);
+  if (immediate) {
+    void previewSavedReportRun();
+    return;
+  }
+  savedReportPreviewTimer = setTimeout(() => previewSavedReportRun(), 250);
+};
+
+watch(
+  () => [
+    reportRunForm.value.dateRange,
+    reportRunForm.value.startDate,
+    reportRunForm.value.endDate,
+    reportRunForm.value.monthRange,
+    reportRunForm.value.startMonth,
+    reportRunForm.value.endMonth,
+  ],
+  () => scheduleSavedReportPreview(false),
+  { flush: 'post' }
+);
+
+onUnmounted(() => {
+  savedReportPreviewAbort?.abort();
+  if (savedReportPreviewTimer) clearTimeout(savedReportPreviewTimer);
+});
+
+const handleExecuteSavedReport = async (report: SavedReportPayload) => {
+  if (!savedReportNeedsRunOptions(report)) {
+    pendingSavedReport.value = report;
+    reportRunPreview.value = null;
+    await executeSavedReportWithOptions(report);
+    return;
+  }
+  pendingSavedReport.value = report;
+  reportRunPreview.value = null;
+  showReportRunModal.value = true;
+  prepareSavedReportRunForm(report);
+  scheduleSavedReportPreview(true);
+};
+
+const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | null) => {
+  const report = reportArg || pendingSavedReport.value;
+  if (!report) return;
   if (isProcessing.value) return;
+  if (savedReportNeedsRunOptions(report) && (isPreviewingSavedReport.value || !reportRunPreview.value)) {
+    showToast("请等待运行预览完成后再执行。", "error");
+    return;
+  }
+  if (reportRunPreview.value?.can_run === false) {
+    showToast("暂无该报表所需数据权限，无法运行。", "error");
+    return;
+  }
+
+  showReportRunModal.value = false;
 
   if (showPortalDrawer.value && !portalKeepOpenOnQuestion.value) {
     showPortalDrawer.value = false;
@@ -935,7 +1090,7 @@ const handleExecuteSavedReport = async (report: {
   try {
     const shouldAutoAnalyze = true;
     const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, {
-      params: report.default_params || {},
+      params: buildSavedReportRunParams(),
       analysis_mode: 'auto',
     }, {
       params: { conversation_id: conversationId.value }
@@ -1062,6 +1217,19 @@ interface LogEntry {
   category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'intent' | 'permission' | 'external' | 'model' | 'agent' | 'context' | 'default';
   model?: string;
   temperature?: number;
+}
+
+interface SavedReportPayload {
+  id: string;
+  title: string;
+  sql_content: string;
+  mode?: string;
+  sql_template?: string;
+  params_schema?: any[];
+  default_params?: Record<string, any>;
+  analysis_mode?: string;
+  description?: string;
+  tags?: string[];
 }
 
 // ... inside script ...
@@ -3876,7 +4044,7 @@ onUnmounted(() => {
                                           <span>SQL Query</span>
                                           <div class="flex items-center space-x-2">
                                             <template v-if="splitSqlToolLogDetails(log.details)!.bodyKind === 'result' && log.status === 'success'">
-                                              <button @click.stop="openSaveReportModal(splitSqlToolLogDetails(log.details)!.sqlPart, msg)" class="text-gray-600 hover:text-primary transition-colors uppercase" title="暂存到我的数据门户">暂存</button>
+                                              <button @click.stop="openSaveReportModal(splitSqlToolLogDetails(log.details)!.sqlPart, msg)" class="text-gray-600 hover:text-primary transition-colors" title="添加为黄金报表">添加黄金报表</button>
                                               <span class="text-gray-700">|</span>
                                             </template>
                                             <button @click.stop="copyContent(splitSqlToolLogDetails(log.details)!.sqlPart, $event)" class="text-gray-600 hover:text-emerald-400 transition-colors uppercase">Copy</button>
@@ -5376,15 +5544,116 @@ onUnmounted(() => {
     @edit-saved-report="openEditReportModal"
   />
 
+  <!-- Modal: Run Saved Report -->
+  <teleport to="body">
+  <div
+    v-if="showReportRunModal"
+    class="fixed inset-y-0 left-0 z-[250] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+    :class="saveReportModalOverlayClass"
+    @click.self="showReportRunModal = false"
+  >
+    <div class="bg-white dark:bg-gray-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden border border-gray-100 dark:border-gray-700">
+      <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50">
+        <div>
+          <h3 class="text-base font-black text-gray-800 dark:text-gray-100 uppercase tracking-widest">运行黄金报表</h3>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate max-w-[18rem]">{{ pendingSavedReport?.title }}</p>
+        </div>
+        <button @click="showReportRunModal = false" class="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors text-gray-400">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div v-if="!savedReportUsesMonthRange(pendingSavedReport)">
+          <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">日期范围</label>
+          <select
+            v-model="reportRunForm.dateRange"
+            class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-gray-800 dark:text-gray-200"
+          >
+            <option value="today">今天</option>
+            <option value="yesterday">昨天</option>
+            <option value="last_7_days">最近 7 天</option>
+            <option value="month_start_to_today">本月截至今天</option>
+            <option value="custom_range">自定义日期</option>
+          </select>
+        </div>
+        <div v-if="reportRunForm.dateRange === 'custom_range'" class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">开始日期</label>
+            <input v-model="reportRunForm.startDate" type="date" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
+          </div>
+          <div>
+            <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">结束日期</label>
+            <input v-model="reportRunForm.endDate" type="date" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
+          </div>
+        </div>
+        <div v-if="savedReportUsesMonthRange(pendingSavedReport)">
+          <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">月份范围</label>
+          <select
+            v-model="reportRunForm.monthRange"
+            class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-gray-800 dark:text-gray-200"
+          >
+            <option value="last_6_completed_months">最近 6 个完整月</option>
+            <option value="year_start_to_current_month">本年截至本月</option>
+            <option value="custom_month_range">自定义月份</option>
+          </select>
+        </div>
+        <div v-if="savedReportUsesMonthRange(pendingSavedReport) && reportRunForm.monthRange === 'custom_month_range'" class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">开始月份</label>
+            <input v-model="reportRunForm.startMonth" type="month" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
+          </div>
+          <div>
+            <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">结束月份</label>
+            <input v-model="reportRunForm.endMonth" type="month" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
+          </div>
+        </div>
+        <div class="flex items-center justify-between gap-3 p-3 rounded-xl border border-blue-100 dark:border-blue-900/40 bg-blue-50/40 dark:bg-blue-950/20">
+          <span>
+            <span class="block text-sm font-bold text-gray-800 dark:text-gray-100">执行并分析</span>
+            <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">执行完成后将自动让 ChatBI 解读结果</span>
+          </span>
+        </div>
+        <div class="rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-950/40 overflow-hidden min-h-[10.5rem]">
+          <div class="px-3 py-2 flex items-center justify-between border-b border-gray-100 dark:border-gray-800">
+            <span class="text-xs font-black text-gray-600 dark:text-gray-300">实际执行 SQL</span>
+            <span
+              class="text-[10px] font-bold px-2 py-0.5 rounded"
+              :class="isPreviewingSavedReport ? 'bg-gray-100 text-gray-500' : reportRunPreview?.permission_status === 'denied' ? 'bg-red-50 text-red-600' : reportRunPreview?.permission_status === 'allowed' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'"
+            >
+              {{ isPreviewingSavedReport ? '预检中' : reportRunPreview?.permission_status === 'denied' ? '无权限' : reportRunPreview?.permission_status === 'allowed' ? '可运行' : '待校验' }}
+            </span>
+          </div>
+          <div v-if="isPreviewingSavedReport" class="px-3 py-4 text-xs text-gray-400">正在生成运行预览...</div>
+          <pre v-else class="max-h-44 overflow-auto px-3 py-2 text-[11px] font-mono leading-relaxed text-gray-600 dark:text-gray-300 whitespace-pre-wrap">{{ reportRunPreview?.rendered_sql || pendingSavedReport?.sql_content || '' }}</pre>
+          <p v-if="reportRunPreview?.permission_message" class="px-3 pb-3 text-[11px] text-red-500">{{ reportRunPreview.permission_message }}</p>
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex justify-end space-x-3 bg-gray-50/50 dark:bg-gray-800/50">
+        <button @click="showReportRunModal = false" class="px-4 py-2 text-xs font-bold text-gray-500 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+          取消
+        </button>
+        <button
+          @click="executeSavedReportWithOptions()"
+          :disabled="isPreviewingSavedReport || !reportRunPreview || reportRunPreview?.can_run === false"
+          class="px-4 py-2 text-xs font-bold text-white bg-primary rounded-xl hover:bg-primary-hover active:bg-primary-active disabled:opacity-50 transition-colors"
+        >
+          开始运行
+        </button>
+      </div>
+    </div>
+  </div>
+  </teleport>
+
   <!-- Modal: Save Report -->
+  <teleport to="body">
   <div
     v-if="showSaveReportModal"
-    class="fixed inset-y-0 left-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 transition-[right] duration-200"
+    class="fixed inset-y-0 left-0 z-[250] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
     :class="saveReportModalOverlayClass"
     @click.self="showSaveReportModal = false"
   >
     <div
-      class="bg-white dark:bg-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-gray-100 dark:border-gray-700 animate-fade-in-up"
+      class="bg-white dark:bg-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-gray-100 dark:border-gray-700"
     >
       <!-- Header -->
       <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50">
@@ -5394,7 +5663,7 @@ onUnmounted(() => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v2a2 2 0 01-2 2H7a2 2 0 01-2-2V5zM12 9v12m-3-3l3 3 3-3" />
             </svg>
           </div>
-          <h3 class="text-base font-black text-gray-800 dark:text-gray-100 uppercase tracking-widest">{{ isEditingReport ? '编辑黄金 SQL 报表' : '暂存黄金 SQL 报表' }}</h3>
+          <h3 class="text-base font-black text-gray-800 dark:text-gray-100 uppercase tracking-widest">{{ isEditingReport ? '编辑黄金 SQL 报表' : '沉淀为黄金报表' }}</h3>
         </div>
         <button @click="showSaveReportModal = false" class="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors text-gray-400">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -5465,11 +5734,12 @@ onUnmounted(() => {
           class="px-4 py-2 text-xs font-bold text-white bg-primary rounded-xl hover:bg-primary-hover active:bg-primary-active disabled:opacity-50 transition-colors flex items-center space-x-1.5"
         >
           <svg v-if="isSavingReport" class="w-3.5 h-3.5 animate-spin text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-          <span>{{ isEditingReport ? '保存修改' : '确定暂存' }}</span>
+          <span>{{ isEditingReport ? '保存修改' : '沉淀报表' }}</span>
         </button>
       </div>
     </div>
   </div>
+  </teleport>
 </template>
 
 <style scoped>

@@ -90,8 +90,9 @@ class DatasetNavigationService:
         *,
         user_id: Optional[int],
         is_admin: bool,
+        force_refresh: bool = False,
     ) -> str:
-        return await AgentConfigProvider.get_dataset_menu(user_id=user_id, is_admin=is_admin)
+        return await AgentConfigProvider.get_dataset_menu(user_id=user_id, is_admin=is_admin, force_refresh=force_refresh)
 
     @staticmethod
     async def _get_navigation_cache_generation() -> str:
@@ -651,6 +652,7 @@ class DatasetNavigationService:
         dataset_menu = await DatasetNavigationService._get_dataset_menu(
             user_id=user_id,
             is_admin=is_admin,
+            force_refresh=force_refresh,
         )
         dataset_count = count_datasets_in_menu(dataset_menu)
 

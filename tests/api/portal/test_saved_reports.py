@@ -59,6 +59,12 @@ class _ExecuteResult:
     def scalars(self):
         return _ScalarResult(self._values)
 
+    def scalar_one_or_none(self):
+        return self._values[0] if self._values else None
+
+    def scalar_one(self):
+        return self._values[0]
+
 
 def test_saved_report_static_sql_stays_compatible():
     report = saved_reports.SavedReportItem.model_validate(
@@ -103,6 +109,7 @@ async def test_get_saved_reports_enriches_owner_share_summary(monkeypatch):
             _ExecuteResult([owner_report]),
             _ExecuteResult([SimpleNamespace(id=9, user_name="bob", real_name="Bob")]),
             _ExecuteResult([SimpleNamespace(id=2, code="ops", name="运维角色")]),
+            _ExecuteResult([]),
         ]
     )
     monkeypatch.setattr(saved_reports, "execute_sql_query_core", AsyncMock())
@@ -125,7 +132,7 @@ async def test_get_saved_reports_enriches_owner_share_summary(monkeypatch):
 async def test_get_saved_reports_marks_shared_report_denied_when_table_permission_fails(monkeypatch):
     shared_report = _report_row(owner_user_id=1, owner_name="admin", visibility="shared")
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[_ExecuteResult([2]), _ExecuteResult([shared_report])])
+    db.execute = AsyncMock(side_effect=[_ExecuteResult([2]), _ExecuteResult([shared_report]), _ExecuteResult([])])
 
     async def fake_execute_sql_query_core(*args, **kwargs):
         assert kwargs["auth_check_only"] is True
@@ -144,6 +151,187 @@ async def test_get_saved_reports_marks_shared_report_denied_when_table_permissio
     assert item.run_permission_status == "denied"
     assert item.can_run is False
     assert "没有访问数据表" in item.run_permission_message
+
+
+@pytest.mark.asyncio
+async def test_preview_saved_report_returns_rendered_sql_and_permission_status(monkeypatch):
+    report_row = _report_row()
+    db = AsyncMock()
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        assert kwargs["auth_check_only"] is True
+        assert kwargs["sql"] == "SELECT * FROM orders WHERE created_at >= '2026-06-27' AND created_at < '2026-06-28'"
+        return json.dumps({"allowed": True})
+
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    response = await saved_reports.preview_saved_report(
+        "rpt_5",
+        body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    assert response.data.report_id == "rpt_5"
+    assert response.data.rendered_sql == "SELECT * FROM orders WHERE created_at >= '2026-06-27' AND created_at < '2026-06-28'"
+    assert response.data.permission_status == "allowed"
+    assert response.data.can_run is True
+    assert response.data.data_source == "mysql_test"
+
+
+@pytest.mark.asyncio
+async def test_preview_saved_report_marks_permission_denied(monkeypatch):
+    report_row = _report_row(owner_user_id=1, owner_name="admin")
+    db = AsyncMock()
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        return "[Permission Denied] 用户 bob 无权访问表 'secret_orders'"
+
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    response = await saved_reports.preview_saved_report(
+        "rpt_5",
+        body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
+        user_info={"user_id": "7", "role": "user", "user_name": "bob"},
+        db=db,
+    )
+
+    assert response.data.permission_status == "denied"
+    assert response.data.can_run is False
+    assert "没有访问数据表" in response.data.permission_message
+
+
+@pytest.mark.asyncio
+async def test_get_saved_report_detail_includes_user_preferences(monkeypatch):
+    report_row = _report_row()
+    pref = SimpleNamespace(
+        report_id="rpt_5",
+        user_id=7,
+        is_favorite=True,
+        pinned_at=datetime(2026, 6, 27, 9, 0, 0),
+        last_viewed_at=datetime(2026, 6, 27, 10, 0, 0),
+        run_count=3,
+        last_run_at=datetime(2026, 6, 27, 11, 0, 0),
+    )
+    db = AsyncMock()
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "_get_report_user_prefs", AsyncMock(return_value={"rpt_5": pref}))
+    monkeypatch.setattr(saved_reports, "_enrich_saved_report_share_targets", AsyncMock())
+    monkeypatch.setattr(saved_reports, "_annotate_saved_report_run_permissions", AsyncMock())
+    monkeypatch.setattr(saved_reports, "_touch_saved_report_view", AsyncMock())
+
+    response = await saved_reports.get_saved_report_detail(
+        "rpt_5",
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    assert response.data.id == "rpt_5"
+    assert response.data.is_favorite is True
+    assert response.data.pinned_at == "2026-06-27T09:00:00"
+    assert response.data.user_run_count == 3
+
+
+@pytest.mark.asyncio
+async def test_update_saved_report_preferences_sets_favorite_and_pin(monkeypatch):
+    report_row = _report_row()
+    pref = SimpleNamespace(
+        report_id="rpt_5",
+        user_id=7,
+        is_favorite=False,
+        pinned_at=None,
+        last_viewed_at=None,
+        run_count=0,
+        last_run_at=None,
+    )
+    db = AsyncMock()
+    db.flush = AsyncMock()
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "_get_or_create_report_user_pref", AsyncMock(return_value=pref))
+    monkeypatch.setattr(saved_reports, "_enrich_saved_report_share_targets", AsyncMock())
+    monkeypatch.setattr(saved_reports, "_annotate_saved_report_run_permissions", AsyncMock())
+
+    response = await saved_reports.update_saved_report_preferences(
+        "rpt_5",
+        body=saved_reports.UpdateReportPreferenceRequest.model_validate(
+            {"is_favorite": True, "pinned": True}
+        ),
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    assert pref.is_favorite is True
+    assert pref.pinned_at is not None
+    assert response.data.is_favorite is True
+    assert response.data.pinned_at is not None
+    db.flush.assert_awaited_once()
+
+
+def test_sort_saved_reports_for_user_pins_first():
+    unpinned = saved_reports.SavedReportItem.model_validate(
+        {
+            "id": "rpt_1",
+            "title": "普通报表",
+            "sql_content": "SELECT 1",
+            "dataset_id": None,
+            "data_source": "mysql_test",
+            "original_query": "q1",
+            "created_at": "2026-06-27T12:00:00",
+            "updated_at": "2026-06-27T12:00:00",
+        }
+    )
+    pinned = saved_reports.SavedReportItem.model_validate(
+        {
+            "id": "rpt_2",
+            "title": "置顶报表",
+            "sql_content": "SELECT 2",
+            "dataset_id": None,
+            "data_source": "mysql_test",
+            "original_query": "q2",
+            "created_at": "2026-06-20T12:00:00",
+            "updated_at": "2026-06-20T12:00:00",
+            "pinned_at": "2026-06-27T09:00:00",
+        }
+    )
+
+    sorted_reports = saved_reports._sort_saved_reports_for_user([unpinned, pinned])
+
+    assert sorted_reports[0].id == "rpt_2"
+    assert sorted_reports[1].id == "rpt_1"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_report_user_pref_retries_on_integrity_error():
+    from sqlalchemy.exc import IntegrityError
+
+    existing = SimpleNamespace(report_id="rpt_5", user_id=7, is_favorite=False, run_count=0)
+    execute_calls = {"count": 0}
+
+    async def fake_execute(_stmt):
+        execute_calls["count"] += 1
+        if execute_calls["count"] == 1:
+            return _ExecuteResult([])
+        return _ExecuteResult([existing])
+
+    db = AsyncMock()
+    db.execute = fake_execute
+    nested = AsyncMock()
+    nested.__aenter__ = AsyncMock(return_value=nested)
+    nested.__aexit__ = AsyncMock(return_value=None)
+    db.begin_nested = Mock(return_value=nested)
+    db.add = Mock()
+    db.flush = AsyncMock(side_effect=IntegrityError("insert", {}, Exception("duplicate")))
+
+    pref = await saved_reports._get_or_create_report_user_pref(db, report_id="rpt_5", user_id=7)
+
+    assert pref is existing
+    assert execute_calls["count"] == 2
 
 
 def test_saved_report_detects_two_date_literals_as_default_date_range_template():
@@ -389,6 +577,7 @@ async def test_execute_saved_report_uses_rendered_sql_and_enables_table_auth(mon
 
     monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
     monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "_record_saved_report_run", AsyncMock())
     monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
 
     response = await saved_reports.execute_saved_report(
@@ -407,6 +596,32 @@ async def test_execute_saved_report_uses_rendered_sql_and_enables_table_auth(mon
 
 
 @pytest.mark.asyncio
+async def test_execute_saved_report_records_user_run_preference(monkeypatch):
+    report_row = _report_row()
+    db = AsyncMock()
+    db.flush = AsyncMock()
+    record_run = AsyncMock()
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        return json.dumps({"items": [{"orders": 3}]})
+
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "_record_saved_report_run", record_run)
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    await saved_reports.execute_saved_report(
+        "rpt_5",
+        body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
+        conversation_id=None,
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    record_run.assert_awaited_once_with(db, report_id="rpt_5", user_id=7)
+
+
+@pytest.mark.asyncio
 async def test_execute_saved_report_reinfers_placeholder_data_source(monkeypatch):
     captured = {}
     report_row = _report_row(data_source="default_clickhouse", dataset_id=None)
@@ -420,6 +635,7 @@ async def test_execute_saved_report_reinfers_placeholder_data_source(monkeypatch
     monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
     monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
     monkeypatch.setattr(saved_reports, "_infer_dataset_and_data_source", AsyncMock(return_value=(42, "mysql_agent")))
+    monkeypatch.setattr(saved_reports, "_record_saved_report_run", AsyncMock())
     monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
 
     response = await saved_reports.execute_saved_report(

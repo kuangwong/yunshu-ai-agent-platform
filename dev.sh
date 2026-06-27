@@ -27,7 +27,7 @@ echo -e "\n${YELLOW}🚀 [2/3] 正在编译前端 (Building Frontend)...${NC}"
 if [ -d "frontend" ]; then
     cd frontend
     # 优先使用 vite build (快)，如果需要完整类型检查可改回 npm run build
-    if npx vite build; then
+    if NODE_OPTIONS="--max-old-space-size=4096" npx vite build; then
         echo -e "${GREEN}✅ 前端编译成功！${NC}"
     else
         echo -e "${RED}❌ 前端编译失败${NC}"

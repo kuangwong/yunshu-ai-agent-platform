@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, desc, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,7 +16,7 @@ from app.core.dependencies import require_api_key
 from app.core.orm import get_db_session
 from app.models.metadata import MetaDataset, MetaTable
 from app.models.permission import Role, UserRoleRelation
-from app.models.saved_report import PortalSavedReport, PortalSavedReportShare
+from app.models.saved_report import PortalSavedReport, PortalSavedReportShare, PortalSavedReportUserPref
 from app.models.user import User
 from app.schemas.response import StandardResponse
 from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
@@ -45,6 +46,17 @@ class ExecuteReportRequest(BaseModel):
     analysis_mode: Optional[str] = Field(None, description="覆盖报表默认分析模式")
 
 
+class SavedReportPreview(BaseModel):
+    report_id: str
+    rendered_sql: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    data_source: str
+    dataset_id: Optional[int] = None
+    permission_status: str = "unknown"
+    permission_message: Optional[str] = None
+    can_run: bool = True
+
+
 class UpdateReportRequest(BaseModel):
     title: Optional[str] = Field(None, description="报表自定义标题")
     description: Optional[str] = Field(None, description="报表描述")
@@ -69,6 +81,11 @@ class ShareTarget(BaseModel):
 
 class UpdateReportSharesRequest(BaseModel):
     targets: List[ShareTarget] = Field(default_factory=list, description="共享目标列表")
+
+
+class UpdateReportPreferenceRequest(BaseModel):
+    is_favorite: Optional[bool] = Field(None, description="是否收藏")
+    pinned: Optional[bool] = Field(None, description="是否置顶")
 
 
 class SavedReportItem(BaseModel):
@@ -100,6 +117,11 @@ class SavedReportItem(BaseModel):
     run_permission_status: str = "unknown"
     run_permission_message: Optional[str] = None
     can_run: bool = True
+    is_favorite: bool = False
+    pinned_at: Optional[str] = None
+    last_viewed_at: Optional[str] = None
+    user_run_count: int = 0
+    user_last_run_at: Optional[str] = None
 
 
 class ReportParameterError(ValueError):
@@ -626,6 +648,98 @@ async def _annotate_saved_report_run_permissions(
             report.can_run = True
 
 
+def _apply_saved_report_pref(item: SavedReportItem, pref: Any) -> None:
+    if not pref:
+        return
+    item.is_favorite = bool(getattr(pref, "is_favorite", False))
+    item.pinned_at = _dt_to_iso(getattr(pref, "pinned_at", None))
+    item.last_viewed_at = _dt_to_iso(getattr(pref, "last_viewed_at", None))
+    item.user_run_count = int(getattr(pref, "run_count", 0) or 0)
+    item.user_last_run_at = _dt_to_iso(getattr(pref, "last_run_at", None))
+
+
+def _sort_saved_reports_for_user(reports: List[SavedReportItem]) -> List[SavedReportItem]:
+    def sort_key(report: SavedReportItem) -> Tuple[int, str, str]:
+        return (
+            1 if report.pinned_at else 0,
+            report.pinned_at or report.updated_at or report.created_at or "",
+            report.user_last_run_at or report.updated_at or report.created_at or "",
+        )
+
+    return sorted(reports, key=sort_key, reverse=True)
+
+
+async def _get_report_user_prefs(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    report_ids: List[str],
+) -> Dict[str, PortalSavedReportUserPref]:
+    if not report_ids:
+        return {}
+    result = await db.execute(
+        select(PortalSavedReportUserPref).where(
+            PortalSavedReportUserPref.user_id == user_id,
+            PortalSavedReportUserPref.report_id.in_(report_ids),
+        )
+    )
+    return {str(pref.report_id): pref for pref in result.scalars().all()}
+
+
+async def _enrich_saved_report_user_prefs(
+    db: AsyncSession,
+    reports: List[SavedReportItem],
+    *,
+    user_id: int,
+) -> None:
+    prefs = await _get_report_user_prefs(db, user_id=user_id, report_ids=[report.id for report in reports])
+    for report in reports:
+        _apply_saved_report_pref(report, prefs.get(report.id))
+
+
+async def _get_or_create_report_user_pref(
+    db: AsyncSession,
+    *,
+    report_id: str,
+    user_id: int,
+) -> PortalSavedReportUserPref:
+    result = await db.execute(
+        select(PortalSavedReportUserPref).where(
+            PortalSavedReportUserPref.report_id == report_id,
+            PortalSavedReportUserPref.user_id == user_id,
+        )
+    )
+    pref = result.scalar_one_or_none()
+    if pref:
+        return pref
+    try:
+        async with db.begin_nested():
+            pref = PortalSavedReportUserPref(report_id=report_id, user_id=user_id)
+            db.add(pref)
+            await db.flush()
+    except IntegrityError:
+        result = await db.execute(
+            select(PortalSavedReportUserPref).where(
+                PortalSavedReportUserPref.report_id == report_id,
+                PortalSavedReportUserPref.user_id == user_id,
+            )
+        )
+        pref = result.scalar_one()
+    return pref
+
+
+async def _touch_saved_report_view(db: AsyncSession, *, report_id: str, user_id: int) -> None:
+    pref = await _get_or_create_report_user_pref(db, report_id=report_id, user_id=user_id)
+    pref.last_viewed_at = datetime.now()
+    await db.flush()
+
+
+async def _record_saved_report_run(db: AsyncSession, *, report_id: str, user_id: int) -> None:
+    pref = await _get_or_create_report_user_pref(db, report_id=report_id, user_id=user_id)
+    pref.run_count = int(pref.run_count or 0) + 1
+    pref.last_run_at = datetime.now()
+
+
 async def _get_user_role_ids(db: AsyncSession, user_id: int) -> List[int]:
     result = await db.execute(select(UserRoleRelation.role_id).where(UserRoleRelation.user_id == user_id))
     return [int(role_id) for role_id in result.scalars().all()]
@@ -866,7 +980,119 @@ async def get_saved_reports(
         reports = [report for report in reports if tag in report.tags]
     await _enrich_saved_report_share_targets(db, reports)
     await _annotate_saved_report_run_permissions(db, reports, user_info=user_info, user_id=user_id)
-    return StandardResponse(data=reports)
+    await _enrich_saved_report_user_prefs(db, reports, user_id=user_id)
+    return StandardResponse(data=_sort_saved_reports_for_user(reports))
+
+
+@router.get(
+    "/{report_id}",
+    response_model=StandardResponse[SavedReportItem],
+    summary="获取黄金 SQL 报表详情",
+)
+async def get_saved_report_detail(
+    report_id: str,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_id = int(user_info["user_id"])
+    role_ids = await _get_user_role_ids(db, user_id)
+    report_row = await _get_report_for_user(db, report_id=report_id, user_id=user_id, role_ids=role_ids)
+    item = _report_row_to_item(report_row, current_user_id=user_id)
+    reports = [item]
+    await _enrich_saved_report_share_targets(db, reports)
+    await _annotate_saved_report_run_permissions(db, reports, user_info=user_info, user_id=user_id)
+    await _enrich_saved_report_user_prefs(db, reports, user_id=user_id)
+    try:
+        await _touch_saved_report_view(db, report_id=report_id, user_id=user_id)
+    except Exception as exc:
+        logger.warning("Failed to record saved report view for %s: %s", report_id, exc)
+    return StandardResponse(data=item)
+
+
+@router.post(
+    "/{report_id}/preview",
+    response_model=StandardResponse[SavedReportPreview],
+    summary="预览黄金 SQL 报表本次运行 SQL 与权限状态",
+)
+async def preview_saved_report(
+    report_id: str,
+    body: ExecuteReportRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_id = int(user_info["user_id"])
+    role_ids = await _get_user_role_ids(db, user_id)
+    report_row = await _get_report_for_user(db, report_id=report_id, user_id=user_id, role_ids=role_ids)
+    report = _report_row_to_item(report_row, current_user_id=user_id)
+    try:
+        rendered_sql, rendered_params = _resolve_report_sql(report, body=body)
+    except ReportParameterError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    preview = SavedReportPreview(
+        report_id=report.id,
+        rendered_sql=rendered_sql,
+        params=rendered_params,
+        data_source=report.data_source,
+        dataset_id=report.dataset_id,
+        permission_status="unknown",
+        permission_message="运行权限暂未确认，执行时会再次校验。",
+        can_run=True,
+    )
+    auth_report = report.model_copy(
+        update={
+            "sql_content": rendered_sql,
+            "sql_template": None,
+            "mode": "static_sql",
+            "default_params": {},
+        }
+    )
+    try:
+        await _precheck_saved_report_sql_permissions(db, report=auth_report, user_info=user_info, user_id=user_id)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_403_FORBIDDEN:
+            preview.permission_status = "denied"
+            preview.permission_message = str(exc.detail or "暂无该报表所需数据权限，无法运行。")
+            preview.can_run = False
+        else:
+            preview.permission_status = "unknown"
+            preview.permission_message = str(exc.detail or "运行权限暂未确认，执行时会再次校验。")
+            preview.can_run = True
+    else:
+        preview.permission_status = "allowed"
+        preview.permission_message = None
+        preview.can_run = True
+    return StandardResponse(data=preview)
+
+
+@router.put(
+    "/{report_id}/prefs",
+    response_model=StandardResponse[SavedReportItem],
+    summary="更新黄金 SQL 报表个人偏好",
+)
+async def update_saved_report_preferences(
+    report_id: str,
+    body: UpdateReportPreferenceRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_id = int(user_info["user_id"])
+    role_ids = await _get_user_role_ids(db, user_id)
+    report_row = await _get_report_for_user(db, report_id=report_id, user_id=user_id, role_ids=role_ids)
+    pref = await _get_or_create_report_user_pref(db, report_id=report_id, user_id=user_id)
+    now = datetime.now()
+    if body.is_favorite is not None:
+        pref.is_favorite = bool(body.is_favorite)
+    if body.pinned is not None:
+        pref.pinned_at = now if body.pinned else None
+    await db.flush()
+
+    item = _report_row_to_item(report_row, current_user_id=user_id)
+    reports = [item]
+    await _enrich_saved_report_share_targets(db, reports)
+    await _annotate_saved_report_run_permissions(db, reports, user_info=user_info, user_id=user_id)
+    _apply_saved_report_pref(item, pref)
+    return StandardResponse(data=item)
 
 @router.delete(
     "/{report_id}",
@@ -1206,6 +1432,10 @@ async def execute_saved_report(
         report_row.last_success_at = now
         report_row.last_error = None
         report_row.status = "active"
+        try:
+            await _record_saved_report_run(db, report_id=report.id, user_id=user_id)
+        except Exception as pref_err:
+            logger.warning("Failed to record saved report run preference for %s: %s", report.id, pref_err)
         await db.flush()
         return StandardResponse(data=parsed)
     except json.JSONDecodeError:
@@ -1220,5 +1450,9 @@ async def execute_saved_report(
     report_row.last_success_at = now
     report_row.last_error = None
     report_row.status = "active"
+    try:
+        await _record_saved_report_run(db, report_id=report.id, user_id=user_id)
+    except Exception as pref_err:
+        logger.warning("Failed to record saved report run preference for %s: %s", report.id, pref_err)
     await db.flush()
     return StandardResponse(data={"rows": raw_res})

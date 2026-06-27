@@ -57,7 +57,7 @@
         <!-- 刷新按钮 -->
         <button
           type="button"
-          class="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent bg-gray-100 text-gray-550 dark:bg-gray-800 dark:text-gray-400 transition-all"
+          class="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 transition-all"
           :class="refreshDisabled
             ? 'opacity-50 cursor-not-allowed'
             : 'hover:bg-gray-200/70 dark:hover:bg-gray-750 hover:text-gray-700 dark:hover:text-gray-200 active:scale-90 cursor-pointer'"
@@ -160,6 +160,16 @@
           <button
             type="button"
             class="p-1 rounded hover:bg-blue-100/80 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-400 transition-colors cursor-pointer flex items-center justify-center"
+            title="放大浏览"
+            @click.stop="openSavedReportBrowser"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="p-1 rounded hover:bg-blue-100/80 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-400 transition-colors cursor-pointer flex items-center justify-center"
             title="刷新黄金报表"
             @click.stop="fetchSavedReports"
           >
@@ -183,38 +193,70 @@
 
       <div 
         v-if="!showSavedReportsCollapse"
-        class="space-y-2"
+        class="space-y-2 select-none"
       >
-        <div class="flex flex-wrap items-center gap-1.5">
+        <!-- 范围选择：高值 Segmented Control 胶囊滑动控制器 -->
+        <div class="grid grid-cols-3 p-0.5 rounded-lg bg-gray-100/80 dark:bg-gray-800/40 text-gray-500 dark:text-gray-400 text-[10px] font-bold border border-gray-200/30 dark:border-gray-800/30">
           <button
             v-for="scope in savedReportScopes"
             :key="scope.value"
             type="button"
-            class="px-2 py-1 rounded-md text-[10px] font-bold border transition-colors"
-            :class="savedReportScope === scope.value ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-gray-900 text-gray-500 border-gray-200 dark:border-gray-800 hover:border-blue-300'"
+            class="py-1 rounded-md transition-all text-center"
+            :class="savedReportScope === scope.value ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-white shadow-xs font-black' : 'hover:text-gray-800 dark:hover:text-gray-200'"
             @click.stop="setSavedReportScope(scope.value)"
           >
             {{ scope.label }}
           </button>
         </div>
-        <div v-if="allSavedReportTags.length > 0" class="flex flex-wrap items-center gap-1">
+
+        <!-- 细分分类 + 标签：合并为一行自适应横向滚动条 -->
+        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 -mx-0.5 px-0.5 scroll-smooth">
+          <!-- 智能分类过滤器 -->
           <button
+            v-for="filter in savedReportSmartFilters"
+            :key="filter.value"
             type="button"
-            class="px-1.5 py-0.5 rounded text-[10px] border transition-colors"
-            :class="selectedSavedReportTag === '' ? 'bg-gray-800 text-white border-gray-800' : 'bg-white dark:bg-gray-900 text-gray-500 border-gray-200 dark:border-gray-800 hover:border-gray-300'"
+            class="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] transition-all border font-bold"
+            :class="savedReportSmartFilter === filter.value 
+              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border-blue-200 dark:border-blue-900/40' 
+              : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'"
+            @click.stop="savedReportSmartFilter = filter.value"
+          >
+            <span class="flex items-center gap-1">
+              <span v-if="filter.value === 'pinned'">📌</span>
+              <span v-else-if="filter.value === 'favorite'">⭐️</span>
+              <span v-else-if="filter.value === 'recent'">🕒</span>
+              <span v-else-if="filter.value === 'frequent'">🔥</span>
+              <span>{{ filter.label }}</span>
+            </span>
+          </button>
+
+          <!-- 分割垂直线 -->
+          <span v-if="allSavedReportTags.length > 0" class="flex-shrink-0 w-px h-3.5 bg-gray-200 dark:bg-gray-800 mx-0.5"></span>
+
+          <!-- 标签分类 -->
+          <button
+            v-if="allSavedReportTags.length > 0"
+            type="button"
+            class="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] transition-all border font-bold"
+            :class="selectedSavedReportTag === '' 
+              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border-blue-200 dark:border-blue-900/40' 
+              : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'"
             @click.stop="selectedSavedReportTag = ''"
           >
-            全部标签
+            🏷️ 全部标签
           </button>
           <button
             v-for="tag in allSavedReportTags"
             :key="tag"
             type="button"
-            class="px-1.5 py-0.5 rounded text-[10px] border transition-colors"
-            :class="selectedSavedReportTag === tag ? 'bg-blue-600 text-white border-blue-600' : 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-900/50 hover:border-blue-300'"
+            class="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] transition-all border font-bold"
+            :class="selectedSavedReportTag === tag 
+              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border-blue-200 dark:border-blue-900/40' 
+              : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'"
             @click.stop="selectedSavedReportTag = tag"
           >
-            {{ tag }}
+            # {{ tag }}
           </button>
         </div>
         <div v-if="loadingReports" class="flex items-center justify-center py-4 text-xs text-gray-400 select-none">
@@ -225,117 +267,100 @@
           正在加载暂存报表...
         </div>
         <div v-else-if="filteredSavedReports.length === 0" class="text-center py-6 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl text-gray-400 dark:text-gray-500 text-[11px] select-none">
-          暂无已存报表。您可以在 ChatBI 结果中点击 SQL 上方的“暂存”按钮进行快捷收藏。
+          暂无已存报表。您可以在 ChatBI 结果中点击 SQL 上方的「添加黄金报表」按钮进行快捷收藏。
         </div>
-        <div v-else class="grid gap-2 max-h-60 overflow-y-auto pr-0.5 custom-scrollbar">
-          <div
+        <div v-else class="grid gap-2 max-h-80 overflow-y-auto pr-0.5 custom-scrollbar">
+          <SavedReportItemCard
             v-for="report in filteredSavedReports"
             :key="report.id"
-            class="group/item flex items-stretch rounded-lg border border-blue-100/60 dark:border-blue-900/30 bg-white dark:bg-gray-900/40 hover:border-blue-300 dark:hover:border-blue-700/60 overflow-hidden shadow-xs"
-          >
-            <button
-              type="button"
-              class="flex-1 flex flex-col p-2.5 text-left transition-all min-w-0"
-              :class="isSavedReportActionDisabled(report) ? 'cursor-not-allowed opacity-75 bg-gray-50/60 dark:bg-gray-900/60' : 'active:scale-[0.99] hover:bg-blue-50/30 dark:hover:bg-blue-950/20'"
-              :disabled="isSavedReportActionDisabled(report)"
-              :title="getSavedReportButtonTitle(report)"
-              @click="handleExecuteSavedReportClick(report)"
-            >
-              <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate w-full" :title="report.title">
-                {{ report.title }}
-              </span>
-              <span class="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-1 w-full">
-                {{ report.is_owner ? '我的报表' : `来自 ${report.owner_name || '共享用户'}` }}
-                <span v-if="report.status === 'error'" class="text-red-500"> · 最近运行失败</span>
-                <span v-else-if="report.last_success_at" class="text-emerald-500"> · 已运行</span>
-              </span>
-              <span class="flex items-center gap-1 mt-1">
-                <span
-                  v-if="!report.is_owner || report.run_permission_status === 'denied'"
-                  class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold"
-                  :class="getSavedReportRunPermissionClass(report)"
-                  :title="report.run_permission_message || getSavedReportRunPermissionLabel(report)"
-                >
-                  {{ getSavedReportRunPermissionLabel(report) }}
-                </span>
-                <span
-                  v-if="report.is_owner && report.share_summary"
-                  class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-300"
-                  :title="getShareTargetLabel(report)"
-                >
-                  {{ report.share_summary }}
-                </span>
-              </span>
-              <span v-if="report.original_query" class="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-1 w-full" :title="report.original_query">
-                问: {{ report.original_query }}
-              </span>
-              <span v-if="report.tags?.length" class="flex flex-wrap gap-1 mt-1">
-                <span
-                  v-for="tag in report.tags.slice(0, 3)"
-                  :key="tag"
-                  class="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-[9px] text-blue-600 dark:text-blue-300"
-                >
-                  {{ tag }}
-                </span>
-              </span>
-              <span class="text-[9px] text-gray-400 dark:text-gray-550 mt-1 select-none font-mono">
-                {{ formatDate(report.created_at) }}
-              </span>
-            </button>
-            <button
-              v-if="report.is_owner"
-              type="button"
-              class="flex items-center justify-center w-8 text-gray-400 hover:text-blue-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
-              title="编辑暂存"
-              @click.stop="handleEditReport(report)"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-              </svg>
-            </button>
-            <button
-              v-if="report.is_owner"
-              type="button"
-              class="flex items-center justify-center w-8 text-gray-400 hover:text-emerald-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors cursor-pointer"
-              title="共享报表"
-              @click.stop="openShareReportModal(report)"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 8a3 3 0 10-2.83-4H12a3 3 0 003 4zm0 8a3 3 0 10-2.83 4H12a3 3 0 003-4zM6 13a3 3 0 100-6 3 3 0 000 6zm2.59-2.51l4.82 2.02M13.41 5.49L8.59 7.51" />
-              </svg>
-            </button>
-            <button
-              v-else
-              type="button"
-              class="flex items-center justify-center w-8 border-l border-blue-50/60 dark:border-blue-900/20 transition-colors"
-              :class="isSavedReportActionDisabled(report) ? 'text-gray-300 dark:text-gray-600 bg-gray-50/70 dark:bg-gray-900/60 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer'"
-              :disabled="isSavedReportActionDisabled(report)"
-              :title="getSavedReportCopyTitle(report)"
-              @click.stop="handleCopyReport(report)"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 8h10a2 2 0 012 2v8a2 2 0 01-2 2H8a2 2 0 01-2-2V10a2 2 0 012-2zm-2 8H5a2 2 0 01-2-2V5a2 2 0 012-2h9a2 2 0 012 2v1" />
-              </svg>
-            </button>
-            <button
-              v-if="report.is_owner"
-              type="button"
-              class="flex items-center justify-center w-8 text-gray-400 hover:text-red-500 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
-              title="删除暂存"
-              @click.stop="handleDeleteReport(report)"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
+            :report="report"
+            :format-date="formatDate"
+            @execute="handleExecuteSavedReportClick"
+            @edit="handleEditReport"
+            @detail="openSavedReportDetail"
+            @favorite="toggleSavedReportFavorite"
+            @pin="toggleSavedReportPinned"
+            @share="openShareReportModal"
+            @copy="handleCopyReport"
+            @delete="handleDeleteReport"
+          />
         </div>
       </div>
     </div>
 
+    <SavedReportBrowseModal
+      ref="savedReportBrowseModalRef"
+      v-model="showSavedReportBrowser"
+      :format-date="formatDate"
+      @execute="handleExecuteSavedReportClick"
+      @edit="handleEditReport"
+      @detail="openSavedReportDetail"
+      @favorite="handleBrowserFavorite"
+      @pin="handleBrowserPin"
+      @share="openShareReportModal"
+      @copy="handleBrowserCopy"
+      @delete="handleBrowserDelete"
+    />
+
+    <teleport to="body">
+    <div
+      v-if="showSavedReportDetailDrawer && selectedSavedReportDetail"
+      class="fixed inset-0 z-[230]"
+    >
+      <div
+        class="absolute inset-0 bg-black/35 backdrop-blur-[1px]"
+        @click="closeSavedReportDetail"
+      />
+      <aside class="absolute inset-y-0 right-0 w-full max-w-xl bg-white dark:bg-gray-950 border-l border-gray-100 dark:border-gray-800 shadow-2xl overflow-y-auto custom-scrollbar">
+        <div class="sticky top-0 z-10 bg-white/95 dark:bg-gray-950/95 border-b border-gray-100 dark:border-gray-800 px-5 py-4 flex items-center justify-between">
+          <div class="min-w-0">
+            <h3 class="text-sm font-black text-gray-800 dark:text-gray-100 truncate w-full">报表详情</h3>
+            <p class="text-xs text-gray-400 truncate mt-1">{{ selectedSavedReportDetail.title }}</p>
+          </div>
+          <button type="button" class="p-2 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" @click="closeSavedReportDetail">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-5 space-y-4">
+          <section class="space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-1 rounded-lg text-[10px] font-bold" :class="getSavedReportRunPermissionClass(selectedSavedReportDetail)">
+                {{ getSavedReportRunPermissionLabel(selectedSavedReportDetail) }}
+              </span>
+              <span v-if="selectedSavedReportDetail.is_favorite" class="px-2 py-1 rounded-lg bg-amber-50 text-amber-600 text-[10px] font-bold">收藏</span>
+              <span v-if="selectedSavedReportDetail.pinned_at" class="px-2 py-1 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold">置顶</span>
+            </div>
+            <p class="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">{{ selectedSavedReportDetail.description || '暂无描述' }}</p>
+            <p class="text-[11px] text-gray-400">创建人：{{ selectedSavedReportDetail.owner_name || '未知' }} · 数据源：{{ selectedSavedReportDetail.data_source }}</p>
+            <p class="text-[11px] text-gray-400">最近运行：{{ formatDate(selectedSavedReportDetail.last_success_at || selectedSavedReportDetail.user_last_run_at) || '暂无' }} · 常用次数：{{ selectedSavedReportDetail.user_run_count || 0 }}</p>
+          </section>
+          <section v-if="selectedSavedReportDetail.share_summary" class="space-y-1">
+            <h4 class="text-xs font-black text-gray-600 dark:text-gray-300">共享范围</h4>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400">{{ getShareTargetLabel(selectedSavedReportDetail) }}</p>
+          </section>
+          <section class="space-y-2">
+            <h4 class="text-xs font-black text-gray-600 dark:text-gray-300">参数与 SQL</h4>
+            <div v-if="selectedSavedReportDetail.tags?.length" class="flex flex-wrap gap-1">
+              <span v-for="tag in selectedSavedReportDetail.tags" :key="tag" class="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-[10px] text-blue-600 dark:text-blue-300">{{ tag }}</span>
+            </div>
+            <pre class="max-h-72 overflow-auto rounded-lg bg-gray-950 text-green-100 p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{{ selectedSavedReportDetail.sql_template || selectedSavedReportDetail.sql_content }}</pre>
+          </section>
+          <div class="flex flex-wrap gap-2 pt-2">
+            <button type="button" class="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white disabled:opacity-50" :disabled="isSavedReportActionDisabled(selectedSavedReportDetail)" @click="handleExecuteSavedReportClick(selectedSavedReportDetail)">运行</button>
+            <button v-if="selectedSavedReportDetail.is_owner" type="button" class="px-3 py-2 rounded-lg text-xs font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300" @click="handleEditReport(selectedSavedReportDetail)">编辑</button>
+            <button v-if="selectedSavedReportDetail.is_owner" type="button" class="px-3 py-2 rounded-lg text-xs font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300" @click="openShareReportModal(selectedSavedReportDetail)">共享</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+    </teleport>
+
+    <teleport to="body">
     <div
       v-if="showShareReportModal && sharingReport"
-      class="fixed inset-0 z-[220] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      class="fixed inset-0 z-[240] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
       @click.self="closeShareReportModal"
     >
       <div class="w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 shadow-2xl overflow-hidden">
@@ -445,6 +470,7 @@
         </div>
       </div>
     </div>
+    </teleport>
 
     <!-- 我常问 -->
     <div
@@ -1113,6 +1139,8 @@
 import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 import axios from "@/utils/axios";
 import { useToast } from "@/composables/useToast";
+import SavedReportItemCard from "@/components/chatbi/SavedReportItemCard.vue";
+import SavedReportBrowseModal from "@/components/chatbi/SavedReportBrowseModal.vue";
 
 const { showToast } = useToast();
 
@@ -1473,10 +1501,16 @@ const handleTableDictionaryClick = (
 // 黄金报表业务逻辑
 const savedReports = ref<any[]>([]);
 const loadingReports = ref(false);
+const refreshingReports = ref(false);
 const showSavedReportsCollapse = ref(true); // 默认收起
 const showFrequentCollapse = ref(false); // 我常问默认展开
 const savedReportScope = ref<"all" | "my" | "shared">("all");
 const selectedSavedReportTag = ref("");
+const savedReportSmartFilter = ref<"all" | "pinned" | "favorite" | "recent" | "frequent">("all");
+const showSavedReportDetailDrawer = ref(false);
+const showSavedReportBrowser = ref(false);
+const savedReportBrowseModalRef = ref<{ refresh: () => Promise<void> } | null>(null);
+const selectedSavedReportDetail = ref<any | null>(null);
 const showShareReportModal = ref(false);
 const sharingReport = ref<any | null>(null);
 const shareUserSearch = ref("");
@@ -1495,6 +1529,13 @@ const savedReportScopes = [
   { value: "my" as const, label: "我的" },
   { value: "shared" as const, label: "共享给我" },
 ];
+const savedReportSmartFilters = [
+  { value: "all" as const, label: "全部报表" },
+  { value: "pinned" as const, label: "置顶" },
+  { value: "favorite" as const, label: "收藏" },
+  { value: "recent" as const, label: "最近运行" },
+  { value: "frequent" as const, label: "常用" },
+];
 
 const allSavedReportTags = computed(() => {
   const tags = new Set<string>();
@@ -1508,8 +1549,26 @@ const allSavedReportTags = computed(() => {
 });
 
 const filteredSavedReports = computed(() => {
-  if (!selectedSavedReportTag.value) return savedReports.value;
-  return savedReports.value.filter((report) => (report.tags || []).includes(selectedSavedReportTag.value));
+  let reports = savedReports.value;
+  if (selectedSavedReportTag.value) {
+    reports = reports.filter((report) => (report.tags || []).includes(selectedSavedReportTag.value));
+  }
+  if (savedReportSmartFilter.value === "pinned") {
+    reports = reports.filter((report) => !!report.pinned_at);
+  } else if (savedReportSmartFilter.value === "favorite") {
+    reports = reports.filter((report) => !!report.is_favorite);
+  } else if (savedReportSmartFilter.value === "recent") {
+    reports = reports
+      .filter((report) => !!(report.user_last_run_at || report.last_success_at))
+      .slice()
+      .sort((a, b) => String(b.user_last_run_at || b.last_success_at).localeCompare(String(a.user_last_run_at || a.last_success_at)));
+  } else if (savedReportSmartFilter.value === "frequent") {
+    reports = reports
+      .filter((report) => Number(report.user_run_count || 0) > 0)
+      .slice()
+      .sort((a, b) => Number(b.user_run_count || 0) - Number(a.user_run_count || 0));
+  }
+  return reports;
 });
 
 const getSavedReportRunPermissionLabel = (report: any) => {
@@ -1621,8 +1680,80 @@ const fetchShareCandidates = async (type: "user" | "role") => {
   }
 };
 
+const updateSavedReportInList = (updated: any, resort = false) => {
+  savedReports.value = savedReports.value.map((item) => item.id === updated.id ? { ...item, ...updated } : item);
+  if (resort) {
+    savedReports.value = sortSavedReportsForUser(savedReports.value);
+  }
+  if (selectedSavedReportDetail.value?.id === updated.id) {
+    selectedSavedReportDetail.value = { ...selectedSavedReportDetail.value, ...updated };
+  }
+};
+
+const sortSavedReportsForUser = (reports: any[]) => {
+  return [...reports].sort((a, b) => {
+    const pinA = a.pinned_at ? 1 : 0;
+    const pinB = b.pinned_at ? 1 : 0;
+    if (pinA !== pinB) return pinB - pinA;
+    const keyA = a.pinned_at || a.updated_at || a.created_at || '';
+    const keyB = b.pinned_at || b.updated_at || b.created_at || '';
+    if (keyA !== keyB) return String(keyB).localeCompare(String(keyA));
+    const runA = a.user_last_run_at || a.updated_at || a.created_at || '';
+    const runB = b.user_last_run_at || b.updated_at || b.created_at || '';
+    return String(runB).localeCompare(String(runA));
+  });
+};
+
+const openSavedReportDetail = async (report: any) => {
+  selectedSavedReportDetail.value = report;
+  showSavedReportDetailDrawer.value = true;
+  try {
+    const res = await axios.get(`/api/portal/saved-reports/${report.id}`);
+    if (res.data?.data) {
+      selectedSavedReportDetail.value = res.data.data;
+      updateSavedReportInList(res.data.data);
+    }
+  } catch (error) {
+    console.error("Failed to fetch saved report detail:", error);
+    showToast("加载报表详情失败", "error");
+  }
+};
+
+const closeSavedReportDetail = () => {
+  showSavedReportDetailDrawer.value = false;
+  selectedSavedReportDetail.value = null;
+};
+
+const updateSavedReportPreference = async (report: any, payload: Record<string, any>, resort = false) => {
+  const res = await axios.put(`/api/portal/saved-reports/${report.id}/prefs`, payload);
+  if (res.data?.data) updateSavedReportInList(res.data.data, resort);
+};
+
+const toggleSavedReportFavorite = async (report: any) => {
+  try {
+    await updateSavedReportPreference(report, { is_favorite: !report.is_favorite });
+  } catch (error) {
+    console.error("Failed to toggle saved report favorite:", error);
+    showToast("收藏状态更新失败", "error");
+  }
+};
+
+const toggleSavedReportPinned = async (report: any) => {
+  try {
+    await updateSavedReportPreference(report, { pinned: !report.pinned_at }, true);
+  } catch (error) {
+    console.error("Failed to toggle saved report pin:", error);
+    showToast("置顶状态更新失败", "error");
+  }
+};
+
 const fetchSavedReports = async () => {
-  loadingReports.value = true;
+  const hasExisting = savedReports.value.length > 0;
+  if (hasExisting) {
+    refreshingReports.value = true;
+  } else {
+    loadingReports.value = true;
+  }
   try {
     const res = await axios.get("/api/portal/saved-reports", {
       params: { scope: savedReportScope.value },
@@ -1634,13 +1765,44 @@ const fetchSavedReports = async () => {
     console.error("Failed to fetch saved reports:", error);
   } finally {
     loadingReports.value = false;
+    refreshingReports.value = false;
   }
 };
 
 const setSavedReportScope = async (scope: "all" | "my" | "shared") => {
+  if (savedReportScope.value === scope) return;
   savedReportScope.value = scope;
   selectedSavedReportTag.value = "";
   await fetchSavedReports();
+};
+
+const refreshSavedReportBrowser = async () => {
+  await savedReportBrowseModalRef.value?.refresh();
+};
+
+const handleBrowserFavorite = async (report: any) => {
+  await toggleSavedReportFavorite(report);
+  await refreshSavedReportBrowser();
+};
+
+const handleBrowserPin = async (report: any) => {
+  await toggleSavedReportPinned(report);
+  await refreshSavedReportBrowser();
+};
+
+const handleBrowserCopy = async (report: any) => {
+  await handleCopyReport(report);
+  await refreshSavedReportBrowser();
+};
+
+const handleBrowserDelete = async (report: any) => {
+  await handleDeleteReport(report);
+  await refreshSavedReportBrowser();
+};
+
+const openSavedReportBrowser = async () => {
+  showSavedReportsCollapse.value = false;
+  showSavedReportBrowser.value = true;
 };
 
 const handleDeleteReport = async (report: any) => {
@@ -1701,6 +1863,7 @@ const submitShareReport = async () => {
     showToast(targets.length > 0 ? "报表共享已更新" : "已取消共享", "success");
     closeShareReportModal();
     await fetchSavedReports();
+    await refreshSavedReportBrowser();
   } catch (error: any) {
     console.error("Failed to share saved report:", error);
     const detail = error.response?.data?.detail || "共享失败";
@@ -1744,6 +1907,8 @@ const handleCopyReport = async (report: any) => {
 };
 
 const handleEditReport = (report: any) => {
+  closeSavedReportDetail();
+  showSavedReportBrowser.value = false;
   emit("edit-saved-report", report);
 };
 
@@ -1760,6 +1925,8 @@ watch(shareRoleSearch, () => {
 });
 
 const handleExecuteSavedReportClick = (report: any) => {
+  closeSavedReportDetail();
+  showSavedReportBrowser.value = false;
   emit("execute-saved-report", {
     id: report.id,
     title: report.title,
@@ -1775,7 +1942,7 @@ const handleExecuteSavedReportClick = (report: any) => {
   });
 };
 
-const formatDate = (isoString: string) => {
+const formatDate = (isoString?: string | null) => {
   if (!isoString) return "";
   try {
     const date = new Date(isoString);

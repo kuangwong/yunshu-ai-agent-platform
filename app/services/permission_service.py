@@ -574,6 +574,11 @@ class PermissionService:
         redis = await self._get_redis()
         if redis:
             await redis.delete(await self._get_cache_key(user_id))
+            try:
+                from app.services.ai.config import AgentConfigProvider
+                await AgentConfigProvider.invalidate_dataset_menu_cache(user_id=user_id)
+            except Exception as ex:
+                logger.warning(f"Failed to invalidate dataset menu cache for user {user_id}: {ex}")
 
     async def invalidate_cached_permissions_for_users(self, user_ids: Iterable[int]) -> None:
         """Clear permission cache for users (e.g. after role membership changes outside update_user_roles)."""

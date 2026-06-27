@@ -108,7 +108,8 @@ def test_dataset_capability_menu_component_contract():
     assert "getSavedReportRunPermissionLabel" in source
     assert "getSavedReportRunPermissionClass" in source
     assert "report.run_permission_status === \"denied\"" in source
-    assert ":disabled=\"isSavedReportActionDisabled(report)\"" in source
+    assert "SavedReportItemCard" in source
+    assert "isSavedReportActionDisabled" in source
     assert "isSavedReportActionDisabled" in source
     assert "getSavedReportCopyTitle" in source
     assert "暂无该报表所需数据权限，无法复制。" in source
@@ -116,6 +117,23 @@ def test_dataset_capability_menu_component_contract():
     assert "share_summary" in source
     assert "getShareTargetLabel" in source
     assert "已共享给" in source
+    assert "showSavedReportDetailDrawer" in source
+    assert "openSavedReportDetail" in source
+    assert "toggleSavedReportFavorite" in source
+    assert "toggleSavedReportPinned" in source
+    assert "savedReportSmartFilter" in source
+    assert "置顶" in source
+    assert "收藏" in source
+    assert "常用" in source
+    assert "/prefs" in source
+    assert "报表详情" in source
+    assert "sortSavedReportsForUser" in source
+    assert "openSavedReportBrowser" in source
+    assert "SavedReportBrowseModal" in source
+    assert "放大浏览" in source
+    assert "searchQuery" in _source("frontend/src/components/chatbi/SavedReportBrowseModal.vue")
+    assert "browserScope" in _source("frontend/src/components/chatbi/SavedReportBrowseModal.vue")
+    assert "savedReportBrowseModalRef" in source
 
 
 def test_saved_report_parameterized_execution_contract():
@@ -140,9 +158,18 @@ def test_saved_report_parameterized_execution_contract():
     assert "last_6_completed_months" in source
     assert "type=\"month\"" in source
     assert "extractSavedReportExecuteErrorMessage" in source
-    assert "error.response?.data?.message" in source
+    assert "responseData?.message" in source
     assert "暂无该报表所需数据权限" in source
     assert "Request failed with status code" in source
+    assert "previewSavedReportRun" in source
+    assert "/preview" in source
+    assert "reportRunPreview" in source
+    assert "实际执行 SQL" in source
+    assert "沉淀为黄金报表" in source
+    assert "savedReportNeedsRunOptions" in source
+    assert "scheduleSavedReportPreview" in source
+    assert "请等待运行预览完成后再执行" in source
+    assert "!reportRunPreview" in source
 
 
 def test_saved_report_tags_are_not_raw_question_prefixes():
@@ -178,7 +205,7 @@ def test_saved_report_edit_contract():
     debug_source = _source("frontend/src/views/AgentDebug.vue")
 
     assert "edit-saved-report" in menu_source
-    assert "handleEditReport(report)" in menu_source
+    assert "handleEditReport" in menu_source
     assert "emit(\"edit-saved-report\", report)" in menu_source
     assert "@edit-saved-report=\"(p) => emit('edit-saved-report', p)\"" in drawer_source
     assert "const openEditReportModal = (report: any)" in embed_source

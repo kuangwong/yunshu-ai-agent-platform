@@ -1036,19 +1036,19 @@ onMounted(() => {
                 <XCircleIcon v-else class="h-6 w-6 text-red-500" />
               </div>
             </div>
-            <div class="border-t border-gray-100 pt-4 mt-2 grid grid-cols-3 gap-3">
-              <button @click="testConnection('redis')" :disabled="loading.redis || !canSave" class="flex justify-center items-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none disabled:opacity-50">
-                <PlayIcon v-if="!loading.redis" class="h-4 w-4 mr-2" />
-                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full"></span>
+            <div class="border-t border-gray-100 pt-4 mt-2 flex flex-col gap-2">
+              <button @click="testConnection('redis')" :disabled="loading.redis || !canSave" class="w-full inline-flex justify-center items-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none disabled:opacity-50 whitespace-nowrap">
+                <PlayIcon v-if="!loading.redis" class="h-4 w-4 mr-2 shrink-0" />
+                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full shrink-0"></span>
                 {{ loading.redis ? '测试中...' : '测试连接' }}
               </button>
-               <button @click="scanRedisKeys" :disabled="loading.redis_scan || !canSave" class="flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50">
-                <MagnifyingGlassIcon v-if="!loading.redis_scan" class="h-4 w-4 mr-2" />
-                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-gray-400 border-t-transparent rounded-full"></span>
+               <button @click="scanRedisKeys" :disabled="loading.redis_scan || !canSave" class="w-full inline-flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap">
+                <MagnifyingGlassIcon v-if="!loading.redis_scan" class="h-4 w-4 mr-2 shrink-0" />
+                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-gray-400 border-t-transparent rounded-full shrink-0"></span>
                 {{ loading.redis_scan ? '扫描中...' : '扫描 Keys' }}
               </button>
-              <button @click="openClearConfirm" :disabled="!canSave" class="flex justify-center items-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50">
-                <TrashIcon class="h-4 w-4 mr-2" />
+              <button @click="openClearConfirm" :disabled="!canSave" class="w-full inline-flex justify-center items-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50 whitespace-nowrap">
+                <TrashIcon class="h-4 w-4 mr-2 shrink-0" />
                 清理 Keys
               </button>
             </div>

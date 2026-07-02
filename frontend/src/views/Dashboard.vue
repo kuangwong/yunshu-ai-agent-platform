@@ -22,16 +22,6 @@ const userApiKey = ref("");
 const loadingApiKey = ref(false);
 const onlineUserCount = ref(0);
 const onlineUsers = ref<any[]>([]);
-const knowledgeBaseEnabled = ref(true);
-
-const fetchKnowledgeFeatureFlag = async () => {
-  try {
-    const res = await axios.get('/api/portal/ragflow/config');
-    knowledgeBaseEnabled.value = res.data?.data?.knowledge_base_enabled !== false;
-  } catch {
-    knowledgeBaseEnabled.value = true;
-  }
-};
 
 // Toast State
 const toast = ref({
@@ -100,7 +90,6 @@ onMounted(() => {
   loadBranding();
   fetchUserInfo();
   fetchOnlineUsers();
-  fetchKnowledgeFeatureFlag();
 });
 
 const fetchOnlineUsers = async () => {
@@ -355,8 +344,6 @@ const filteredMenuGroups = computed(() => {
     items: group.items.filter(item => {
       // 检查权限
       if (!hasMenuPerm(item.perm)) return false;
-      // 知识库功能关闭时隐藏知识库相关菜单
-      if (!knowledgeBaseEnabled.value && group.title === '知识库开发平台') return false;
       // 检查移动端限制
       if (item.desktopOnly && isMobile.value) return false;
       return true;

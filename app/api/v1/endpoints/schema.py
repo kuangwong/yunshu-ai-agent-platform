@@ -196,6 +196,23 @@ async def get_database_schema(
     )
     authorized_ids = None if is_admin else [ds.id for ds in authorized_datasets]
     
+    if is_admin:
+        trace_logs.append(
+            f"Authorized datasets (enabled): {len(authorized_datasets)} — admin, no dataset_id TAG filter"
+        )
+    else:
+        trace_logs.append(
+            f"Authorized datasets (enabled): {len(authorized_datasets)}, "
+            f"filter ids={authorized_ids}"
+        )
+    for ds in authorized_datasets[:10]:
+        table_count = len(ds.tables or [])
+        trace_logs.append(
+            f"  - dataset id={ds.id} name={ds.name!r} tables={table_count} status={ds.status}"
+        )
+    if len(authorized_datasets) > 10:
+        trace_logs.append(f"  ... and {len(authorized_datasets) - 10} more dataset(s)")
+    
     if not is_admin and not authorized_ids:
         trace_logs.append("No authorized datasets found for user.")
         return StandardResponse(data=SchemaResponse(
@@ -217,29 +234,49 @@ async def get_database_schema(
     else:
         top_k = 5
 
+    trace_logs.append(f"Search params: top_k={top_k}, similarity_threshold={threshold}")
+
+    embed_url = await ConfigService.get("embed_api_url") or ""
+    embed_model = await ConfigService.get("embed_model_name") or ""
+    embed_dim_cfg = await ConfigService.get("embed_dimensions") or ""
+    trace_logs.append(
+        f"Embedding service: model={embed_model!r}, "
+        f"url={embed_url[:80] + '...' if len(embed_url) > 80 else embed_url or '(empty)'}, "
+        f"embed_dimensions={embed_dim_cfg or '(default)'}"
+    )
+
     redis_results = []
     vector_search_success = False
     query = (request.query or "").strip()
     
-    if query:
+    if not query:
+        trace_logs.append("[WARN] Query is empty — skip vector search")
+    else:
+        from app.services.ai.metadata_index_service import MetadataIndexService
+        await MetadataIndexService.append_index_diagnostics(trace_logs)
+
         try:
             from app.services.ai.embedding_client import EmbeddingClient
-            from app.services.ai.metadata_index_service import MetadataIndexService
             
-            # 计算提问词向量
+            trace_logs.append(f"[Embedding] Requesting vector for query ({len(query)} chars)...")
             query_embedding = await EmbeddingClient.embed_text(query, use_global=True)
+            trace_logs.append(f"[Embedding] Received vector, dim={len(query_embedding)}")
             
-            # 执行 FT.SEARCH KNN 检索
             redis_results = await MetadataIndexService.search_knn(
                 query_embedding=query_embedding,
                 authorized_dataset_ids=authorized_ids,
-                top_k=top_k
+                top_k=top_k,
+                trace=trace_logs,
             )
             vector_search_success = True
-            trace_logs.append(f"Redis Vector Search completed. Found {len(redis_results)} raw items.")
+            trace_logs.append(
+                f"Redis Vector Search completed. Found {len(redis_results)} raw items "
+                f"(before threshold {threshold})."
+            )
         except Exception as ex:
             logger.warning("[Local Search] Redis Vector Search failed: %s. Falling back to keyword search.", ex)
-            trace_logs.append(f"Redis Vector Search failed: {ex}. Falling back to MySQL keyword search.")
+            trace_logs.append(f"Redis Vector Search failed: {type(ex).__name__}: {ex}")
+            trace_logs.append("Falling back to MySQL keyword search.")
 
     if vector_search_success:
         hits = []
@@ -249,17 +286,25 @@ async def get_database_schema(
         unique_hit_datasets = {}
         filtered_hits = []
         
+        if not redis_results:
+            trace_logs.append(
+                "[Result] No raw vector hits. If FT.INFO num_docs>0, compare backend Redis "
+                "with CLI host and verify embedding dimensions."
+            )
+        
         for item in redis_results:
             sim = item.get("similarity", 0.0)
+            doc_name = item.get("doc_name", "unknown")
             if sim < threshold:
-                trace_logs.append(f"Skipping hit {item.get('doc_name')} due to similarity {sim:.4f} below threshold {threshold}")
+                trace_logs.append(
+                    f"Filtered out {doc_name}: similarity {sim:.4f} < threshold {threshold}"
+                )
                 continue
                 
-            doc_name = item.get("doc_name", "unknown")
             content = item.get("content", "")
             ds_id = int(item.get("dataset_id", 0))
             
-            trace_logs.append(f"Hit: {doc_name} (Sim: {sim:.2f})")
+            trace_logs.append(f"Accepted hit: {doc_name} (Sim: {sim:.4f}, dataset_id={ds_id})")
             filtered_hits.append({
                 "content": content,
                 "similarity": sim,
@@ -270,6 +315,12 @@ async def get_database_schema(
                 if ds_id in dataset_id_to_obj:
                     ds = dataset_id_to_obj[ds_id]
                     unique_hit_datasets[ds_id] = SchemaHit(id=ds.id, name=ds.name, display_name=ds.display_name)
+        
+        if redis_results and not filtered_hits:
+            trace_logs.append(
+                f"[Result] All {len(redis_results)} raw hit(s) filtered by threshold {threshold} — "
+                "try lowering similarity_threshold in advanced settings"
+            )
                     
         schema_context = format_schema_hits(filtered_hits) if filtered_hits else "[System] No relevant metadata found above the similarity threshold."
         

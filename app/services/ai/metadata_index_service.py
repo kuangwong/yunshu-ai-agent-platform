@@ -52,6 +52,141 @@ class MetadataIndexService:
         return METADATA_INDEX_NAME
 
     @staticmethod
+    def _parse_ft_info(info: Any) -> Dict[str, Any]:
+        if not info or not isinstance(info, (list, tuple)):
+            return {}
+        parsed: Dict[str, Any] = {}
+        i = 0
+        while i + 1 < len(info):
+            key = info[i]
+            if isinstance(key, bytes):
+                key = key.decode("utf-8", errors="replace")
+            parsed[str(key)] = info[i + 1]
+            i += 2
+        return parsed
+
+    @staticmethod
+    def _extract_index_vector_dim(info: Dict[str, Any]) -> Optional[int]:
+        attrs = info.get("attributes")
+        if not isinstance(attrs, (list, tuple)):
+            return None
+        stack: List[Any] = [attrs]
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, (list, tuple)):
+                continue
+            for idx in range(len(node) - 1):
+                key = node[idx]
+                if isinstance(key, bytes):
+                    key = key.decode("utf-8", errors="replace")
+                if key == "dim":
+                    try:
+                        return int(node[idx + 1])
+                    except (TypeError, ValueError):
+                        return None
+            for item in node:
+                if isinstance(item, (list, tuple)):
+                    stack.append(item)
+        return None
+
+    @staticmethod
+    def _append_trace(trace: Optional[List[str]], message: str) -> None:
+        if trace is not None:
+            trace.append(message)
+
+    @staticmethod
+    async def append_index_diagnostics(trace: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Collect Redis / RediSearch index state for schema retrieval troubleshooting."""
+        from app.core.config import settings
+
+        diag: Dict[str, Any] = {
+            "redis_enabled": settings.REDIS_ENABLE,
+            "redis_host": settings.REDIS_HOST,
+            "redis_port": settings.REDIS_PORT,
+            "redis_db": settings.REDIS_DB,
+        }
+        MetadataIndexService._append_trace(
+            trace,
+            f"[Redis] REDIS_ENABLE={settings.REDIS_ENABLE}, "
+            f"target={settings.REDIS_HOST}:{settings.REDIS_PORT}/db{settings.REDIS_DB}",
+        )
+
+        configured_dim = await EmbeddingClient.get_dimensions(use_global=True)
+        diag["configured_embed_dim"] = configured_dim
+        MetadataIndexService._append_trace(trace, f"[Embedding Config] embed_dimensions={configured_dim}")
+
+        redis = await get_redis()
+        if not redis:
+            diag["text_client"] = False
+            MetadataIndexService._append_trace(trace, "[Redis] Text client unavailable")
+            return diag
+        diag["text_client"] = True
+
+        binary = await get_redis_binary()
+        diag["binary_client"] = binary is not None
+        if not binary:
+            MetadataIndexService._append_trace(
+                trace,
+                "[WARN] Redis binary client unavailable — vector KNN will return 0 without raising",
+            )
+
+        idx = await MetadataIndexService.index_name()
+        try:
+            info = MetadataIndexService._parse_ft_info(await redis.execute_command("FT.INFO", idx))
+            num_docs = info.get("num_docs", "?")
+            index_dim = MetadataIndexService._extract_index_vector_dim(info)
+            diag["index_exists"] = True
+            diag["num_docs"] = num_docs
+            diag["index_vector_dim"] = index_dim
+            MetadataIndexService._append_trace(
+                trace,
+                f"[RediSearch] Index '{idx}' num_docs={num_docs}, index_vector_dim={index_dim}",
+            )
+            if index_dim is not None and index_dim != configured_dim:
+                MetadataIndexService._append_trace(
+                    trace,
+                    f"[WARN] Index vector dim ({index_dim}) != embed_dimensions ({configured_dim}) "
+                    "— run 「重构本地向量数据」 after fixing config",
+                )
+        except Exception as exc:
+            diag["index_exists"] = False
+            MetadataIndexService._append_trace(
+                trace,
+                f"[RediSearch] FT.INFO '{idx}' failed: {exc}",
+            )
+
+        key_count = 0
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match=f"{METADATA_KEY_PREFIX}*", count=200)
+            key_count += len(keys or [])
+            if cursor == 0:
+                break
+        diag["hash_key_count"] = key_count
+        MetadataIndexService._append_trace(
+            trace,
+            f"[Redis Keys] SCAN '{METADATA_KEY_PREFIX}*' => {key_count} hash key(s)",
+        )
+
+        num_docs_val = diag.get("num_docs")
+        try:
+            num_docs_int = int(num_docs_val) if num_docs_val is not None else -1
+        except (TypeError, ValueError):
+            num_docs_int = -1
+        if key_count > 0 and num_docs_int == 0:
+            MetadataIndexService._append_trace(
+                trace,
+                "[WARN] Hash keys exist but index num_docs=0 — index out of sync; rebuild vectors",
+            )
+        elif num_docs_int > 0 and key_count == 0:
+            MetadataIndexService._append_trace(
+                trace,
+                "[WARN] Index has documents but no metadata hash keys under prefix",
+            )
+
+        return diag
+
+    @staticmethod
     async def ensure_index() -> bool:
         redis = await get_redis()
         if not redis:
@@ -265,6 +400,7 @@ class MetadataIndexService:
         query_embedding: List[float],
         authorized_dataset_ids: Optional[List[int]],
         top_k: int = 5,
+        trace: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Execute HNSW KNN search with authorized_dataset_ids TAG pre-filtering.
@@ -272,39 +408,94 @@ class MetadataIndexService:
         """
         redis = await get_redis_binary()
         if not redis:
+            MetadataIndexService._append_trace(
+                trace,
+                "[KNN] Aborted: Redis binary client unavailable (check REDIS_ENABLE / connection)",
+            )
             return []
-        
+
+        vec_dim = len(query_embedding)
+        expected_dim = await EmbeddingClient.get_dimensions(use_global=True)
+        MetadataIndexService._append_trace(
+            trace,
+            f"[KNN] Query vector dim={vec_dim}, configured embed_dimensions={expected_dim}, top_k={top_k}",
+        )
+        if vec_dim != expected_dim:
+            MetadataIndexService._append_trace(
+                trace,
+                f"[WARN] Query vector dim ({vec_dim}) != embed_dimensions ({expected_dim})",
+            )
+
         idx = await MetadataIndexService.index_name()
-        await MetadataIndexService.ensure_index()
+        index_ready = await MetadataIndexService.ensure_index()
+        MetadataIndexService._append_trace(trace, f"[KNN] ensure_index({idx}) => {index_ready}")
 
         if authorized_dataset_ids is None:
             query_expr = f"*=>[KNN {top_k} @embedding $vec AS score]"
+            MetadataIndexService._append_trace(trace, "[KNN] Filter: admin — search all datasets")
         else:
             if not authorized_dataset_ids:
+                MetadataIndexService._append_trace(trace, "[KNN] Aborted: empty authorized_dataset_ids")
                 return []
             tag_vals = "|".join(_tag_escape(str(ds_id)) for ds_id in authorized_dataset_ids)
             query_expr = f"(@dataset_id:{{{tag_vals}}})=>[KNN {top_k} @embedding $vec AS score]"
+            MetadataIndexService._append_trace(
+                trace,
+                f"[KNN] Filter: dataset_id in {authorized_dataset_ids}",
+            )
 
-        raw = await redis.execute_command(
-            "FT.SEARCH",
-            idx,
-            query_expr,
-            "PARAMS",
-            "2",
-            "vec",
-            _vector_to_bytes(query_embedding),
-            "SORTBY",
-            "score",
-            "RETURN",
-            "4",
-            "dataset_id",
-            "doc_name",
-            "content",
-            "score",
-            "DIALECT",
-            "2",
-        )
-        return MetadataIndexService._parse_knn_response(raw)
+        MetadataIndexService._append_trace(trace, f"[KNN] FT.SEARCH expr: {query_expr}")
+
+        try:
+            raw = await redis.execute_command(
+                "FT.SEARCH",
+                idx,
+                query_expr,
+                "PARAMS",
+                "2",
+                "vec",
+                _vector_to_bytes(query_embedding),
+                "SORTBY",
+                "score",
+                "RETURN",
+                "4",
+                "dataset_id",
+                "doc_name",
+                "content",
+                "score",
+                "DIALECT",
+                "2",
+            )
+        except Exception as exc:
+            MetadataIndexService._append_trace(trace, f"[KNN] FT.SEARCH error: {exc}")
+            raise
+
+        raw_total = 0
+        if isinstance(raw, (list, tuple)) and raw:
+            try:
+                raw_total = int(raw[0])
+            except (TypeError, ValueError):
+                raw_total = 0
+        MetadataIndexService._append_trace(trace, f"[KNN] FT.SEARCH raw total={raw_total}")
+
+        items = MetadataIndexService._parse_knn_response(raw)
+        MetadataIndexService._append_trace(trace, f"[KNN] Parsed result count={len(items)}")
+        for i, item in enumerate(items):
+            sim = item.get("similarity", 0.0)
+            MetadataIndexService._append_trace(
+                trace,
+                f"[KNN] raw[{i + 1}] doc={item.get('doc_name')} "
+                f"dataset_id={item.get('dataset_id')} similarity={sim:.4f}",
+            )
+
+        if raw_total == 0:
+            MetadataIndexService._append_trace(
+                trace,
+                "[HINT] 0 raw KNN hits — check: (1) same Redis as FT.INFO "
+                "(2) embedding dim matches index (3) HSTRLEN embedding = dim*4",
+            )
+
+        return items
 
     @staticmethod
     def _parse_knn_response(raw: Any) -> List[Dict[str, Any]]:

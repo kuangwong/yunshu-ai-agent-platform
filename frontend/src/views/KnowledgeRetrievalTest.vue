@@ -179,7 +179,11 @@ onMounted(fetchRagFlowConfig)
 
       <!-- Left: Search Conditions -->
       <aside class="w-[380px] shrink-0 flex flex-col gap-4">
-        <section class="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 space-y-4 flex flex-col flex-1 overflow-y-auto">
+        <section class="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex flex-col flex-1 overflow-y-auto">
+        <fieldset
+          :disabled="!isKnowledgeEnabled"
+          class="space-y-4 flex flex-col flex-1 min-w-0 border-0 p-0 m-0 disabled:opacity-60"
+        >
 
           <!-- Dataset IDs -->
           <div>
@@ -188,11 +192,14 @@ onMounted(fetchRagFlowConfig)
               <input
                 :value="datasetIdsText"
                 readonly
-                class="flex-1 border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-xs font-mono truncate"
+                :disabled="!isKnowledgeEnabled"
+                class="flex-1 border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-xs font-mono truncate disabled:cursor-not-allowed"
                 placeholder="请先选择知识库"
               />
               <button
-                class="px-3 py-2 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary/90 transition-all whitespace-nowrap shrink-0"
+                type="button"
+                class="px-3 py-2 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary/90 transition-all whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-primary"
+                :disabled="!isKnowledgeEnabled"
                 @click="showDatasetSelector = true"
               >
                 选择
@@ -206,7 +213,8 @@ onMounted(fetchRagFlowConfig)
             <textarea
               v-model="query"
               rows="5"
-              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary resize-none"
+              :disabled="!isKnowledgeEnabled"
+              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary resize-none disabled:cursor-not-allowed disabled:bg-gray-50"
               placeholder="输入要测试的检索问题..."
             ></textarea>
           </div>
@@ -217,15 +225,15 @@ onMounted(fetchRagFlowConfig)
             <div class="grid grid-cols-3 gap-3">
               <div>
                 <span class="block text-xs text-gray-500 mb-1">top_k</span>
-                <input v-model.number="topK" type="number" min="1" max="50" class="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                <input v-model.number="topK" type="number" min="1" max="50" :disabled="!isKnowledgeEnabled" class="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-50" />
               </div>
               <div>
                 <span class="block text-xs text-gray-500 mb-1">相似度阈值</span>
-                <input v-model.number="similarityThreshold" type="number" min="0" max="1" step="0.01" class="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                <input v-model.number="similarityThreshold" type="number" min="0" max="1" step="0.01" :disabled="!isKnowledgeEnabled" class="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-50" />
               </div>
               <div>
                 <span class="block text-xs text-gray-500 mb-1">向量权重</span>
-                <input v-model.number="vectorSimilarityWeight" type="number" min="0" max="1" step="0.01" class="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                <input v-model.number="vectorSimilarityWeight" type="number" min="0" max="1" step="0.01" :disabled="!isKnowledgeEnabled" class="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-gray-50" />
               </div>
             </div>
           </div>
@@ -233,6 +241,7 @@ onMounted(fetchRagFlowConfig)
           <!-- Execute -->
           <div class="pt-2 mt-auto">
             <button
+              type="button"
               class="w-full px-5 py-2.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               :disabled="loading || !canTest"
               @click="runRetrieval"
@@ -245,6 +254,7 @@ onMounted(fetchRagFlowConfig)
             </button>
             <p class="text-[10px] text-gray-400 mt-2 text-center">检索测试会写入审计日志</p>
           </div>
+        </fieldset>
         </section>
       </aside>
 
@@ -281,7 +291,7 @@ onMounted(fetchRagFlowConfig)
             <svg class="w-12 h-12 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <span class="text-sm">在左侧输入条件后执行检索</span>
+            <span class="text-sm">{{ isKnowledgeEnabled ? '在左侧输入条件后执行检索' : '知识库功能未开启' }}</span>
           </div>
           <!-- Results list -->
           <div v-else class="divide-y divide-gray-100">
@@ -306,6 +316,7 @@ onMounted(fetchRagFlowConfig)
     </div>
 
     <RagFlowResourceSelector
+      v-if="isKnowledgeEnabled"
       v-model="showDatasetSelector"
       type="dataset"
       :initial-selected="datasetIds"

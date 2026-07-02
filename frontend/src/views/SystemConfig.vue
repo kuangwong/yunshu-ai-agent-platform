@@ -285,12 +285,8 @@ const isKnowledgeFeatureEnabled = computed(() => {
   return (item?.value ?? 'true') === 'true'
 })
 
-const isConfigItemDisabled = (category: string, item: ConfigItem) => {
-  if (!canSave) return true
-  if (category === 'knowledge' && item.key !== 'knowledge_base_enabled' && !isKnowledgeFeatureEnabled.value) {
-    return true
-  }
-  return false
+const isConfigItemDisabled = (_category: string, _item: ConfigItem) => {
+  return !canSave
 }
 const originalConfigs = ref<{ [key: string]: string }>({})
 const configLoading = ref(false)
@@ -588,7 +584,7 @@ const getCategoryTip = (key: string) => {
 * 如果知识库多为技术文档、规格手册或包含大量专业代号，调低该值（如 0.2 ~ 0.3）。
 * 如果问题比较多样化、偏口语表述，调高该值（如 0.6 ~ 0.7）以强化语义召回。`,
     'knowledge_ragflow_metadata_top_k': '知识库问答检索时，最大召回匹配的候选文档片段数。值越大参考条数越多，但会消耗更多的模型 Token。',
-    'knowledge_base_enabled': '总开关：关闭后知识库管理、检索测试及智能体的 search_knowledge_base 工具均不可用；下方 RAGFlow 连接参数将变为只读。'
+    'knowledge_base_enabled': '总开关：关闭后隐藏下方 RAGFlow 配置项，并禁用知识库管理、检索测试及智能体的 search_knowledge_base 工具。'
   }
   return tips[key] || ''
 }
@@ -709,6 +705,11 @@ const getVisibleItems = (items: ConfigItem[] | undefined, category: string) => {
     })
   }
   if (category === 'knowledge') {
+    const enabledItem = list.find(x => x.key === 'knowledge_base_enabled')
+    const enabled = (enabledItem?.value ?? 'true') === 'true'
+    if (!enabled) {
+      list = list.filter(x => x.key === 'knowledge_base_enabled')
+    }
     const order = [
       'knowledge_base_enabled',
       'knowledge_ragflow_api_url',
@@ -1503,7 +1504,7 @@ onMounted(() => {
                     <div v-if="category === 'knowledge' && !isKnowledgeFeatureEnabled" class="bg-gray-50 border-l-4 border-gray-300 p-4 rounded-md text-sm text-gray-600 flex items-start space-x-2 mb-4">
                        <span class="text-gray-400 font-bold shrink-0">ℹ️</span>
                        <div>
-                          知识库功能已<strong>关闭</strong>。开启上方「knowledge_base_enabled」开关后，方可编辑 RAGFlow 连接参数，并启用知识库管理、检索测试与智能体知识库检索工具。
+                          知识库功能已<strong>关闭</strong>。开启「knowledge_base_enabled」后将显示 RAGFlow 连接与检索参数，并启用知识库管理、检索测试与智能体知识库检索工具。
                        </div>
                     </div>
                     <div v-for="item in getVisibleItems(configGroups[category], String(category))" :key="item.key" class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1578,7 +1579,7 @@ onMounted(() => {
                                <div class="flex space-x-2">
                                    <input type="text" v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                                    <button
-                                       v-if="canSave && !isConfigItemDisabled(String(category), item)"
+                                       v-if="canSave"
                                        @click="openDatasetSelector(item)"
                                        class="px-3 py-2 bg-white border border-gray-300 rounded-md text-gray-500 hover:text-primary hover:border-primary transition-colors"
                                        title="选择知识库"

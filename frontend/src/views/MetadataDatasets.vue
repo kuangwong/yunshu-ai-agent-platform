@@ -1533,9 +1533,12 @@ onMounted(async () => {
                            </p>
                         </div>
                      </div>
-                     <div v-else class="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center gap-3">
-                        <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        <span class="font-bold text-red-800 text-sm">未找到相关元数据 (Miss)</span>
+                     <div v-else class="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+                        <svg class="w-5 h-5 text-red-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <div>
+                          <span class="font-bold text-red-800 text-sm">未找到相关元数据 (Miss)</span>
+                          <p class="text-xs text-red-600 mt-1">请查看右侧「执行日志 (Trace)」：含 Redis 连接、索引 num_docs、向量维度、KNN 原始命中与阈值过滤详情。</p>
+                        </div>
                      </div>
 
                      <!-- Context Preview -->
@@ -1558,7 +1561,16 @@ onMounted(async () => {
                       </h3>
                   </div>
                   <div class="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-xs">
-                      <div v-for="(log, i) in testResult.logs" :key="i" class="p-2 rounded bg-white border border-gray-200 text-gray-600 break-all shadow-sm">
+                      <div
+                        v-for="(log, i) in testResult.logs"
+                        :key="i"
+                        class="p-2 rounded border text-xs font-mono break-all shadow-sm"
+                        :class="String(log).includes('[WARN]') || String(log).includes('[HINT]') || String(log).includes('failed')
+                          ? 'bg-amber-50 border-amber-200 text-amber-900'
+                          : String(log).includes('[KNN]') || String(log).includes('[Redis]') || String(log).includes('[RediSearch]')
+                            ? 'bg-slate-50 border-slate-200 text-slate-700'
+                            : 'bg-white border-gray-200 text-gray-600'"
+                      >
                           <span class="text-gray-300 mr-2">{{ Number(i) + 1 }}.</span>
                           {{ log }}
                       </div>

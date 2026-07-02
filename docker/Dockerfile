@@ -26,13 +26,25 @@ WORKDIR /app
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
 
-# 安装系统依赖 (Oracle Client)
+# 系统依赖：Oracle(libaio)、SQL Server(unixODBC + msodbcsql18)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libaio1 \
-    || true \
-    && apt-get install -y --no-install-recommends libaio1t64 \
-    && ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 || true \
+    curl \
+    ca-certificates \
+    gnupg \
+    && (apt-get install -y --no-install-recommends libaio1 \
+        || apt-get install -y --no-install-recommends libaio1t64) \
+    && ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 2>/dev/null || true \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
+        > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
+        unixodbc \
+        unixodbc-dev \
+        msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件

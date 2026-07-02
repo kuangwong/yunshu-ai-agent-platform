@@ -173,6 +173,35 @@ async def _system_memory_consolidation_job():
         logger.error(f"❌ Failed to run system memory consolidation job: {e}", exc_info=True)
 
 
+async def _system_third_party_user_sync_job():
+    """系统级定时任务：从第三方数据源同步用户。"""
+    logger.info("⏰ Starting third-party user sync job...")
+
+    lock_key = f"lock:system_third_party_user_sync:{datetime.now().strftime('%Y%m%d%H%M')}"
+    if not await redis.redis_client.set(lock_key, "locked", ex=3600, nx=True):
+        logger.warning("⏩ Third-party user sync skipped: lock already acquired by another node.")
+        return
+
+    try:
+        from app.services.user_sync_service import UserSyncService
+
+        config = await UserSyncService.get_config()
+        if not config.enabled or config.schedule == "off":
+            logger.info("Third-party user sync is disabled, skipping.")
+            return
+
+        async with AsyncSessionLocal() as session:
+            result = await UserSyncService.run_sync(session)
+            logger.info(
+                "✅ Third-party user sync finished. created=%s skipped=%s failed=%s",
+                result["created"],
+                result["skipped"],
+                result["failed"],
+            )
+    except Exception as e:
+        logger.error(f"❌ Failed to run third-party user sync job: {e}", exc_info=True)
+
+
 class TaskSchedulerService:
     _instance = None
     _scheduler: Optional[AsyncIOScheduler] = None
@@ -212,6 +241,8 @@ class TaskSchedulerService:
             id="system_memory_consolidation",
             replace_existing=True
         )
+
+        await self.reschedule_third_party_user_sync()
 
         now = datetime.now(tz)
         logger.info(f"🚀 Agent Task Scheduler started (Fixed Serialization). Current Scheduler Time: {now}")
@@ -280,5 +311,36 @@ class TaskSchedulerService:
             return None
         job = self._scheduler.get_job(f"task_{task_id}")
         return job.next_run_time if job else None
+
+    async def reschedule_third_party_user_sync(self, config=None):
+        """根据第三方用户同步配置注册/移除定时任务。"""
+        if not self._scheduler:
+            return
+
+        from pytz import timezone
+        from app.services.user_sync_service import UserSyncService
+
+        tz = timezone("Asia/Shanghai")
+        job_id = "system_third_party_user_sync"
+
+        if self._scheduler.get_job(job_id):
+            self._scheduler.remove_job(job_id)
+
+        cfg = config or await UserSyncService.get_config()
+        if not cfg.enabled or cfg.schedule == "off":
+            logger.info("Third-party user sync scheduler: disabled")
+            return
+
+        cron_kwargs = UserSyncService.schedule_to_cron(cfg.schedule)
+        if not cron_kwargs:
+            return
+
+        self._scheduler.add_job(
+            _system_third_party_user_sync_job,
+            CronTrigger(timezone=tz, **cron_kwargs),
+            id=job_id,
+            replace_existing=True,
+        )
+        logger.info("Third-party user sync scheduler registered: schedule=%s", cfg.schedule)
 
 scheduler_service = TaskSchedulerService()

@@ -12,6 +12,7 @@ from app.schemas.permission import UserPermissionsResponse, PermissionUpdate
 from app.services.permission_service import PermissionService
 from app.models.permission import ResourcePermission, UserRoleRelation
 from app.services.sso_user import LaplacePortalApiClient
+from app.services.db_connection_service import DbConnectionService
 import json
 import logging
 
@@ -135,6 +136,118 @@ async def sync_sso_users(
     except Exception as e:
         logger.error(f"SSO Sync Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Third-party user sync ---
+
+from app.schemas.user_sync import (
+    ThirdPartyUserSyncConfig,
+    ThirdPartyUserSyncConfigUpdate,
+    ThirdPartyUserSyncRunRequest,
+)
+from app.services.user_sync_service import UserSyncService
+
+
+@router.get("/third-party-sync/config")
+async def get_third_party_sync_config(
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+):
+    config = await UserSyncService.get_config()
+    return {"data": config.model_dump()}
+
+
+@router.put("/third-party-sync/config")
+async def update_third_party_sync_config(
+    body: ThirdPartyUserSyncConfigUpdate,
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+):
+    try:
+        saved = await UserSyncService.save_config(
+            body,
+            changed_by=admin.get("user_name", "admin"),
+        )
+        return {"message": "配置已保存", "data": saved.model_dump()}
+    except Exception as e:
+        logger.error(f"Save third-party sync config failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/third-party-sync/datasources")
+async def list_third_party_sync_datasources(
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    db: AsyncSession = Depends(get_db_session),
+):
+    configs = await DbConnectionService.list_configs(db)
+    return {
+        "items": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "db_type": c.db_type,
+                "database_name": c.database_name,
+            }
+            for c in configs
+        ]
+    }
+
+
+@router.get("/third-party-sync/tables")
+async def list_third_party_sync_tables(
+    connection_config_id: int = Query(..., description="数据源配置 ID"),
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    db: AsyncSession = Depends(get_db_session),
+):
+    try:
+        tables = await UserSyncService.list_tables(db, connection_config_id)
+        return {"items": tables}
+    except Exception as e:
+        logger.error(f"List third-party sync tables failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/third-party-sync/columns")
+async def list_third_party_sync_columns(
+    connection_config_id: int = Query(..., description="数据源配置 ID"),
+    table_name: str = Query(..., description="表名"),
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    db: AsyncSession = Depends(get_db_session),
+):
+    try:
+        columns = await UserSyncService.list_columns(db, connection_config_id, table_name)
+        return {"items": columns}
+    except Exception as e:
+        logger.error(f"List third-party sync columns failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/third-party-sync/preview")
+async def preview_third_party_sync_users(
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    db: AsyncSession = Depends(get_db_session),
+):
+    try:
+        items = await UserSyncService.preview_users(db)
+        return {"items": items}
+    except Exception as e:
+        logger.error(f"Preview third-party sync users failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/third-party-sync/run")
+async def run_third_party_sync(
+    request: ThirdPartyUserSyncRunRequest,
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    db: AsyncSession = Depends(get_db_session),
+):
+    try:
+        result = await UserSyncService.run_sync(db, user_ids=request.user_ids)
+        return {
+            "message": f"同步完成：新增 {result['created']} 人，跳过 {result['skipped']} 人，失败 {result['failed']} 人",
+            **result,
+        }
+    except Exception as e:
+        logger.error(f"Third-party sync run failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 class UpdateUserRequest(BaseModel):
     real_name: Optional[str] = None

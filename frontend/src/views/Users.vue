@@ -15,12 +15,19 @@
       <h1 class="text-2xl font-bold text-gray-900">用户管理</h1>
       <div class="flex gap-2">
         <button
-          v-if="ssoEnabled"
+          v-if="showSsoSync"
           @click="openSsoModal"
           class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2 shadow-sm"
         >
           <UserGroupIcon class="w-5 h-5" />
           同步 SSO 用户
+        </button>
+        <button
+          @click="showThirdPartyDrawer = true"
+          class="bg-violet-600 text-white px-4 py-2 rounded-lg hover:bg-violet-700 transition flex items-center gap-2 shadow-sm"
+        >
+          <ArrowPathIcon class="w-5 h-5" />
+          同步第三方用户
         </button>
         <button
           @click="openCreateDialog"
@@ -1260,15 +1267,23 @@
       </div>
     </div>
   </div>
+
+  <ThirdPartyUserSyncDrawer
+    :visible="showThirdPartyDrawer"
+    @close="showThirdPartyDrawer = false"
+    @synced="onThirdPartySynced"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from "vue";
 import axios from "axios";
 import { useToast } from "../composables/useToast";
+import { useBranding } from "../composables/useBranding";
 import { MENU_TREE } from "../constants/permissions";
 import Switch from "../components/Switch.vue";
 import RoleList from "../components/RoleList.vue";
+import ThirdPartyUserSyncDrawer from "../components/ThirdPartyUserSyncDrawer.vue";
 import {
   KeyIcon,
   ArrowPathIcon,
@@ -1279,6 +1294,7 @@ import {
 } from "@heroicons/vue/24/outline";
 
 const { showToast } = useToast();
+const { branding } = useBranding();
 
 const windowWidth = ref(window.innerWidth);
 const isMobile = computed(() => windowWidth.value < 768);
@@ -1295,6 +1311,9 @@ onUnmounted(() => {
 
 // State
 const ssoEnabled = ref(false);
+const showSsoSync = computed(
+  () => ssoEnabled.value && !branding.value.hide_login_sso
+);
 const users = ref<any[]>([]);
 const businessRoles = ref<any[]>([]);
 const loading = ref(false);
@@ -1316,6 +1335,7 @@ const showDeleteDialog = ref(false);
 const showRegenerateDialog = ref(false);
 const showViewKeyDialog = ref(false);
 const showSsoModal = ref(false);
+const showThirdPartyDrawer = ref(false);
 const userToDelete = ref<any>(null);
 const userToRegenerate = ref<any>(null);
 const userToViewKey = ref<any>(null);
@@ -1910,6 +1930,10 @@ const fetchPublicConfig = async () => {
   } catch (e) {
     console.error("Failed to fetch public config:", e);
   }
+};
+
+const onThirdPartySynced = () => {
+  fetchUsers();
 };
 
 onMounted(() => {

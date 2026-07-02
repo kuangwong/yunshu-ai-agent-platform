@@ -35,13 +35,14 @@ class AuthService:
 
     @staticmethod
     async def generate_api_key(
-        user_name: str, 
-        role: str = "user", 
-        real_name: str = None, 
-        remark: str = None, 
+        user_name: str,
+        role: str = "user",
+        real_name: str = None,
+        remark: str = None,
         dept_code: str = None,
         org_path: str = None,
         extra_data: str = None,
+        user_id: Optional[int] = None,
         db: Optional[AsyncSession] = None
     ) -> str:
         """
@@ -64,6 +65,8 @@ class AuthService:
                 remark=remark,
                 status=1
             )
+            if user_id is not None:
+                new_user.id = user_id
             session.add(new_user)
             await session.commit()
             return api_key

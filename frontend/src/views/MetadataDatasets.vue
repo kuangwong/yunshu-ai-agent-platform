@@ -7,6 +7,7 @@ import { portalApi, type User, type Role } from '../api/portal'
 import axios from '@/utils/axios'
 import SmartImportWizard from '../components/metadata/SmartImportWizard.vue'
 import RowFilterOptionSelect from '../components/metadata/RowFilterOptionSelect.vue'
+import PermissionVariableMenu from '../components/metadata/PermissionVariableMenu.vue'
 import { useUser } from '../composables/useUser'
 import { useToast } from '../composables/useToast'
 
@@ -84,50 +85,78 @@ const OPERATORS = [
   { label: '小于 (<)', value: '<' }
 ]
 
-const SYSTEM_VARIABLES = computed(() => {
-  const baseVariables = [
-    { label: '用户 ID', value: '{user.id}' },
-    { label: '用户名', value: '{user.user_name}' },
-    { label: '真实姓名', value: '{user.real_name}' },
-    { label: '部门代码', value: '{user.dept_code}' },
-    { label: '组织全路径', value: '{user.org_path}' },
-    { label: '角色', value: '{user.role}' }
-  ]
+const BUILTIN_USER_VARIABLES = [
+  { label: '用户 ID', value: '{user.id}' },
+  { label: '用户名', value: '{user.user_name}' },
+  { label: '真实姓名', value: '{user.real_name}' },
+  { label: '部门代码', value: '{user.dept_code}' },
+  { label: '组织全路径', value: '{user.org_path}' },
+  { label: '角色', value: '{user.role}' },
+] as const
 
-  // Try to load extra dimensions from current user
+const CORE_USER_DIMENSION_KEYS = new Set([
+  'id', 'user_id', 'user_name', 'real_name', 'dept_code', 'org_path', 'role', 'extra_data',
+])
+
+const parseUserExtraDataObject = (raw: unknown): Record<string, unknown> => {
+  if (!raw) return {}
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    if (!text) return {}
+    try {
+      const parsed = JSON.parse(text)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>
+  }
+  return {}
+}
+
+const formatExtraDataSample = (value: unknown): string | undefined => {
+  if (value == null) return undefined
+  const text = typeof value === 'object' ? JSON.stringify(value) : String(value).trim()
+  if (!text) return undefined
+  return text.length > 40 ? `${text.slice(0, 37)}...` : text
+}
+
+const EXTRA_DATA_USER_VARIABLES = computed(() => {
+  const keySamples = new Map<string, string | undefined>()
+
+  const collectFromExtraData = (extraData: unknown) => {
+    const extra = parseUserExtraDataObject(extraData)
+    for (const [key, value] of Object.entries(extra)) {
+      if (CORE_USER_DIMENSION_KEYS.has(key)) continue
+      if (!keySamples.has(key)) {
+        keySamples.set(key, formatExtraDataSample(value))
+      }
+    }
+  }
+
+  for (const user of allUsers.value) {
+    collectFromExtraData(user.extra_data)
+  }
+
+  // 兜底：当前登录用户 localStorage 中的 extra_data
   try {
     const userInfoStr = localStorage.getItem('user_info')
     if (userInfoStr) {
-      const userInfo = JSON.parse(userInfoStr)
-      let extraData = userInfo.extra_data
-      
-      // If extra_data is a string, parse it
-      if (typeof extraData === 'string' && extraData.trim()) {
-        try {
-          extraData = JSON.parse(extraData)
-        } catch (e) {
-          console.warn('Failed to parse extra_data from userInfo', e)
-          extraData = {}
-        }
-      }
-
-      if (extraData && typeof extraData === 'object') {
-        const baseKeys = new Set(['id', 'user_id', 'user_name', 'real_name', 'dept_code', 'org_path', 'role', 'extra_data'])
-        Object.keys(extraData).forEach(key => {
-          if (!baseKeys.has(key)) {
-            baseVariables.push({
-              label: `${key} (扩展)`,
-              value: `{user.${key}}`
-            })
-          }
-        })
-      }
+      collectFromExtraData(JSON.parse(userInfoStr)?.extra_data)
     }
-  } catch (err) {
-    console.error('Error computing dynamic system variables:', err)
+  } catch {
+    // ignore
   }
 
-  return baseVariables
+  return Array.from(keySamples.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, sample]) => ({
+      label: key,
+      value: `{user.${key}}`,
+      sample,
+    }))
 })
 const syncingId = ref<number | null>(null)
 const enhancing = ref(false)
@@ -2147,11 +2176,13 @@ relationships:
                                 <button @click.stop="toggleMenu(`visual-user-${userId}-${idx}-vars`)" class="flex-shrink-0 h-[2.625rem] w-9 rounded-lg text-amber-600 hover:bg-amber-50 transition-colors border border-amber-100 bg-white flex items-center justify-center font-bold" title="插入内部变量">
                                   { }
                                 </button>
-                                <div v-if="activeMenuPath === `visual-user-${userId}-${idx}-vars`" class="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-[9999] max-h-48 overflow-y-auto custom-scrollbar">
-                                  <button v-for="v in SYSTEM_VARIABLES" :key="v.value" @click="rule._builder_val = v.value; closeMenus()" class="w-full text-left px-3 py-1.5 text-[9px] hover:bg-amber-50 border-b border-gray-50 last:border-0 whitespace-nowrap">
-                                    {{ v.label }} ({{ v.value }})
-                                  </button>
-                                </div>
+                                <PermissionVariableMenu
+                                  v-if="activeMenuPath === `visual-user-${userId}-${idx}-vars`"
+                                  :builtin-variables="[...BUILTIN_USER_VARIABLES]"
+                                  :extra-data-variables="EXTRA_DATA_USER_VARIABLES"
+                                  accent="amber"
+                                  @select="(v) => { rule._builder_val = v; closeMenus() }"
+                                />
                               </div>
                             </div>
                             <button @click="appendBuilderCondition(rule)" class="bg-amber-700 hover:bg-amber-800 text-white w-10 h-[2.625rem] rounded-lg flex items-center justify-center transition-all shadow-md disabled:opacity-30 disabled:scale-100 active:scale-95" :disabled="!rule._builder_table || !rule._builder_field || !rule._builder_op || !rule._builder_val" title="追加条件">
@@ -2277,11 +2308,13 @@ relationships:
                                   <button @click.stop="toggleMenu(`role-${roleName}-${idx}-vars`)" class="flex-shrink-0 h-[2.625rem] w-9 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors border border-emerald-100 bg-white flex items-center justify-center font-bold" title="插入内部变量">
                                     { }
                                   </button>
-                                  <div v-if="activeMenuPath === `role-${roleName}-${idx}-vars`" class="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-[9999] max-h-48 overflow-y-auto custom-scrollbar">
-                                    <button v-for="v in SYSTEM_VARIABLES" :key="v.value" @click="rule._builder_val = v.value; closeMenus()" class="w-full text-left px-3 py-1.5 text-[9px] hover:bg-emerald-50 border-b border-gray-50 last:border-0 whitespace-nowrap">
-                                      {{ v.label }} ({{ v.value }})
-                                    </button>
-                                  </div>
+                                  <PermissionVariableMenu
+                                    v-if="activeMenuPath === `role-${roleName}-${idx}-vars`"
+                                    :builtin-variables="[...BUILTIN_USER_VARIABLES]"
+                                    :extra-data-variables="EXTRA_DATA_USER_VARIABLES"
+                                    accent="emerald"
+                                    @select="(v) => { rule._builder_val = v; closeMenus() }"
+                                  />
                                 </div>
                               </div>
                               
@@ -2376,11 +2409,13 @@ relationships:
                                     <button @click.stop="toggleMenu(`user-${uid}-${idx}-vars`)" class="flex-shrink-0 h-[2.625rem] w-9 rounded-lg text-amber-600 hover:bg-amber-50 transition-colors border border-amber-100 bg-white flex items-center justify-center font-bold" title="插入内部变量">
                                       { }
                                     </button>
-                                    <div v-if="activeMenuPath === `user-${uid}-${idx}-vars`" class="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-[9999] max-h-48 overflow-y-auto custom-scrollbar">
-                                      <button v-for="v in SYSTEM_VARIABLES" :key="v.value" @click="rule._builder_val = v.value; closeMenus()" class="w-full text-left px-3 py-1.5 text-[9px] hover:bg-amber-50 border-b border-gray-50 last:border-0 whitespace-nowrap">
-                                        {{ v.label }} ({{ v.value }})
-                                      </button>
-                                    </div>
+                                    <PermissionVariableMenu
+                                      v-if="activeMenuPath === `user-${uid}-${idx}-vars`"
+                                      :builtin-variables="[...BUILTIN_USER_VARIABLES]"
+                                      :extra-data-variables="EXTRA_DATA_USER_VARIABLES"
+                                      accent="amber"
+                                      @select="(v) => { rule._builder_val = v; closeMenus() }"
+                                    />
                                   </div>
                                 </div>
                                 
@@ -2465,11 +2500,13 @@ relationships:
                                <button @click.stop="toggleMenu(`default-${idx}-vars`)" class="flex-shrink-0 h-[2.625rem] w-9 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors border border-emerald-100 bg-white flex items-center justify-center font-bold" title="插入内部变量">
                                  { }
                                </button>
-                               <div v-if="activeMenuPath === `default-${idx}-vars`" class="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-[9999] max-h-48 overflow-y-auto custom-scrollbar">
-                                 <button v-for="v in SYSTEM_VARIABLES" :key="v.value" @click="rule._builder_val = v.value; closeMenus()" class="w-full text-left px-3 py-1.5 text-[9px] hover:bg-emerald-50 border-b border-gray-50 last:border-0">
-                                   {{ v.label }} ({{ v.value }})
-                                 </button>
-                               </div>
+                               <PermissionVariableMenu
+                                 v-if="activeMenuPath === `default-${idx}-vars`"
+                                 :builtin-variables="[...BUILTIN_USER_VARIABLES]"
+                                 :extra-data-variables="EXTRA_DATA_USER_VARIABLES"
+                                 accent="slate"
+                                 @select="(v) => { rule._builder_val = v; closeMenus() }"
+                               />
                              </div>
                            </div>
                            
@@ -2576,6 +2613,29 @@ relationships:
                <div class="p-2 bg-gray-50 rounded border border-gray-100 font-mono"><span class="text-blue-600 font-bold">{user.org_path}</span> 组织全路径</div>
                <div class="p-2 bg-gray-50 rounded border border-gray-100 font-mono"><span class="text-blue-600 font-bold">{user.role}</span> 系统角色</div>
              </div>
+             <p class="text-[10px] text-gray-500 mt-2">以上 6 项为<strong>内置用户属性</strong>，所有用户均可用。</p>
+           </section>
+
+           <section class="space-y-2">
+             <h3 class="font-bold text-gray-800 flex items-center gap-2 text-sm">
+               <span class="w-1 h-4 bg-violet-500 rounded-full"></span>
+               extra_data 扩展字段
+             </h3>
+             <p class="text-[10px] text-gray-600 leading-relaxed">
+               来自用户 <code class="text-violet-600 bg-violet-50 px-1 rounded">extra_data</code> JSON 的键，运行时摊平为
+               <code class="font-mono text-violet-600">{user.键名}</code>。下拉列表从平台用户聚合展示，并标注「扩展」与内置变量区分。
+             </p>
+             <div v-if="EXTRA_DATA_USER_VARIABLES.length" class="grid grid-cols-1 gap-1.5 text-[10px] max-h-32 overflow-y-auto">
+               <div
+                 v-for="v in EXTRA_DATA_USER_VARIABLES"
+                 :key="v.value"
+                 class="p-2 bg-violet-50 rounded border border-violet-100 font-mono flex items-center justify-between gap-2"
+               >
+                 <span><span class="text-violet-700 font-bold">{{ v.value }}</span> {{ v.label }}</span>
+                 <span class="text-[8px] px-1 py-0.5 rounded bg-violet-100 text-violet-600 font-bold shrink-0">扩展</span>
+               </div>
+             </div>
+             <p v-else class="text-[10px] text-gray-400">当前暂无 extra_data 扩展字段，可在用户管理或第三方用户同步中配置。</p>
            </section>
 
            <section class="space-y-4">

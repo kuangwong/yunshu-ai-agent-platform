@@ -8,6 +8,7 @@ export interface User {
   role: string
   dept_code?: string
   org_path?: string
+  extra_data?: string | Record<string, unknown> | null
   is_active: boolean
 }
 

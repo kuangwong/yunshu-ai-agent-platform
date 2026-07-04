@@ -28,7 +28,7 @@ def test_list_skills_without_menu_permission(mock_skills_dir):
     skill_dir = mock_skills_dir / "public-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: 公开技能\ndescription: 任意登录用户可见\n---\n",
+        "---\nname: 公开技能\ndescription: 任意登录用户可见\n---\n\n# Body",
         encoding="utf-8",
     )
     user = {"user_id": 99, "user_name": "embed_user", "role": "user"}
@@ -38,6 +38,11 @@ def test_list_skills_without_menu_permission(mock_skills_dir):
     assert len(response["data"]) == 1
     assert response["data"][0]["id"] == "public-skill"
     assert response["data"][0]["name"] == "公开技能"
+
+    preview = run(skills.preview_skill_md(skill_id="public-skill", user=user))
+    assert preview["status"] == "success"
+    assert preview["data"]["skill_md_content"].startswith("---")
+    assert preview["data"]["name"] == "公开技能"
 
 
 def test_skills_lifecycle_flow(mock_skills_dir):

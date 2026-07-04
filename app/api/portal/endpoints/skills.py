@@ -129,6 +129,41 @@ async def list_skills(
         
     return {"status": "success", "data": skills_list}
 
+@router.get("/{skill_id}/preview", response_model=Dict[str, Any])
+async def preview_skill_md(
+    skill_id: str,
+    user: Dict = Depends(require_api_key),
+):
+    """
+    只读预览 SKILL.md，供聊天页技能抽屉使用；仅需 API Key，不要求技能管理菜单权限。
+    """
+    try:
+        skill_dir = validate_secure_skill_path(skill_id)
+        if not os.path.exists(skill_dir) or not os.path.isdir(skill_dir):
+            raise HTTPException(status_code=404, detail="技能未找到")
+
+        skill_md_path = os.path.join(skill_dir, "SKILL.md")
+        skill_md_content = ""
+        if os.path.exists(skill_md_path):
+            with open(skill_md_path, "r", encoding="utf-8") as f:
+                skill_md_content = f.read()
+
+        meta = parse_skill_metadata(skill_id, skill_md_path)
+        return {
+            "status": "success",
+            "data": {
+                "id": skill_id,
+                "name": meta.get("name", skill_id),
+                "description": meta.get("description", ""),
+                "skill_md_content": skill_md_content,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Skills] Failed to preview SKILL.md for {skill_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("", response_model=Dict[str, Any])
 async def create_skill(
     req: SkillCreateRequest,

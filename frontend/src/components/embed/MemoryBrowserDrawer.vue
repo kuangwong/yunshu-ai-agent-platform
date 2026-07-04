@@ -17,11 +17,7 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  (e: 'confirm', payload: {
-    conversationIds: string
-    count: number
-    memoryMeta: Array<{ conversation_id: string; summary: string; last_active?: number }>
-  }): void
+  (e: 'mount', memory: MemorySummary): void
   (e: 'cleared', payload: { conversationIds: string[]; all?: boolean }): void
 }>()
 
@@ -36,7 +32,6 @@ interface MemorySummary {
 const memoryList = ref<MemorySummary[]>([])
 const isLoadingMemoryList = ref(false)
 const memorySearchQuery = ref('')
-const selectedMemoryIds = ref<Set<string>>(new Set())
 const showMemoryDetailModal = ref(false)
 const selectedMemoryDetail = ref<MemorySummary | null>(null)
 const memoryToDelete = ref<MemorySummary | null>(null)
@@ -50,6 +45,15 @@ const syncMobile = () => {
   isMobile.value = !!mobileMq?.matches
 }
 
+const attachedIdSet = computed(() => new Set(
+  props.attachedConversationIds
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+))
+
+const attachedCount = computed(() => attachedIdSet.value.size)
+
 const filteredMemoryList = computed(() => {
   const query = memorySearchQuery.value.trim().toLowerCase()
   if (!query) return memoryList.value
@@ -58,16 +62,6 @@ const filteredMemoryList = computed(() => {
     (m.conversation_id || '').toLowerCase().includes(query),
   )
 })
-
-const restoreSelectionFromAttached = () => {
-  const ids = new Set<string>()
-  props.attachedConversationIds
-    .split(',')
-    .map((id) => id.trim())
-    .filter(Boolean)
-    .forEach((id) => ids.add(id))
-  selectedMemoryIds.value = ids
-}
 
 const loadMemoryList = async () => {
   memoryList.value = []
@@ -84,11 +78,16 @@ const loadMemoryList = async () => {
   }
 }
 
-const toggleMemorySelection = (id: string) => {
-  const next = new Set(selectedMemoryIds.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  selectedMemoryIds.value = next
+const mountMemory = (memory: MemorySummary) => {
+  if (attachedIdSet.value.has(memory.conversation_id)) {
+    showToast('该记忆已挂载，请勿重复挂载', 'warning')
+    return
+  }
+  emit('mount', memory)
+  showToast('已挂载至输入框', 'success')
+  if (!keepOpenOnSelect.value) {
+    modelValue.value = false
+  }
 }
 
 const openMemoryDetail = (memory: MemorySummary) => {
@@ -96,8 +95,12 @@ const openMemoryDetail = (memory: MemorySummary) => {
   showMemoryDetailModal.value = true
 }
 
-const toggleMemorySelectionFromDetail = (id: string) => {
-  toggleMemorySelection(id)
+const mountMemoryFromDetail = () => {
+  if (!selectedMemoryDetail.value) return
+  mountMemory(selectedMemoryDetail.value)
+  if (!keepOpenOnSelect.value) {
+    showMemoryDetailModal.value = false
+  }
 }
 
 const copyMemoryDetailText = async () => {
@@ -125,9 +128,6 @@ const executeDeleteMemory = async () => {
     if (response.data?.status === 'success') {
       showToast('会话记忆及历史聊天记录已清除', 'success')
       memoryList.value = memoryList.value.filter((m) => m.conversation_id !== cid)
-      const next = new Set(selectedMemoryIds.value)
-      next.delete(cid)
-      selectedMemoryIds.value = next
       if (showMemoryDetailModal.value && selectedMemoryDetail.value?.conversation_id === cid) {
         showMemoryDetailModal.value = false
         selectedMemoryDetail.value = null
@@ -153,7 +153,6 @@ const executeClearAllMemory = async () => {
     if (response.data?.status === 'success') {
       showToast('全部会话记忆已清除', 'success')
       memoryList.value = []
-      selectedMemoryIds.value = new Set()
       showMemoryDetailModal.value = false
       selectedMemoryDetail.value = null
       emit('cleared', { conversationIds: [], all: true })
@@ -162,22 +161,6 @@ const executeClearAllMemory = async () => {
     showToast(err.response?.data?.detail || '清除全部会话记忆失败', 'error')
   } finally {
     clearingAllMemory.value = false
-  }
-}
-
-const confirmSelection = () => {
-  const selected = memoryList.value.filter((m) => selectedMemoryIds.value.has(m.conversation_id))
-  emit('confirm', {
-    conversationIds: selected.map((m) => m.conversation_id).join(','),
-    count: selected.length,
-    memoryMeta: selected.map((m) => ({
-      conversation_id: m.conversation_id,
-      summary: m.summary,
-      last_active: m.last_active,
-    })),
-  })
-  if (!keepOpenOnSelect.value) {
-    modelValue.value = false
   }
 }
 
@@ -215,7 +198,6 @@ watch(
     setMobileBodyScrollLock(!!open)
     if (open) {
       memorySearchQuery.value = ''
-      restoreSelectionFromAttached()
       void loadMemoryList()
     } else {
       showMemoryDetailModal.value = false
@@ -333,10 +315,10 @@ onUnmounted(() => {
                 <span class="text-base flex-shrink-0" aria-hidden="true">🧠</span>
                 <span class="truncate">选择记忆记录</span>
                 <span
-                  v-if="selectedMemoryIds.size > 0"
+                  v-if="attachedCount > 0"
                   class="px-1.5 py-0.5 rounded-full text-[10px] font-bold text-primary bg-primary/10"
                 >
-                  已选 {{ selectedMemoryIds.size }}
+                  已挂 {{ attachedCount }}
                 </span>
                 <span
                   v-if="pinned"
@@ -348,14 +330,14 @@ onUnmounted(() => {
               <div class="flex items-center gap-2 flex-shrink-0">
                 <label
                   class="hidden sm:flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400 cursor-pointer select-none whitespace-nowrap"
-                  title="开启后引用选中不会关闭侧栏，可连续选择"
+                  title="开启后挂载记忆不会关闭侧栏，可连续选择"
                 >
                   <input
                     v-model="keepOpenOnSelect"
                     type="checkbox"
                     class="rounded border-gray-300 text-primary focus:ring-primary/30"
                   />
-                  引用后保持
+                  挂载后保持
                 </label>
                 <button
                   type="button"
@@ -450,20 +432,18 @@ onUnmounted(() => {
                   v-for="memory in filteredMemoryList"
                   :key="memory.conversation_id"
                   class="group p-3 border rounded-xl cursor-pointer transition-all flex items-start space-x-3"
-                  :class="selectedMemoryIds.has(memory.conversation_id)
-                    ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20 dark:bg-primary/10'
+                  :class="attachedIdSet.has(memory.conversation_id)
+                    ? 'bg-gray-50 dark:bg-gray-800/80 border-gray-200 dark:border-gray-700 opacity-80'
                     : 'bg-white dark:bg-gray-800 border-gray-150 dark:border-gray-700/60 hover:border-primary/30 hover:shadow-sm'"
-                  @click="toggleMemorySelection(memory.conversation_id)"
+                  @dblclick="mountMemory(memory)"
                 >
                   <div
-                    class="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
-                    :class="selectedMemoryIds.has(memory.conversation_id)
-                      ? 'bg-primary border-primary'
-                      : 'border-gray-300 dark:border-gray-600 group-hover:border-primary/50'"
+                    class="w-8 h-8 rounded-lg flex items-center justify-center text-sm flex-shrink-0"
+                    :class="attachedIdSet.has(memory.conversation_id)
+                      ? 'bg-gray-200 dark:bg-gray-700 text-gray-500'
+                      : 'bg-primary/10 dark:bg-primary/20 text-primary'"
                   >
-                    <svg v-if="selectedMemoryIds.has(memory.conversation_id)" class="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                    </svg>
+                    🧠
                   </div>
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center justify-between mb-1">
@@ -474,6 +454,12 @@ onUnmounted(() => {
                         </span>
                       </span>
                       <div class="flex items-center gap-2 flex-shrink-0">
+                        <span
+                          v-if="attachedIdSet.has(memory.conversation_id)"
+                          class="text-[9px] font-bold text-gray-400"
+                        >
+                          已挂载
+                        </span>
                         <button
                           type="button"
                           class="text-[10px] text-primary hover:text-primary-dark hover:underline flex items-center space-x-0.5"
@@ -498,17 +484,8 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div class="shrink-0 p-3 sm:p-4 border-t border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between gap-2">
-              <span class="text-[10px] text-gray-400 font-bold">选择后内容将作为引用附加到消息中</span>
-              <button
-                type="button"
-                class="px-4 py-2 text-xs text-white rounded-lg transition-all font-medium disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-                :disabled="selectedMemoryIds.size === 0"
-                :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
-                @click="confirmSelection"
-              >
-                引用选中 ({{ selectedMemoryIds.size }})
-              </button>
+            <div class="shrink-0 p-3 sm:p-4 border-t border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 text-center">
+              <span class="text-[10px] text-gray-400 font-bold">双击记忆可挂载至输入框</span>
             </div>
           </div>
         </transition>
@@ -560,12 +537,13 @@ onUnmounted(() => {
             </button>
             <button
               type="button"
-              class="px-3.5 py-1.5 text-xs text-white rounded-lg transition-all font-medium"
-              :class="selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary-dark'"
-              :style="!selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? { backgroundColor: 'var(--primary-color, #1677ff)' } : {}"
-              @click="toggleMemorySelectionFromDetail(selectedMemoryDetail.conversation_id)"
+              class="px-3.5 py-1.5 text-xs text-white rounded-lg transition-all font-medium disabled:opacity-50"
+              :class="selectedMemoryDetail && attachedIdSet.has(selectedMemoryDetail.conversation_id) ? 'bg-gray-400 cursor-not-allowed' : 'bg-primary hover:bg-primary-dark'"
+              :style="selectedMemoryDetail && !attachedIdSet.has(selectedMemoryDetail.conversation_id) ? { backgroundColor: 'var(--primary-color, #1677ff)' } : {}"
+              :disabled="!!selectedMemoryDetail && attachedIdSet.has(selectedMemoryDetail.conversation_id)"
+              @click="mountMemoryFromDetail"
             >
-              {{ selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? '取消勾选' : '勾选引用' }}
+              {{ selectedMemoryDetail && attachedIdSet.has(selectedMemoryDetail.conversation_id) ? '已挂载' : '挂载至输入框' }}
             </button>
             <button type="button" class="px-3.5 py-1.5 text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium" @click="showMemoryDetailModal = false">
               关闭

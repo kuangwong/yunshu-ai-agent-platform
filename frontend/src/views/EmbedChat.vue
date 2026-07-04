@@ -1321,97 +1321,18 @@
       v-model:pinned="memoryPinned"
       :pinned-dock-class="memoryPinnedDockClass"
       :attached-conversation-ids="attachedMemoryConversationIds"
-      @confirm="handleMemoryConfirm"
+      @mount="handleMemoryMount"
       @cleared="handleMemoryCleared"
     />
 
-    <!-- 技能工作流选择弹窗 (Skill Selector Modal) -->
-    <div
-      v-if="showSkillSelector"
-      class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
-      @click.self="showSkillSelector = false"
-    >
-      <div
-        class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md max-h-[75vh] flex flex-col overflow-hidden animate-fade-in-up"
-      >
-        <!-- Header -->
-        <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50 flex-shrink-0">
-          <div class="flex items-center space-x-2">
-            <span class="text-lg">⚙️</span>
-            <h3 class="text-base font-bold text-gray-800 dark:text-gray-100">选择技能工作流</h3>
-          </div>
-          <button @click="showSkillSelector = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-
-        <!-- Search Bar -->
-        <div class="p-3 border-b border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
-          <div class="relative">
-            <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </span>
-            <input
-              v-model="skillSelectorSearchQuery"
-              type="text"
-              placeholder="搜索技能名称、标识或目录..."
-              class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
-            />
-          </div>
-        </div>
-
-        <!-- Skills List -->
-        <div class="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar bg-gray-50/30 dark:bg-gray-900/30">
-          <!-- Loading State -->
-          <div v-if="isLoadingSkillsList" class="flex flex-col items-center justify-center py-10 opacity-50">
-            <div class="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-            <span class="text-[10px] font-bold text-gray-400 mt-2 uppercase tracking-widest">加载中...</span>
-          </div>
-
-          <!-- Empty State -->
-          <div v-else-if="filteredSkillsForSelector.length === 0" class="text-center py-12">
-            <span class="text-2xl opacity-40">⚙️</span>
-            <p class="text-xs text-gray-400 mt-2 font-bold">未发现可用的智能体技能</p>
-            <p class="text-[10px] text-gray-400/70 mt-1">您可以前往系统控制台“技能管理”页面创建</p>
-          </div>
-
-          <!-- Skill Cards -->
-          <div
-            v-for="skill in filteredSkillsForSelector"
-            :key="skill.id"
-            @click="handleSelectSkill(skill)"
-            class="group p-3 bg-white dark:bg-gray-800 border border-gray-150 dark:border-gray-700/60 rounded-xl cursor-pointer hover:border-primary/40 hover:shadow-md active:scale-[0.98] transition-all flex items-start space-x-3"
-          >
-            <div class="w-8 h-8 rounded-lg bg-primary/10 dark:bg-primary/20 flex items-center justify-center text-primary text-sm flex-shrink-0 group-hover:scale-105 transition-transform font-mono">
-              ⚙️
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center justify-between">
-                <span class="text-xs font-bold text-gray-800 dark:text-gray-100 group-hover:text-primary transition-colors truncate pr-2">{{ skill.name }}</span>
-                <span class="text-[9px] font-mono text-gray-400 shrink-0 select-all uppercase">ID: {{ skill.id }}</span>
-              </div>
-              <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{{ skill.description || '暂无描述信息' }}</p>
-              <div
-                v-if="skill.path"
-                class="mt-1.5 flex items-center gap-1 text-[9px] font-mono text-gray-400 dark:text-gray-500 min-w-0"
-                :title="skill.path"
-              >
-                <svg class="w-3 h-3 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                <span class="truncate">{{ skill.path }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="p-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 text-center flex-shrink-0">
-          <span class="text-[9px] text-gray-400 font-bold uppercase tracking-widest">点击技能即可自动挂载至输入框</span>
-        </div>
-      </div>
-    </div>
+    <SkillBrowserDrawer
+      v-model="showSkillDrawer"
+      v-model:keep-open-on-select="skillKeepOpenOnSelect"
+      v-model:pinned="skillPinned"
+      :pinned-dock-class="skillPinnedDockClass"
+      :attached-skill-ids="attachedSkillIds"
+      @select="handleSelectSkill"
+    />
 
     <div
       v-if="showTraceModal"
@@ -2450,6 +2371,7 @@ import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
 import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
 import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
+import SkillBrowserDrawer from "@/components/embed/SkillBrowserDrawer.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment, getServerAttachmentPath } from "@/utils/attachmentImages";
 import { openWorkspaceFileInCanvas, resolvePublicUploadsPreviewUrl, shouldAttachWorkspaceSourcePath } from "@/utils/workspaceFilePreview";
@@ -2826,6 +2748,28 @@ const memoryPinned = ref(
 );
 watch(memoryPinned, (val) => {
   localStorage.setItem("embed_memory_pinned", val ? "1" : "0");
+});
+
+const showSkillDrawer = ref(false);
+
+const skillKeepOpenOnSelect = ref(
+  readStoredBoolean(
+    "embed_skill_keep_open",
+    typeof window !== "undefined" &&
+      !window.matchMedia("(max-width: 639px)").matches,
+  ),
+);
+watch(skillKeepOpenOnSelect, (val) => {
+  localStorage.setItem("embed_skill_keep_open", val ? "1" : "0");
+});
+
+const skillPinned = ref(
+  typeof window !== "undefined" &&
+    !window.matchMedia("(max-width: 639px)").matches &&
+    readStoredBoolean("embed_skill_pinned", false),
+);
+watch(skillPinned, (val) => {
+  localStorage.setItem("embed_skill_pinned", val ? "1" : "0");
 });
 
 const attachedMemoryConversationIds = computed(() => {
@@ -3277,11 +3221,12 @@ const findDataQueryAgent = () => {
     });
 };
 
-const lockToDataQueryAgentForDatasetMenu = async () => {
+const lockToDataQueryAgentForDatasetMenu = async (): Promise<boolean> => {
     await fetchAllowedAgents();
     const dataQueryAgent = findDataQueryAgent();
-    if (!dataQueryAgent) return;
+    if (!dataQueryAgent) return false;
     handleSwitchMode(dataQueryAgent);
+    return true;
 };
 
 const handleReorderCommands = async (reorderData: any[]) => {
@@ -4475,7 +4420,7 @@ const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | nu
   showReportRunModal.value = false;
 
   if (showPortalDrawer.value && !portalKeepOpenOnQuestion.value) {
-    showPortalDrawer.value = false;
+    closePortalDrawer({ keepDataQueryAgent: true });
   }
 
   isProcessing.value = true;
@@ -4585,86 +4530,68 @@ watch(showSettings, (val) => {
 });
 const activeColor = ref("#1677ff");
 
-// 技能工作流选择器弹层
-const showSkillSelector = ref(false);
-const allSkillsList = ref<any[]>([]);
-const skillSelectorSearchQuery = ref("");
-const isLoadingSkillsList = ref(false);
+// 技能工作流选择器
+const attachedSkillIds = computed(() =>
+  (chatInputRef.value?.uploadedFiles || [])
+    .filter((f: any) => f.type === "skill")
+    .map((f: any) => String(f.url)),
+);
 
-const filteredSkillsForSelector = computed(() => {
-  const query = skillSelectorSearchQuery.value.trim().toLowerCase();
-  if (!query) return allSkillsList.value;
-  return allSkillsList.value.filter(s =>
-    s.name?.toLowerCase().includes(query) ||
-    s.id?.toLowerCase().includes(query) ||
-    s.description?.toLowerCase().includes(query) ||
-    s.path?.toLowerCase().includes(query)
-  );
-});
-
-const openSkillSelector = async () => {
-  showSkillSelector.value = true;
-  skillSelectorSearchQuery.value = "";
-  allSkillsList.value = [];
-  isLoadingSkillsList.value = true;
-  try {
-    const res = await axios.get("/api/portal/skills");
-    if (res.data && res.data.status === "success") {
-      allSkillsList.value = res.data.data || [];
-    }
-  } catch (err) {
-    console.error("加载技能列表失败:", err);
-  } finally {
-    isLoadingSkillsList.value = false;
-  }
+const openSkillSelector = () => {
+  showSkillDrawer.value = true;
 };
 
 const handleSelectSkill = (skill: any) => {
-  if (chatInputRef.value) {
-    // 检查是否已经挂载了该技能以防重复
-    const exists = chatInputRef.value.uploadedFiles.some((f: any) => f.type === 'skill' && f.url === skill.id);
-    if (exists) {
-      alert("该技能已挂载，请勿重复挂载");
-      showSkillSelector.value = false;
-      return;
-    }
-    chatInputRef.value.uploadedFiles.push({
-      type: "skill",
-      url: skill.id, // url 作为技能 id
-      filename: `${skill.name} (技能)`,
-      size: 0,
-      ext: "skill",
-      skillMeta: {
-        id: skill.id,
-        name: skill.name,
-        description: skill.description || "",
-      },
-    });
-  }
-  showSkillSelector.value = false;
+  if (!chatInputRef.value) return;
+  chatInputRef.value.uploadedFiles.push({
+    type: "skill",
+    url: skill.id,
+    filename: `${skill.name} (技能)`,
+    size: 0,
+    ext: "skill",
+    skillMeta: {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description || "",
+    },
+  });
 };
+
 const openMemorySelector = () => {
   showMemoryDrawer.value = true;
 };
 
-const handleMemoryConfirm = (payload: {
-  conversationIds: string;
-  count: number;
-  memoryMeta: Array<{ conversation_id: string; summary: string; last_active?: number }>;
+const handleMemoryMount = (memory: {
+  conversation_id: string;
+  summary: string;
+  last_active?: number;
 }) => {
   if (!chatInputRef.value) return;
   const files = chatInputRef.value.uploadedFiles || [];
+  const memFile = files.find((f: any) => f.type === "memory");
+  const existingIds = memFile?.url
+    ? String(memFile.url).split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  if (existingIds.includes(memory.conversation_id)) return;
+  const existingMeta = memFile?.memoryMeta || [];
+  const newIds = [...existingIds, memory.conversation_id];
+  const newMeta = [
+    ...existingMeta,
+    {
+      conversation_id: memory.conversation_id,
+      summary: memory.summary,
+      last_active: memory.last_active,
+    },
+  ];
   chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
-  if (payload.count > 0) {
-    chatInputRef.value.uploadedFiles.push({
-      type: "memory",
-      url: payload.conversationIds,
-      filename: `已选择 ${payload.count} 条记忆记录`,
-      size: 0,
-      ext: "memory",
-      memoryMeta: payload.memoryMeta,
-    });
-  }
+  chatInputRef.value.uploadedFiles.push({
+    type: "memory",
+    url: newIds.join(","),
+    filename: `已选择 ${newIds.length} 条记忆记录`,
+    size: 0,
+    ext: "memory",
+    memoryMeta: newMeta,
+  });
 };
 
 const handleMemoryCleared = (payload: { conversationIds: string[]; all?: boolean }) => {
@@ -5545,6 +5472,7 @@ const {
   portalKeepOpenOnQuestion,
   portalPinned,
   openPortalDrawer,
+  closePortalDrawer,
   refreshPortalNavigation,
   handlePortalQuickQuestion,
   recordDatasetMenuQuestionClick,
@@ -5556,6 +5484,7 @@ const {
   getAuthHeaders: () => embedAuthHeaders() || {},
   showToast,
   lockToDataQueryAgentForDatasetMenu,
+  switchToAutoRouting: switchToAuto,
   onQuickQuestion: handleQuickQuestion,
   findDataQueryAgent,
   keepOpenStorageKey: "embed_portal_keep_open",
@@ -5566,11 +5495,12 @@ const {
   },
 });
 
-const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory") => {
+const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "skill") => {
   let rem = 0;
   if (exclude !== "portal" && showPortalDrawer.value && portalPinned.value) rem += 28;
   if (exclude !== "workspace" && showWorkspaceDrawer.value && workspacePinned.value) rem += 28;
   if (exclude !== "memory" && showMemoryDrawer.value && memoryPinned.value) rem += 28;
+  if (exclude !== "skill" && showSkillDrawer.value && skillPinned.value) rem += 28;
   return rem;
 };
 
@@ -5596,6 +5526,11 @@ const workspacePinnedDockClass = computed(() => {
 
 const memoryPinnedDockClass = computed(() => {
   const rem = pinnedDrawerDockOffsetRem("memory");
+  return rem > 0 ? `right-[${rem}rem]` : "right-0";
+});
+
+const skillPinnedDockClass = computed(() => {
+  const rem = pinnedDrawerDockOffsetRem("skill");
   return rem > 0 ? `right-[${rem}rem]` : "right-0";
 });
 

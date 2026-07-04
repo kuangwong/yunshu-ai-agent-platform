@@ -45,7 +45,9 @@ type ToastFn = (message: string, type?: "success" | "error" | "info") => void;
 export interface UseDatasetPortalOptions {
   getAuthHeaders: () => Record<string, string>;
   showToast: ToastFn;
-  lockToDataQueryAgentForDatasetMenu: () => Promise<void>;
+  lockToDataQueryAgentForDatasetMenu: () => Promise<boolean>;
+  /** 关闭数据门户且非「从门户发起提问」时，恢复自动路由 */
+  switchToAutoRouting?: () => void;
   onQuickQuestion: (query: string, action?: "send" | "fill") => void | Promise<void>;
   findDataQueryAgent?: () => unknown;
   keepOpenStorageKey?: string;
@@ -73,6 +75,9 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   const portalSilentRefreshing = ref(false);
   const portalPrefetchInFlight = ref(false);
   const hasSilentlyRefreshed = ref(false);
+  /** 打开门户时锁定了 ChatBI；关闭门户时恢复自动路由（从门户提问关闭除外） */
+  const portalLockedDataQueryAgent = ref(false);
+  let suppressPortalAutoRoutingRelease = false;
   let silentRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   const storageKey = options.keepOpenStorageKey || "dataset_portal_keep_open";
@@ -282,7 +287,7 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
       clearTimeout(silentRefreshTimer);
       silentRefreshTimer = null;
     }
-    await options.lockToDataQueryAgentForDatasetMenu();
+    portalLockedDataQueryAgent.value = await options.lockToDataQueryAgentForDatasetMenu();
     if (!portalNavigationPayload.value) {
       await fetchPortalNavigationData();
     } else if (
@@ -297,9 +302,16 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
     await fetchPortalNavigationData(true);
   };
 
+  const closePortalDrawer = (opts?: { keepDataQueryAgent?: boolean }) => {
+    if (opts?.keepDataQueryAgent) {
+      suppressPortalAutoRoutingRelease = true;
+    }
+    showPortalDrawer.value = false;
+  };
+
   const handlePortalQuickQuestion = async (query: string, action?: "send" | "fill") => {
     if (action === "send" && shouldClosePortalAfterQuestion()) {
-      showPortalDrawer.value = false;
+      closePortalDrawer({ keepDataQueryAgent: true });
     }
     await options.onQuickQuestion(query, action);
   };
@@ -309,21 +321,34 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === "d") {
       event.preventDefault();
       if (showPortalDrawer.value) {
-        showPortalDrawer.value = false;
+        closePortalDrawer();
       } else {
         void openPortalDrawer();
       }
       return;
     }
     if (event.key === "Escape" && showPortalDrawer.value) {
-      showPortalDrawer.value = false;
+      closePortalDrawer();
     }
   };
 
+  const releasePortalDataQueryAgentIfNeeded = () => {
+    if (suppressPortalAutoRoutingRelease) {
+      suppressPortalAutoRoutingRelease = false;
+      return;
+    }
+    if (!portalLockedDataQueryAgent.value) return;
+    portalLockedDataQueryAgent.value = false;
+    options.switchToAutoRouting?.();
+  };
+
   watch(showPortalDrawer, (val) => {
-    if (!val && silentRefreshTimer) {
-      clearTimeout(silentRefreshTimer);
-      silentRefreshTimer = null;
+    if (!val) {
+      if (silentRefreshTimer) {
+        clearTimeout(silentRefreshTimer);
+        silentRefreshTimer = null;
+      }
+      releasePortalDataQueryAgentIfNeeded();
     }
   });
 
@@ -355,6 +380,7 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
     portalKeepOpenOnQuestion,
     portalPinned,
     openPortalDrawer,
+    closePortalDrawer,
     refreshPortalNavigation,
     handlePortalQuickQuestion,
     handlePortalDrawerKeydown,

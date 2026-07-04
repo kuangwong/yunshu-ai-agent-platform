@@ -16,6 +16,7 @@ from app.utils.fs_access import (
     assert_path_writable,
     get_allowed_fs_roots,
     get_user_private_workspace_root,
+    get_user_uploads_dir,
     is_fs_admin,
     is_fs_virtual_root,
     is_path_allowed,
@@ -249,6 +250,9 @@ async def list_files(
         trash_path = os.path.normpath(os.path.join(private_root, TRASH_DIR_NAME))
         if os.path.normpath(target_path) == trash_path:
             os.makedirs(trash_path, exist_ok=True)
+    uploads_path = get_user_uploads_dir(user_info)
+    if uploads_path and os.path.normpath(target_path) == os.path.normpath(uploads_path):
+        os.makedirs(uploads_path, mode=0o700, exist_ok=True)
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="请求的路径不存在。")
     if not os.path.isdir(target_path):

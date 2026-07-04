@@ -2,7 +2,7 @@ import pytest
 import os
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.utils.fs_access import get_user_private_workspace_root
+from app.utils.fs_access import get_user_private_workspace_root, get_user_uploads_dir
 from app.utils.fs_paths import get_data_base_dir
 
 @pytest.mark.asyncio
@@ -245,6 +245,35 @@ async def test_list_user_workspace_is_writable(db_session, valid_api_key):
         data = list_resp.json()["data"]
         assert data["writable"] is True
         assert data["user_workspace_root"] == os.path.normpath(workspace_root)
+
+
+@pytest.mark.asyncio
+async def test_list_auto_creates_user_uploads_dir(db_session, valid_api_key):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        user_info = me_resp.json()["data"]
+        workspace_root = get_user_private_workspace_root(user_info)
+        uploads_dir = get_user_uploads_dir(user_info)
+        assert workspace_root and uploads_dir
+        os.makedirs(workspace_root, exist_ok=True)
+        if os.path.isdir(uploads_dir):
+            os.rmdir(uploads_dir)
+        assert not os.path.exists(uploads_dir)
+
+        list_resp = await client.get(
+            "/api/v1/chat/fs/list",
+            params={"path": uploads_dir},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert list_resp.status_code == 200
+        data = list_resp.json()["data"]
+        assert os.path.isdir(uploads_dir)
+        assert data["current_path"] == os.path.normpath(uploads_dir)
+        assert data["writable"] is True
+        assert data["items"] == []
 
 
 @pytest.mark.asyncio

@@ -94,16 +94,24 @@ export function resolvePublicUploadsPreviewUrl(path: string): string | null {
   return null
 }
 
+/** 已是可直接用于 img/iframe/fetch 的 URL，无需再走 fs preview 转换 */
+export function isDirectRenderableUrl(url: string): boolean {
+  return (
+    url.startsWith('http://') ||
+    url.startsWith('https://') ||
+    url.startsWith('data:') ||
+    url.startsWith('blob:') ||
+    url.startsWith('quick:') ||
+    url.startsWith('canvas:') ||
+    url.startsWith('/static/') ||
+    url.startsWith('/api/') ||
+    url.startsWith('/assets/')
+  )
+}
+
 export function resolveFsPreviewUrl(path: string, conversationId?: string | null): string {
   if (!path) return ''
-  if (
-    path.startsWith('http://') ||
-    path.startsWith('https://') ||
-    path.startsWith('data:') ||
-    path.startsWith('/static/') ||
-    path.startsWith('/api/') ||
-    path.startsWith('/assets/')
-  ) {
+  if (isDirectRenderableUrl(path)) {
     return path
   }
   const publicUploadUrl = resolvePublicUploadsPreviewUrl(path)

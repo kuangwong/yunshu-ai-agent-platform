@@ -6,7 +6,7 @@ import MermaidRenderer from '@/components/MermaidRenderer.vue';
 import { renderMarkdownPreview } from '@/utils/markdown';
 import PivotTable from '@/components/embed/PivotTable.vue';
 import { useToast } from '@/composables/useToast';
-import { canWriteWorkspaceFile, resolvePublicUploadsPreviewUrl, saveWorkspaceFileContent } from '@/utils/workspaceFilePreview';
+import { canWriteWorkspaceFile, isDirectRenderableUrl, resolvePublicUploadsPreviewUrl, saveWorkspaceFileContent } from '@/utils/workspaceFilePreview';
 
 const props = withDefaults(
   defineProps<{
@@ -442,7 +442,7 @@ const saveWorkspaceFile = async () => {
 
 const resolveUrlPath = (val: string): string => {
   if (!val) return '';
-  if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:') || val.startsWith('quick:') || val.startsWith('canvas:')) {
+  if (isDirectRenderableUrl(val)) {
     return val;
   }
   const publicUploadUrl = resolvePublicUploadsPreviewUrl(val);

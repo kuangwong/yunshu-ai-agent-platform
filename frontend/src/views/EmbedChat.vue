@@ -2374,7 +2374,7 @@ import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
 import SkillBrowserDrawer from "@/components/embed/SkillBrowserDrawer.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment, getServerAttachmentPath } from "@/utils/attachmentImages";
-import { openWorkspaceFileInCanvas, resolvePublicUploadsPreviewUrl, shouldAttachWorkspaceSourcePath } from "@/utils/workspaceFilePreview";
+import { openWorkspaceFileInCanvas, isDirectRenderableUrl, resolvePublicUploadsPreviewUrl, shouldAttachWorkspaceSourcePath } from "@/utils/workspaceFilePreview";
 import TraceLogViewer from "@/components/TraceLogViewer.vue";
 import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
 import { normalizeAgentSwitchCommand } from "@/utils/agentSwitchCommands";
@@ -3756,7 +3756,7 @@ const handlePreviewImageUrl = (url: string, filename: string) => {
 
 const resolveFileUrl = (url: string): string => {
   if (!url) return '';
-  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('quick:') || url.startsWith('canvas:')) {
+  if (isDirectRenderableUrl(url)) {
     return url;
   }
   const publicUploadUrl = resolvePublicUploadsPreviewUrl(url);

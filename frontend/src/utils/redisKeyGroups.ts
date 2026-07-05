@@ -95,6 +95,12 @@ export const REDIS_KEY_CATEGORIES: RedisKeyCategory[] = [
     match: (key) => key.startsWith('agent:workspace_recent_files:'),
   },
   {
+    id: 'workspace_browser_prefs',
+    label: '工作空间浏览偏好',
+    description: '工作空间文件浏览器的筛选与搜索偏好（按用户隔离）',
+    match: (key) => key.startsWith('agent:workspace_browser_prefs:'),
+  },
+  {
     id: 'rate_limit',
     label: '限流',
     description: '接口限流计数',

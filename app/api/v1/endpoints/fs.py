@@ -35,6 +35,22 @@ logger = logging.getLogger(__name__)
 TRASH_DIR_NAME = ".trash"
 WORKSPACE_RECENT_FILES_MAX = 20
 WORKSPACE_RECENT_REDIS_PREFIX = "agent:workspace_recent_files:"
+WORKSPACE_BROWSER_PREFS_REDIS_PREFIX = "agent:workspace_browser_prefs:"
+WORKSPACE_BROWSER_TYPE_FILTERS = frozenset({
+    "all",
+    "folder",
+    "image",
+    "markdown",
+    "document",
+    "html",
+    "code",
+    "spreadsheet",
+    "presentation",
+    "archive",
+    "video",
+    "audio",
+    "data",
+})
 
 IMAGE_PREVIEW_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 IMAGE_MEDIA_TYPES = {
@@ -1018,3 +1034,111 @@ async def save_workspace_recent_files(
         raise HTTPException(status_code=500, detail="保存最近文件记录失败")
 
     return StandardResponse(data=payload, message="最近文件记录已保存")
+
+
+class WorkspaceBrowserPrefs(BaseModel):
+    include_subdirs: bool = Field(True, description="搜索时是否包含子目录")
+    type_filter: str = Field("all", description="文件类型筛选")
+
+
+class WorkspaceBrowserPrefsPayload(BaseModel):
+    include_subdirs: Optional[bool] = Field(None, description="搜索时是否包含子目录")
+    type_filter: Optional[str] = Field(None, description="文件类型筛选")
+
+
+def _workspace_browser_prefs_redis_key(user_id: int) -> str:
+    return f"{WORKSPACE_BROWSER_PREFS_REDIS_PREFIX}{user_id}"
+
+
+def _sanitize_workspace_browser_prefs(
+    raw: WorkspaceBrowserPrefsPayload | WorkspaceBrowserPrefs | Dict[str, Any] | None,
+) -> WorkspaceBrowserPrefs:
+    include_subdirs = True
+    type_filter = "all"
+    if raw is not None:
+        if isinstance(raw, dict):
+            include_subdirs = raw.get("include_subdirs", True)
+            type_filter = raw.get("type_filter", "all")
+        else:
+            include_subdirs = getattr(raw, "include_subdirs", True)
+            type_filter = getattr(raw, "type_filter", "all")
+    if not isinstance(include_subdirs, bool):
+        include_subdirs = True
+    type_filter = str(type_filter or "all").strip().lower()
+    if type_filter not in WORKSPACE_BROWSER_TYPE_FILTERS:
+        type_filter = "all"
+    return WorkspaceBrowserPrefs(include_subdirs=include_subdirs, type_filter=type_filter)
+
+
+@router.get(
+    "/browser-prefs",
+    response_model=StandardResponse[WorkspaceBrowserPrefs],
+    summary="获取当前用户的工作空间浏览偏好",
+)
+async def get_workspace_browser_prefs(
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        return StandardResponse(data=WorkspaceBrowserPrefs())
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_browser_prefs_redis_key(user_id)
+    try:
+        raw = await redis.get(key)
+    except Exception as e:
+        logger.error("Failed to get workspace browser prefs from Redis: %s", e)
+        return StandardResponse(data=WorkspaceBrowserPrefs())
+
+    if not raw:
+        return StandardResponse(data=WorkspaceBrowserPrefs())
+
+    try:
+        decoded = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        parsed = json.loads(decoded)
+        prefs = _sanitize_workspace_browser_prefs(parsed)
+    except Exception as e:
+        logger.warning("Failed to parse workspace browser prefs JSON: %s", e)
+        prefs = WorkspaceBrowserPrefs()
+
+    return StandardResponse(data=prefs)
+
+
+@router.put(
+    "/browser-prefs",
+    response_model=StandardResponse[WorkspaceBrowserPrefs],
+    summary="保存当前用户的工作空间浏览偏好",
+)
+async def save_workspace_browser_prefs(
+    body: WorkspaceBrowserPrefsPayload,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis 服务不可用")
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_browser_prefs_redis_key(user_id)
+
+    existing = WorkspaceBrowserPrefs()
+    try:
+        raw = await redis.get(key)
+        if raw:
+            decoded = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            existing = _sanitize_workspace_browser_prefs(json.loads(decoded))
+    except Exception as e:
+        logger.warning("Failed to read existing workspace browser prefs: %s", e)
+
+    merged = WorkspaceBrowserPrefs(
+        include_subdirs=body.include_subdirs if body.include_subdirs is not None else existing.include_subdirs,
+        type_filter=body.type_filter if body.type_filter is not None else existing.type_filter,
+    )
+    prefs = _sanitize_workspace_browser_prefs(merged)
+
+    try:
+        await redis.set(key, prefs.model_dump_json())
+    except Exception as e:
+        logger.error("Failed to save workspace browser prefs to Redis: %s", e)
+        raise HTTPException(status_code=500, detail="保存浏览偏好失败")
+
+    return StandardResponse(data=prefs, message="浏览偏好已保存")

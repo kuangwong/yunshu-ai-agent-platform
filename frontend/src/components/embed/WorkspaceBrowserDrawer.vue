@@ -9,7 +9,7 @@ import {
 import { canPreviewWorkspaceFile, downloadWorkspaceFile, createWorkspaceEntry, renameWorkspaceEntry, deleteWorkspaceEntry, uploadToWorkspaceDir, copyTextToClipboard, restoreWorkspaceEntry, purgeWorkspaceEntry, emptyWorkspaceTrash } from '@/utils/workspaceFilePreview'
 
 const LEGACY_RECENT_FILES_KEY = 'workspace_recent_files_v1'
-const BROWSER_PREFS_KEY = 'workspace_browser_prefs_v1'
+const LEGACY_BROWSER_PREFS_KEY = 'workspace_browser_prefs_v1'
 const MAX_RECENT = 20
 const LIST_PAGE_SIZE = 200
 
@@ -107,23 +107,55 @@ const TYPE_SCAN_PATTERNS: Partial<Record<TypeFilterKey, string[]>> = {
   data: ['*.db', '*.sqlite', '*.parquet'],
 }
 
-const loadBrowserPrefs = () => {
+const loadBrowserPrefs = async () => {
   try {
-    const raw = localStorage.getItem(BROWSER_PREFS_KEY)
-    if (!raw) return
-    const prefs = JSON.parse(raw)
-    if (typeof prefs.includeSubdirs === 'boolean') includeSubdirs.value = prefs.includeSubdirs
-    if (prefs.typeFilter) typeFilter.value = prefs.typeFilter
+    const res = await axios.get('/api/v1/chat/fs/browser-prefs')
+    const prefs = res.data?.data
+    if (prefs && typeof prefs.include_subdirs === 'boolean') {
+      includeSubdirs.value = prefs.include_subdirs
+    }
+    if (prefs?.type_filter) typeFilter.value = prefs.type_filter as TypeFilterKey
+    await migrateLegacyBrowserPrefsIfNeeded()
   } catch { /* ignore */ }
 }
 
-const saveBrowserPrefs = () => {
+let browserPrefsPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+const persistBrowserPrefsNow = async () => {
   try {
-    localStorage.setItem(BROWSER_PREFS_KEY, JSON.stringify({
-      includeSubdirs: includeSubdirs.value,
-      typeFilter: typeFilter.value,
-    }))
-  } catch { /* ignore */ }
+    await axios.put('/api/v1/chat/fs/browser-prefs', {
+      include_subdirs: includeSubdirs.value,
+      type_filter: typeFilter.value,
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
+const saveBrowserPrefs = () => {
+  if (browserPrefsPersistTimer) clearTimeout(browserPrefsPersistTimer)
+  browserPrefsPersistTimer = setTimeout(() => {
+    browserPrefsPersistTimer = null
+    void persistBrowserPrefsNow()
+  }, 300)
+}
+
+const migrateLegacyBrowserPrefsIfNeeded = async () => {
+  try {
+    const raw = localStorage.getItem(LEGACY_BROWSER_PREFS_KEY)
+    if (!raw) return
+    const legacy = JSON.parse(raw) as { includeSubdirs?: boolean; typeFilter?: string }
+    localStorage.removeItem(LEGACY_BROWSER_PREFS_KEY)
+    if (typeof legacy.includeSubdirs === 'boolean') {
+      includeSubdirs.value = legacy.includeSubdirs
+    }
+    if (legacy.typeFilter) {
+      typeFilter.value = legacy.typeFilter as TypeFilterKey
+    }
+    await persistBrowserPrefsNow()
+  } catch {
+    localStorage.removeItem(LEGACY_BROWSER_PREFS_KEY)
+  }
 }
 
 const loadRecentFiles = async () => {
@@ -247,7 +279,7 @@ const openRecentFile = async (recent: { path: string; name: string; mtime: numbe
   setTimeout(() => { highlightedPath.value = '' }, 3000)
 }
 
-loadBrowserPrefs()
+void loadBrowserPrefs()
 void loadRecentFiles()
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -758,6 +790,11 @@ onUnmounted(() => {
     clearTimeout(recentFilesPersistTimer)
     recentFilesPersistTimer = null
     void persistRecentFilesNow()
+  }
+  if (browserPrefsPersistTimer) {
+    clearTimeout(browserPrefsPersistTimer)
+    browserPrefsPersistTimer = null
+    void persistBrowserPrefsNow()
   }
   mobileMq?.removeEventListener('change', syncMobile)
   document.removeEventListener('click', onDocumentClick)

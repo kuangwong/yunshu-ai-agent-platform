@@ -6,8 +6,10 @@ from app.main import app
 from app.utils.fs_access import get_user_private_workspace_root, get_user_uploads_dir
 from app.utils.fs_paths import get_data_base_dir
 from app.api.v1.endpoints.fs import (
+    WORKSPACE_BROWSER_PREFS_REDIS_PREFIX,
     WORKSPACE_RECENT_REDIS_PREFIX,
     WorkspaceRecentFileItem,
+    _sanitize_workspace_browser_prefs,
     _sanitize_workspace_recent_files,
 )
 
@@ -623,3 +625,105 @@ async def test_workspace_recent_files_put_filters_other_user_paths(
         )
         assert resp.status_code == 200
         assert resp.json()["data"]["items"] == []
+
+
+@pytest.mark.no_infrastructure
+def test_sanitize_workspace_browser_prefs_normalizes_invalid_values():
+    prefs = _sanitize_workspace_browser_prefs({
+        "include_subdirs": "yes",
+        "type_filter": "NOT_A_TYPE",
+    })
+    assert prefs.include_subdirs is True
+    assert prefs.type_filter == "all"
+
+    prefs = _sanitize_workspace_browser_prefs({
+        "include_subdirs": False,
+        "type_filter": "markdown",
+    })
+    assert prefs.include_subdirs is False
+    assert prefs.type_filter == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_workspace_browser_prefs_save_and_get(db_session, valid_api_key, monkeypatch):
+    fake = FakeRedis()
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        empty_resp = await client.get(
+            "/api/v1/chat/fs/browser-prefs",
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert empty_resp.status_code == 200
+        assert empty_resp.json()["data"] == {
+            "include_subdirs": True,
+            "type_filter": "all",
+        }
+
+        save_resp = await client.put(
+            "/api/v1/chat/fs/browser-prefs",
+            json={"include_subdirs": False, "type_filter": "markdown"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert save_resp.status_code == 200
+        assert save_resp.json()["data"] == {
+            "include_subdirs": False,
+            "type_filter": "markdown",
+        }
+
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        user_id = int(me_resp.json()["data"]["user_id"])
+        redis_key = f"{WORKSPACE_BROWSER_PREFS_REDIS_PREFIX}{user_id}"
+        assert redis_key in fake.store
+
+        get_resp = await client.get(
+            "/api/v1/chat/fs/browser-prefs",
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert get_resp.status_code == 200
+        assert get_resp.json()["data"] == {
+            "include_subdirs": False,
+            "type_filter": "markdown",
+        }
+
+
+@pytest.mark.asyncio
+async def test_workspace_browser_prefs_user_isolation(
+    db_session, valid_api_key, admin_api_key, monkeypatch
+):
+    fake = FakeRedis()
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.put(
+            "/api/v1/chat/fs/browser-prefs",
+            json={"include_subdirs": False, "type_filter": "code"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        await client.put(
+            "/api/v1/chat/fs/browser-prefs",
+            json={"include_subdirs": True, "type_filter": "image"},
+            headers={"X-API-Key": admin_api_key},
+        )
+
+        user_resp = await client.get(
+            "/api/v1/chat/fs/browser-prefs",
+            headers={"X-API-Key": valid_api_key},
+        )
+        admin_resp = await client.get(
+            "/api/v1/chat/fs/browser-prefs",
+            headers={"X-API-Key": admin_api_key},
+        )
+        assert user_resp.json()["data"]["type_filter"] == "code"
+        assert admin_resp.json()["data"]["type_filter"] == "image"

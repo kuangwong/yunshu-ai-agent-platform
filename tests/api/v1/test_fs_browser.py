@@ -1,9 +1,27 @@
 import pytest
 import os
+import json
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.utils.fs_access import get_user_private_workspace_root, get_user_uploads_dir
 from app.utils.fs_paths import get_data_base_dir
+from app.api.v1.endpoints.fs import (
+    WORKSPACE_RECENT_REDIS_PREFIX,
+    WorkspaceRecentFileItem,
+    _sanitize_workspace_recent_files,
+)
+
+
+class FakeRedis:
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    async def get(self, key):
+        return self.store.get(key)
+
+    async def set(self, key, value, ex=None, nx=False):
+        self.store[key] = value
+        return True
 
 @pytest.mark.asyncio
 async def test_list_root_directory(db_session, valid_api_key):
@@ -436,3 +454,172 @@ async def test_search_glob_pattern(db_session, valid_api_key):
         names = {item["name"] for item in resp.json()["data"]["items"]}
         assert "glob-test.md" in names
         assert "glob-test.md".replace(".md", ".txt") not in names
+
+
+@pytest.mark.no_infrastructure
+def test_sanitize_workspace_recent_files_filters_invalid_paths():
+    base = get_data_base_dir()
+    user_info = {"user_id": 42, "username": "alice", "is_admin": False}
+    workspace = get_user_private_workspace_root(user_info)
+    allowed_file = os.path.join(workspace, "notes.md")
+    other_file = os.path.join(base, "agent_workspaces", "bob__99", "secret.txt")
+    trash_file = os.path.join(workspace, ".trash", "old.md")
+
+    items = [
+        WorkspaceRecentFileItem(path=allowed_file, name="notes.md", mtime=100),
+        WorkspaceRecentFileItem(path=other_file, name="secret.txt", mtime=200),
+        WorkspaceRecentFileItem(path=trash_file, name="old.md", mtime=300),
+        WorkspaceRecentFileItem(path=allowed_file, name="notes.md", mtime=400),
+    ]
+    cleaned = _sanitize_workspace_recent_files(items, user_info)
+    assert len(cleaned) == 1
+    assert cleaned[0].path == os.path.normpath(allowed_file)
+    assert cleaned[0].mtime == 100
+
+
+@pytest.mark.asyncio
+async def test_workspace_recent_files_save_and_get(db_session, valid_api_key, monkeypatch):
+    fake = FakeRedis()
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        user_info = me_resp.json()["data"]
+        workspace_root = get_user_private_workspace_root(user_info)
+        os.makedirs(workspace_root, exist_ok=True)
+        sample = os.path.join(workspace_root, "recent-demo.txt")
+        with open(sample, "w", encoding="utf-8") as handle:
+            handle.write("demo")
+
+        empty_resp = await client.get(
+            "/api/v1/chat/fs/recent-files",
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert empty_resp.status_code == 200
+        assert empty_resp.json()["data"]["items"] == []
+
+        save_resp = await client.put(
+            "/api/v1/chat/fs/recent-files",
+            json={
+                "items": [
+                    {"path": sample, "name": "recent-demo.txt", "mtime": 123.5},
+                ]
+            },
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert save_resp.status_code == 200
+        saved_items = save_resp.json()["data"]["items"]
+        assert len(saved_items) == 1
+        assert saved_items[0]["name"] == "recent-demo.txt"
+        assert saved_items[0]["mtime"] == 123.5
+
+        user_id = int(user_info["user_id"])
+        redis_key = f"{WORKSPACE_RECENT_REDIS_PREFIX}{user_id}"
+        assert redis_key in fake.store
+
+        get_resp = await client.get(
+            "/api/v1/chat/fs/recent-files",
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert get_resp.status_code == 200
+        got_items = get_resp.json()["data"]["items"]
+        assert len(got_items) == 1
+        assert got_items[0]["path"] == os.path.normpath(sample)
+
+
+@pytest.mark.asyncio
+async def test_workspace_recent_files_user_isolation(
+    db_session, valid_api_key, admin_api_key, monkeypatch
+):
+    fake = FakeRedis()
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        user_me = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        admin_me = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": admin_api_key},
+        )
+        user_info = user_me.json()["data"]
+        admin_info = admin_me.json()["data"]
+        user_workspace = get_user_private_workspace_root(user_info)
+        admin_workspace = get_user_private_workspace_root(admin_info)
+        os.makedirs(user_workspace, exist_ok=True)
+        os.makedirs(admin_workspace, exist_ok=True)
+        user_file = os.path.join(user_workspace, "user-only.txt")
+        admin_file = os.path.join(admin_workspace, "admin-only.txt")
+        with open(user_file, "w", encoding="utf-8") as handle:
+            handle.write("user")
+        with open(admin_file, "w", encoding="utf-8") as handle:
+            handle.write("admin")
+
+        await client.put(
+            "/api/v1/chat/fs/recent-files",
+            json={"items": [{"path": user_file, "name": "user-only.txt", "mtime": 1}]},
+            headers={"X-API-Key": valid_api_key},
+        )
+        await client.put(
+            "/api/v1/chat/fs/recent-files",
+            json={"items": [{"path": admin_file, "name": "admin-only.txt", "mtime": 2}]},
+            headers={"X-API-Key": admin_api_key},
+        )
+
+        user_key = f"{WORKSPACE_RECENT_REDIS_PREFIX}{int(user_info['user_id'])}"
+        admin_key = f"{WORKSPACE_RECENT_REDIS_PREFIX}{int(admin_info['user_id'])}"
+        assert user_key != admin_key
+        assert json.loads(fake.store[user_key])["items"][0]["name"] == "user-only.txt"
+        assert json.loads(fake.store[admin_key])["items"][0]["name"] == "admin-only.txt"
+
+        user_recent = await client.get(
+            "/api/v1/chat/fs/recent-files",
+            headers={"X-API-Key": valid_api_key},
+        )
+        admin_recent = await client.get(
+            "/api/v1/chat/fs/recent-files",
+            headers={"X-API-Key": admin_api_key},
+        )
+        user_names = {item["name"] for item in user_recent.json()["data"]["items"]}
+        admin_names = {item["name"] for item in admin_recent.json()["data"]["items"]}
+        assert user_names == {"user-only.txt"}
+        assert admin_names == {"admin-only.txt"}
+
+
+@pytest.mark.asyncio
+async def test_workspace_recent_files_put_filters_other_user_paths(
+    db_session, valid_api_key, monkeypatch
+):
+    fake = FakeRedis()
+
+    async def _redis():
+        return fake
+
+    monkeypatch.setattr("app.core.redis.get_redis", _redis)
+
+    base = get_data_base_dir()
+    other_file = os.path.join(base, "agent_workspaces", "other_user__999", "secret.txt")
+    os.makedirs(os.path.dirname(other_file), exist_ok=True)
+    with open(other_file, "w", encoding="utf-8") as handle:
+        handle.write("secret")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.put(
+            "/api/v1/chat/fs/recent-files",
+            json={"items": [{"path": other_file, "name": "secret.txt", "mtime": 9}]},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["items"] == []

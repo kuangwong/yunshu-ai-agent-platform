@@ -1,4 +1,6 @@
 import fnmatch
+import json
+import logging
 import os
 import re
 import shutil
@@ -10,6 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.schemas.response import StandardResponse
 from app.core.dependencies import require_api_key
+from app.core.redis import get_redis
 from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 from app.utils.fs_access import (
     assert_path_allowed,
@@ -27,7 +30,11 @@ from app.utils.fs_access import (
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 TRASH_DIR_NAME = ".trash"
+WORKSPACE_RECENT_FILES_MAX = 20
+WORKSPACE_RECENT_REDIS_PREFIX = "agent:workspace_recent_files:"
 
 IMAGE_PREVIEW_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 IMAGE_MEDIA_TYPES = {
@@ -888,3 +895,126 @@ async def search_files(
             truncated=truncated,
         )
     )
+
+
+class WorkspaceRecentFileItem(BaseModel):
+    path: str = Field(..., description="文件绝对路径")
+    name: str = Field(..., description="展示用文件名")
+    mtime: float = Field(..., description="最后访问时间戳（秒）")
+
+
+class WorkspaceRecentFilesPayload(BaseModel):
+    items: List[WorkspaceRecentFileItem] = Field(default_factory=list)
+
+
+class WorkspaceRecentFilesResponse(BaseModel):
+    items: List[WorkspaceRecentFileItem] = Field(default_factory=list)
+
+
+def _workspace_recent_redis_key(user_id: int) -> str:
+    return f"{WORKSPACE_RECENT_REDIS_PREFIX}{user_id}"
+
+
+def _is_trash_path_segment(path: str) -> bool:
+    norm = os.path.normpath(path)
+    return f"/{TRASH_DIR_NAME}/" in f"{norm}/" or norm.endswith(f"/{TRASH_DIR_NAME}")
+
+
+def _sanitize_workspace_recent_files(
+    items: List[WorkspaceRecentFileItem],
+    user_info: Dict[str, Any],
+) -> List[WorkspaceRecentFileItem]:
+    seen: set[str] = set()
+    cleaned: List[WorkspaceRecentFileItem] = []
+    for raw in items:
+        path = str(raw.path or "").strip()
+        if not path or _is_trash_path_segment(path):
+            continue
+        normalized = normalize_fs_path(path)
+        if not normalized or not is_path_allowed(normalized, user_info):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        name = str(raw.name or os.path.basename(normalized) or normalized).strip()
+        if not name:
+            name = os.path.basename(normalized)
+        if len(name) > 255:
+            name = name[:255]
+        try:
+            mtime = float(raw.mtime)
+        except (TypeError, ValueError):
+            mtime = time.time()
+        if mtime <= 0:
+            mtime = time.time()
+        cleaned.append(WorkspaceRecentFileItem(path=normalized, name=name, mtime=mtime))
+        if len(cleaned) >= WORKSPACE_RECENT_FILES_MAX:
+            break
+    return cleaned
+
+
+@router.get(
+    "/recent-files",
+    response_model=StandardResponse[WorkspaceRecentFilesResponse],
+    summary="获取当前用户的工作空间最近访问文件",
+)
+async def get_workspace_recent_files(
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        return StandardResponse(data=WorkspaceRecentFilesResponse(items=[]))
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_recent_redis_key(user_id)
+    try:
+        raw = await redis.get(key)
+    except Exception as e:
+        logger.error("Failed to get workspace recent files from Redis: %s", e)
+        return StandardResponse(data=WorkspaceRecentFilesResponse(items=[]))
+
+    if not raw:
+        return StandardResponse(data=WorkspaceRecentFilesResponse(items=[]))
+
+    try:
+        decoded = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        parsed = json.loads(decoded)
+        raw_items = parsed.get("items") if isinstance(parsed, dict) else parsed
+        if not isinstance(raw_items, list):
+            raw_items = []
+        items = _sanitize_workspace_recent_files(
+            [WorkspaceRecentFileItem.model_validate(item) for item in raw_items],
+            user_info,
+        )
+    except Exception as e:
+        logger.warning("Failed to parse workspace recent files JSON: %s", e)
+        items = []
+
+    return StandardResponse(data=WorkspaceRecentFilesResponse(items=items))
+
+
+@router.put(
+    "/recent-files",
+    response_model=StandardResponse[WorkspaceRecentFilesResponse],
+    summary="保存当前用户的工作空间最近访问文件",
+)
+async def save_workspace_recent_files(
+    body: WorkspaceRecentFilesPayload,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis 服务不可用")
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_recent_redis_key(user_id)
+    items = _sanitize_workspace_recent_files(body.items, user_info)
+    payload = WorkspaceRecentFilesResponse(items=items)
+
+    try:
+        await redis.set(key, payload.model_dump_json())
+    except Exception as e:
+        logger.error("Failed to save workspace recent files to Redis: %s", e)
+        raise HTTPException(status_code=500, detail="保存最近文件记录失败")
+
+    return StandardResponse(data=payload, message="最近文件记录已保存")

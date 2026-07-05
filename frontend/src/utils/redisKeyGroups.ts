@@ -89,6 +89,12 @@ export const REDIS_KEY_CATEGORIES: RedisKeyCategory[] = [
     match: (key) => key.startsWith('portal:prefs:'),
   },
   {
+    id: 'workspace_recent',
+    label: '工作空间最近文件',
+    description: '浏览工作空间时按用户隔离的最近访问文件记录',
+    match: (key) => key.startsWith('agent:workspace_recent_files:'),
+  },
+  {
     id: 'rate_limit',
     label: '限流',
     description: '接口限流计数',

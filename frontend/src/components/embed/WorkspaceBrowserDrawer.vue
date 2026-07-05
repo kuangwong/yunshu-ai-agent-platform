@@ -8,7 +8,7 @@ import {
 } from '@/utils/fileTypeVisual'
 import { canPreviewWorkspaceFile, downloadWorkspaceFile, createWorkspaceEntry, renameWorkspaceEntry, deleteWorkspaceEntry, uploadToWorkspaceDir, copyTextToClipboard, restoreWorkspaceEntry, purgeWorkspaceEntry, emptyWorkspaceTrash } from '@/utils/workspaceFilePreview'
 
-const RECENT_FILES_KEY = 'workspace_recent_files_v1'
+const LEGACY_RECENT_FILES_KEY = 'workspace_recent_files_v1'
 const BROWSER_PREFS_KEY = 'workspace_browser_prefs_v1'
 const MAX_RECENT = 20
 const LIST_PAGE_SIZE = 200
@@ -126,19 +126,47 @@ const saveBrowserPrefs = () => {
   } catch { /* ignore */ }
 }
 
-const loadRecentFiles = () => {
+const loadRecentFiles = async () => {
   try {
-    const raw = localStorage.getItem(RECENT_FILES_KEY)
-    recentFiles.value = raw ? JSON.parse(raw) : []
+    const res = await axios.get('/api/v1/chat/fs/recent-files')
+    recentFiles.value = res.data?.data?.items || []
+    await migrateLegacyRecentFilesIfNeeded()
   } catch {
     recentFiles.value = []
   }
 }
 
-const persistRecentFiles = () => {
+let recentFilesPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+const persistRecentFilesNow = async () => {
   try {
-    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(recentFiles.value))
-  } catch { /* ignore */ }
+    await axios.put('/api/v1/chat/fs/recent-files', { items: recentFiles.value })
+  } catch {
+    /* ignore */
+  }
+}
+
+const persistRecentFiles = () => {
+  if (recentFilesPersistTimer) clearTimeout(recentFilesPersistTimer)
+  recentFilesPersistTimer = setTimeout(() => {
+    recentFilesPersistTimer = null
+    void persistRecentFilesNow()
+  }, 300)
+}
+
+const migrateLegacyRecentFilesIfNeeded = async () => {
+  try {
+    const raw = localStorage.getItem(LEGACY_RECENT_FILES_KEY)
+    if (!raw) return
+    const legacy = JSON.parse(raw) as Array<{ path: string; name: string; mtime?: number }>
+    localStorage.removeItem(LEGACY_RECENT_FILES_KEY)
+    if (!Array.isArray(legacy) || legacy.length === 0) return
+    if (recentFiles.value.length > 0) return
+    recentFiles.value = legacy.slice(0, MAX_RECENT)
+    await persistRecentFilesNow()
+  } catch {
+    localStorage.removeItem(LEGACY_RECENT_FILES_KEY)
+  }
 }
 
 const trackRecentFile = (item: { path: string; name: string; mtime?: number }) => {
@@ -155,7 +183,7 @@ const removeRecentFile = (path: string) => {
 
 const clearRecentFiles = () => {
   recentFiles.value = []
-  persistRecentFiles()
+  void persistRecentFilesNow()
   showToast('已清空最近记录', 'success')
 }
 
@@ -178,7 +206,7 @@ const toggleRecentFilesMenu = () => {
     closeRecentFilesMenu()
     return
   }
-  loadRecentFiles()
+  void loadRecentFiles()
   recentFilesOpen.value = true
   nextTick(updateRecentFilesMenuPosition)
 }
@@ -220,7 +248,7 @@ const openRecentFile = async (recent: { path: string; name: string; mtime: numbe
 }
 
 loadBrowserPrefs()
-loadRecentFiles()
+void loadRecentFiles()
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -726,6 +754,11 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (recentFilesPersistTimer) {
+    clearTimeout(recentFilesPersistTimer)
+    recentFilesPersistTimer = null
+    void persistRecentFilesNow()
+  }
   mobileMq?.removeEventListener('change', syncMobile)
   document.removeEventListener('click', onDocumentClick)
   document.removeEventListener('keydown', onGlobalKeydown)

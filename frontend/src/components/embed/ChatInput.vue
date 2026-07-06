@@ -572,11 +572,7 @@ const uploadSingleFile = async (file: File) => {
   formData.append("file", file);
 
   try {
-    const res = await axios.post("/api/v1/chat/upload", formData, {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    });
+    const res = await axios.post("/api/v1/chat/upload", formData);
     if (res.data && res.data.data) {
       uploadedFiles.value.push(res.data.data);
     } else {

@@ -113,7 +113,7 @@ const fetchPublicConfig = async () => {
         const response = await axios.get('/api/portal/auth/config/public')
         if (response.data?.status === 'success') {
             ssoEnabled.value = response.data.data?.yovole_sso_enabled === true
-            if (ssoEnabled.value) {
+            if (ssoEnabled.value && !branding.value.hide_login_sso) {
                 activeTab.value = 'sso'
             }
         }

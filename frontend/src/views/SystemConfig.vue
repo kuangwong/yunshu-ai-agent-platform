@@ -340,28 +340,170 @@ const saveBrandingConfig = async () => {
   }
 }
 
+const showCropper = ref(false)
+const cropperImageSrc = ref('')
+const cropperZoom = ref(1)
+const cropperOffset = ref({ x: 0, y: 0 })
+const cropperImageFile = ref<File | null>(null)
+const cropperImageType = ref('')
+const cropperInitWidth = ref(0)
+const cropperInitHeight = ref(0)
+
+const cropperImageStyle = computed(() => {
+  return {
+    width: `${cropperInitWidth.value}px`,
+    height: `${cropperInitHeight.value}px`,
+    transform: `translate(${cropperOffset.value.x}px, ${cropperOffset.value.y}px) scale(${cropperZoom.value})`,
+    transformOrigin: 'center center',
+  }
+})
+
+const isDraggingCropper = ref(false)
+const cropperDragStart = ref({ x: 0, y: 0 })
+
+const onCropperMouseDown = (e: MouseEvent) => {
+  isDraggingCropper.value = true
+  cropperDragStart.value = { x: e.clientX - cropperOffset.value.x, y: e.clientY - cropperOffset.value.y }
+}
+
+const onCropperMouseMove = (e: MouseEvent) => {
+  if (!isDraggingCropper.value) return
+  cropperOffset.value = {
+    x: e.clientX - cropperDragStart.value.x,
+    y: e.clientY - cropperDragStart.value.y
+  }
+}
+
+const onCropperMouseUp = () => {
+  isDraggingCropper.value = false
+}
+
+const onCropperTouchStart = (e: TouchEvent) => {
+  if (e.touches.length !== 1) return
+  isDraggingCropper.value = true
+  cropperDragStart.value = {
+    x: e.touches[0].clientX - cropperOffset.value.x,
+    y: e.touches[0].clientY - cropperOffset.value.y
+  }
+}
+
+const onCropperTouchMove = (e: TouchEvent) => {
+  if (!isDraggingCropper.value || e.touches.length !== 1) return
+  cropperOffset.value = {
+    x: e.touches[0].clientX - cropperDragStart.value.x,
+    y: e.touches[0].clientY - cropperDragStart.value.y
+  }
+}
+
 const triggerBrandingIconUpload = () => {
   brandingIconInput.value?.click()
 }
 
-const onBrandingIconSelected = async (e: Event) => {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
+const uploadBrandingIconDirectly = async (fileOrBlob: File | Blob, filename = 'icon.png') => {
   brandingIconUploading.value = true
   try {
     const form = new FormData()
-    form.append('file', file)
-    const res = await axios.post('/api/portal/system/branding/icon', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const uploadFile = fileOrBlob instanceof File ? fileOrBlob : new File([fileOrBlob], filename, { type: fileOrBlob.type })
+    form.append('file', uploadFile)
+    const res = await axios.post('/api/portal/system/branding/icon', form)
     brandingConfig.value.icon_url = res.data.icon_url
     showToast('图标上传成功', 'success')
   } catch (err: any) {
     showToast(err.response?.data?.detail || '上传失败', 'error')
   } finally {
     brandingIconUploading.value = false
+  }
+}
+
+const onBrandingIconSelected = (e: Event) => {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  // 如果是 SVG，不需要裁剪，直接上传
+  if (file.type === 'image/svg+xml') {
+    uploadBrandingIconDirectly(file)
+    return
+  }
+
+  // 验证是否是支持的图片类型
+  const supported = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp']
+  if (!supported.includes(file.type)) {
+    showToast('仅支持 PNG、JPEG、WebP、SVG 图片', 'error')
+    return
+  }
+
+  cropperImageFile.value = file
+  cropperImageType.value = file.type
+
+  // 读取为 DataURL
+  const reader = new FileReader()
+  reader.onload = (event) => {
+    cropperImageSrc.value = event.target?.result as string
+    
+    // 获取图片的自然宽高以计算自适应大小
+    const img = new Image()
+    img.src = cropperImageSrc.value
+    img.onload = () => {
+      const cropSize = 240
+      const ratio = Math.max(cropSize / img.naturalWidth, cropSize / img.naturalHeight)
+      cropperInitWidth.value = img.naturalWidth * ratio
+      cropperInitHeight.value = img.naturalHeight * ratio
+      
+      cropperZoom.value = 1
+      cropperOffset.value = { x: 0, y: 0 }
+      showCropper.value = true
+    }
+  }
+  reader.readAsDataURL(file)
+}
+
+const handleCropperConfirm = () => {
+  const img = new Image()
+  img.src = cropperImageSrc.value
+  img.onload = () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 256
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const cropSize = 240
+    const scaleFactor = 256 / cropSize
+
+    // 如果是 jpeg，填充白色底；如果是 png/webp，保持透明
+    if (cropperImageType.value === 'image/jpeg' || cropperImageType.value === 'image/jpg') {
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, 256, 256)
+    }
+
+    const initW = cropperInitWidth.value
+    const initH = cropperInitHeight.value
+    const drawW = initW * cropperZoom.value
+    const drawH = initH * cropperZoom.value
+
+    const x = (cropSize - initW) / 2 + cropperOffset.value.x
+    const y = (cropSize - initH) / 2 + cropperOffset.value.y
+
+    const drawX = x - (drawW - initW) / 2
+    const drawY = y - (drawH - initH) / 2
+
+    ctx.drawImage(
+      img,
+      drawX * scaleFactor,
+      drawY * scaleFactor,
+      drawW * scaleFactor,
+      drawH * scaleFactor
+    )
+
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const ext = cropperImageType.value === 'image/webp' ? 'webp' : 'png'
+        uploadBrandingIconDirectly(blob, `icon.${ext}`)
+      }
+      showCropper.value = false
+    }, cropperImageType.value, 0.9)
   }
 }
 
@@ -1973,6 +2115,94 @@ onMounted(() => {
       @confirm="executeDeleteKey"
       @cancel="showDeleteKeyConfirm = false"
     />
+
+    <!-- Image Cropper Modal -->
+    <div v-if="showCropper" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" @click.self="showCropper = false">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 transition-all duration-200 border border-gray-100 flex flex-col">
+        <!-- Header -->
+        <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
+          <div class="flex items-center space-x-2.5">
+            <div class="p-2 bg-primary/10 rounded-xl text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" />
+              </svg>
+            </div>
+            <h3 class="text-md font-bold text-gray-900">裁剪个性化图标</h3>
+          </div>
+          <button @click="showCropper = false" class="text-gray-400 hover:text-gray-600 focus:outline-none transition-colors">
+            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <!-- Content -->
+        <div class="p-6 flex flex-col items-center justify-center space-y-6 select-none">
+          <!-- Cropping Area container -->
+          <div 
+            class="relative w-[240px] h-[240px] border border-gray-200 rounded-2xl bg-gray-900 overflow-hidden cursor-move shadow-inner"
+            @mousedown="onCropperMouseDown"
+            @mousemove="onCropperMouseMove"
+            @mouseup="onCropperMouseUp"
+            @mouseleave="onCropperMouseUp"
+            @touchstart="onCropperTouchStart"
+            @touchmove="onCropperTouchMove"
+            @touchend="onCropperMouseUp"
+          >
+            <!-- Image to crop -->
+            <img 
+              :src="cropperImageSrc" 
+              alt="裁剪预览" 
+              class="absolute pointer-events-none max-w-none"
+              :style="cropperImageStyle"
+            />
+            <!-- Highlighting central viewport (200x200) with circle border -->
+            <div class="absolute inset-0 pointer-events-none flex items-center justify-center">
+              <div class="w-[200px] h-[200px] border-2 border-dashed border-primary rounded-xl shadow-[0_0_0_9999px_rgba(0,0,0,0.6)] z-10"></div>
+            </div>
+          </div>
+          <!-- Zoom Slider Control -->
+          <div class="w-full flex flex-col space-y-2">
+            <div class="flex justify-between items-center px-1">
+              <span class="text-xs font-bold text-gray-400">缩放比例</span>
+              <span class="text-xs font-mono font-bold text-primary">{{ Math.round(cropperZoom * 100) }}%</span>
+            </div>
+            <div class="flex items-center space-x-3">
+              <span class="text-xs text-gray-400">缩小</span>
+              <input 
+                v-model.number="cropperZoom" 
+                type="range" 
+                min="0.5" 
+                max="3" 
+                step="0.05" 
+                class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary focus:outline-none"
+              />
+              <span class="text-xs text-gray-400">放大</span>
+            </div>
+          </div>
+          <p class="text-xs text-gray-400 text-center leading-relaxed">
+            💡 按住鼠标左键并拖拽可移动图片位置，使用下方滑块进行缩放。<br/>
+            系统会自动把图片压缩并裁剪到标准清晰尺寸，避免大图上传失败。
+          </p>
+        </div>
+        <!-- Footer -->
+        <div class="bg-gray-50 px-6 py-4 flex justify-end space-x-3 border-t border-gray-100 shrink-0">
+          <button 
+            @click="showCropper = false" 
+            type="button" 
+            class="px-4 py-2 rounded-xl text-sm font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 active:scale-95 transition-all duration-200"
+          >
+            取消
+          </button>
+          <button 
+            @click="handleCropperConfirm" 
+            type="button" 
+            class="px-5 py-2 rounded-xl text-sm font-bold text-white bg-primary hover:bg-primary-dark transition-all duration-200 active:scale-95 shadow-sm focus:outline-none"
+          >
+            确认裁剪并上传
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 

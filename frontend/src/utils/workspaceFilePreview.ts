@@ -307,7 +307,6 @@ export async function uploadToWorkspaceDir(parentPath: string, file: File) {
   form.append('file', file)
   return axios.post('/api/v1/chat/fs/upload', form, {
     params: { parent_path: parentPath },
-    headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
 

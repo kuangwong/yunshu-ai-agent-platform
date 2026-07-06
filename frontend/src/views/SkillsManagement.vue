@@ -326,11 +326,7 @@ const uploadFiles = async (files: FileList) => {
         formData.append('folder', uploadFolder.value.trim())
       }
 
-      await axios.post(`/api/portal/skills/${activeSkillId.value}/upload`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      })
+      await axios.post(`/api/portal/skills/${activeSkillId.value}/upload`, formData)
       showToast(`文件 ${file.name} 上传成功！`, 'success')
     }
     // 重置上传目录并重新获取详情更新文件树

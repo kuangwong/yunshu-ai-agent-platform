@@ -198,3 +198,5 @@
 | 生成文件下载服务 (Generated File Download) | `tests/ai/tools/test_generated_file_service.py`, `tests/api/v1/test_generated_file_download.py` | **私有下载链接**：验证 artifact manifest 发布、token 鉴权、`GET /api/v1/chat/generated-files/{artifact_id}` 下载与过期失效。 | ✅ 通过 | 2026-06-26 |
 | ChatBI Schema 检索失败快速熔断拦截 (ChatBI Schema Fatal Early Interrupt) | `app/services/ai/runners/chatbi/react_stream.py` | **Schema 检索熔断拦截**：验证在 ReAct 循环中，每次工具调用后进行 `state.halt_current_react` 判定时，若检测到 Schema 致命错误（例如连续 2 次检索未命中数据集定义），则能够立刻触发熔断打断当前流，避免大模型死磕空转。 | ✅ 已完成 | 2026-06-26 |
 | 个人消息通知配置与连通性测试 (Notification Settings & Connectivity) | `tests/api/portal/test_notifications.py` | **个人通知配置与测试**：验证获取默认与自定义配置、打星号脱敏、反解真实密码、保存配置、钉钉/企微/邮件真实连通性测试、重构钉钉工具读取当前用户通知配置。 | ✅ 通过 | 2026-07-06 |
+| 智能体工具促发优化 (Tool Nudge Optimization) | `tests/ai/test_tool_nudge_policy.py` | **联网优先与意图过滤**：验证语义意图、单轮分类意图对工具促发路由的影响，包括联网检索优先（降低推荐阈值）和强数据查询意图的正确促发、模糊匹配排除。 | ✅ 通过 | 2026-07-06 |
+

@@ -628,6 +628,12 @@ class AssistantAgentRunner(BaseExecutor):
                         tools,
                         available_sub_agent_names=available_sub_agent_names,
                         sub_agent_targets_by_capability=sub_agent_targets_by_capability,
+                        semantic_intent=self.route_hints.get("semantic_intent"),
+                        semantic_confidence=self.route_hints.get("semantic_confidence"),
+                        turn_intent=(
+                            getattr(self.turn_classification, "intent", None)
+                            or getattr(self.intent_info, "intent", None)
+                        ),
                     )
                     if tool_nudge is not None:
                         native_system_content = f"{tool_nudge.message}\n\n{native_system_content}"

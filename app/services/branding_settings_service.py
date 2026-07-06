@@ -5,6 +5,7 @@ from app.services.config_service import ConfigService
 DEFAULT_PRODUCT_NAME = "云枢 · 智能体平台"
 DEFAULT_LOGIN_SUBTITLE = "Yunshu Intelligent Agent Platform"
 DEFAULT_ICON_URL = "/favicon.png"
+DEFAULT_AGENT_NAME = "云枢智能助手"
 
 
 class BrandingSettingsService:
@@ -16,6 +17,7 @@ class BrandingSettingsService:
     CONFIG_HIDE_VERSION_LINK = "branding.hide_version_link"
     CONFIG_CONTACT_MARKDOWN = "branding.contact_markdown"
     CONFIG_COPYRIGHT_TEXT = "branding.copyright_text"
+    CONFIG_DEFAULT_AGENT_NAME = "branding.default_agent_name"
 
     @staticmethod
     async def _get_bool(key: str, default: bool = False) -> bool:
@@ -38,6 +40,8 @@ class BrandingSettingsService:
             "hide_version_link": await cls._get_bool(cls.CONFIG_HIDE_VERSION_LINK, False),
             "contact_markdown": (await ConfigService.get(cls.CONFIG_CONTACT_MARKDOWN, "")) or "",
             "copyright_text": (await ConfigService.get(cls.CONFIG_COPYRIGHT_TEXT, "")) or "",
+            "default_agent_name": (await ConfigService.get(cls.CONFIG_DEFAULT_AGENT_NAME, DEFAULT_AGENT_NAME) or "").strip()
+            or DEFAULT_AGENT_NAME,
         }
 
     @classmethod
@@ -54,6 +58,7 @@ class BrandingSettingsService:
                 "hide_version_link": False,
                 "contact_markdown": "",
                 "copyright_text": "",
+                "default_agent_name": DEFAULT_AGENT_NAME,
             }
         return {
             "enabled": True,
@@ -64,6 +69,7 @@ class BrandingSettingsService:
             "hide_version_link": raw["hide_version_link"],
             "contact_markdown": raw["contact_markdown"],
             "copyright_text": raw["copyright_text"],
+            "default_agent_name": raw["default_agent_name"],
         }
 
     @classmethod
@@ -78,6 +84,7 @@ class BrandingSettingsService:
         hide_version_link: bool,
         contact_markdown: str,
         copyright_text: str,
+        default_agent_name: str,
         changed_by: str = "system",
     ) -> None:
         await ConfigService.set_config(
@@ -133,6 +140,13 @@ class BrandingSettingsService:
             cls.CONFIG_COPYRIGHT_TEXT,
             copyright_text or "",
             description="登录页底部版权文案",
+            category="branding",
+            changed_by=changed_by,
+        )
+        await ConfigService.set_config(
+            cls.CONFIG_DEFAULT_AGENT_NAME,
+            (default_agent_name or DEFAULT_AGENT_NAME).strip(),
+            description="默认智能助手名称",
             category="branding",
             changed_by=changed_by,
         )

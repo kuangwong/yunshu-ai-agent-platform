@@ -17,6 +17,12 @@ import re
 from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Set
 
+from app.services.ai.intent_service import (
+    IntentSource as ToolIntentSource,
+    IntentSourceFrame as ToolIntentFrame,
+    resolve_intent_source,
+)
+
 # 不主动促发的工具（写入/管理/记忆维护类）：避免推动模型产生副作用或与专门机制重复。
 _NUDGE_EXCLUDED_TOOLS = frozenset({
     "update_user_preference",
@@ -191,10 +197,13 @@ def resolve_tool_nudge(
     user_query: str,
     tools: List[Any],
     *,
-    min_score: float = 0.34,
+    min_score: float = 0.25,
     exclude_tools: Optional[Set[str]] = None,
     available_sub_agent_names: Optional[Set[str]] = None,
     sub_agent_targets_by_capability: Optional[Mapping[str, str]] = None,
+    semantic_intent: Any = None,
+    semantic_confidence: Any = None,
+    turn_intent: Any = None,
 ) -> Optional[ToolNudge]:
     """解析本轮是否需要工具促发；返回相关度最高的一条便签或 None。
 
@@ -204,14 +213,16 @@ def resolve_tool_nudge(
     query = (user_query or "").strip()
     if not query or not should_consider_tool_nudge(query):
         return None
+    intent_frame = resolve_intent_source(
+        query,
+        semantic_intent=semantic_intent,
+        semantic_confidence=semantic_confidence,
+        turn_intent=turn_intent,
+    )
 
     # 特殊规则：对于强查数或强知识库检索意图，若绑定了 sub_agent_call，优先做静默子代理委派
     sub_agent_tool = next((t for t in (tools or []) if getattr(t, "name", "") == "sub_agent_call"), None)
     if sub_agent_tool:
-        from app.services.ai.intent_service import (
-            looks_like_business_data_request,
-            looks_like_knowledge_query,
-        )
         def _sub_agent_available(name: str) -> bool:
             if available_sub_agent_names is None:
                 return True
@@ -227,7 +238,7 @@ def resolve_tool_nudge(
             return fallback_name if _sub_agent_available(fallback_name) else None
 
         # 优先判断更具体的知识库检索意图
-        if looks_like_knowledge_query(query):
+        if intent_frame.source == ToolIntentSource.INTERNAL_DOCS:
             target_agent_name = _target_for_capability("knowledge_base", "knowledge-base")
             if not target_agent_name:
                 return None
@@ -242,7 +253,7 @@ def resolve_tool_nudge(
                 message=f"【本轮工具优先】本轮用户请求涉及制度、SOP或规范文档检索。{desc}",
                 force_first_call=True,
             )
-        elif looks_like_business_data_request(query):
+        elif intent_frame.source == ToolIntentSource.INTERNAL_STRUCTURED_DATA:
             target_agent_name = _target_for_capability("data_query", "chat-bi")
             if not target_agent_name:
                 return None
@@ -281,7 +292,8 @@ def resolve_tool_nudge(
             best_score = score
             best_tool = tool
 
-    if best_tool is None or best_score < min_score:
+    effective_min_score = 0.2 if intent_frame.source == ToolIntentSource.PUBLIC_WEB else min_score
+    if best_tool is None or best_score < effective_min_score:
         return None
 
     tool_name = str(getattr(best_tool, "name", "") or "")

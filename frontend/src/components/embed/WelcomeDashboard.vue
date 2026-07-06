@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useBranding } from '@/composables/useBranding';
+
+const { branding } = useBranding();
 
 const props = defineProps<{
   welcomeMessage: string;
@@ -82,7 +85,7 @@ const recommendedPrompts = computed(() => {
         {{ greeting }}！
       </h1>
       <p class="text-gray-500 dark:text-gray-400 text-sm max-w-md mx-auto leading-relaxed">
-        {{ welcomeMessage || '我是您的云枢智能助手，准备好帮您处理任何任务了。' }}
+        {{ welcomeMessage || ('我是您的' + (branding.default_agent_name || '云枢智能助手') + '，准备好帮您处理任何任务了。') }}
       </p>
     </div>
 

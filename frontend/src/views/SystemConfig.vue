@@ -304,6 +304,7 @@ const brandingConfig = ref({
   hide_version_link: false,
   contact_markdown: '',
   copyright_text: '',
+  default_agent_name: '云枢智能助手',
 })
 const brandingIconInput = ref<HTMLInputElement | null>(null)
 
@@ -320,6 +321,7 @@ const fetchBrandingConfig = async () => {
       hide_version_link: !!data.hide_version_link,
       contact_markdown: data.contact_markdown || '',
       copyright_text: data.copyright_text || '',
+      default_agent_name: data.default_agent_name || '云枢智能助手',
     }
   } catch {
     showToast('品牌配置加载失败', 'error')
@@ -1539,6 +1541,17 @@ onMounted(() => {
                 class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
                 placeholder="Yunshu Intelligent Agent Platform"
               />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">默认智能助手名称</label>
+              <input
+                v-model="brandingConfig.default_agent_name"
+                type="text"
+                class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
+                placeholder="云枢智能助手"
+              />
+              <p class="text-xs text-gray-400 mt-1">影响未开启品牌个性化时或未指定时的智能助手默认名称（例如：Nexus AI）</p>
             </div>
 
             <div>

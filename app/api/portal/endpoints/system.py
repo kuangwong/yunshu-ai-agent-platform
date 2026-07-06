@@ -672,6 +672,7 @@ async def update_branding_settings(
         hide_version_link=body.hide_version_link,
         contact_markdown=body.contact_markdown,
         copyright_text=body.copyright_text,
+        default_agent_name=body.default_agent_name,
         changed_by=user.get("user_name", "admin"),
     )
     return await BrandingSettingsService.get_raw_settings()

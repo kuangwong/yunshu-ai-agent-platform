@@ -52,7 +52,7 @@
                             {{ currentExpertAgent.display_name || currentExpertAgent.name }}
                         </template>
                         <template v-else>
-                            云枢智能助手
+                            {{ branding.default_agent_name || '云枢智能助手' }}
                         </template>
                     </span>
                     <span v-if="isProcessing" class="flex h-1.5 w-1.5 relative">
@@ -2348,7 +2348,10 @@ import {
   isWorkspaceSlashCommand,
 } from "@/constants/workspaceCommand";
 
+import { useBranding } from "@/composables/useBranding";
+
 const toast = useToast();
+const { branding } = useBranding();
 const {
   bannerMessage: quotaBannerMessage,
   isBlocked: quotaIsBlocked,

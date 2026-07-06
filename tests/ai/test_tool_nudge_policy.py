@@ -7,6 +7,7 @@ from app.services.ai.tool_nudge_policy import (
     resolve_tool_nudge,
     should_consider_tool_nudge,
 )
+from app.services.ai.intent_service import IntentType
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -99,6 +100,117 @@ def test_sub_agent_call_nudge_for_data_query_uses_capability_target():
     assert "agent_name='biz-data-agent'" in nudge.message
     assert "agent_name='chat-bi'" not in nudge.message
     assert nudge.should_force_first_call is True
+
+
+def test_general_semantic_company_info_prefers_web_tool_over_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+        _tool("web_search_baidu", "联网搜索公司信息、官网、新闻和最新资讯"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下有孚网络公司信息",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        semantic_intent=IntentType.GENERAL,
+        semantic_confidence=0.92,
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "web_search_baidu"
+    assert nudge.should_force_first_call is False
+
+
+def test_misclassified_company_info_does_not_force_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+        _tool("web_search_baidu", "联网搜索公司信息、官网、新闻和最新资讯"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下有孚网络公司信息",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.93,
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "web_search_baidu"
+    assert nudge.should_force_first_call is False
+
+
+def test_public_news_query_prefers_web_tool_over_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+        _tool("web_search_baidu", "联网搜索公司信息、官网、新闻和最新资讯"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下有孚网络最新新闻",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "web_search_baidu"
+
+
+def test_ambiguous_lookup_does_not_force_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下 abc",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+    )
+
+    assert nudge is None
+
+
+def test_data_query_semantic_forces_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+        _tool("web_search_baidu", "联网搜索公司信息、官网、新闻和最新资讯"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下客户订单列表",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.91,
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='biz-data-agent'" in nudge.message
+    assert nudge.should_force_first_call is True
+
+
+def test_server_load_query_prefers_shell_tool_over_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+        _tool("exec_command", "在服务器上执行 shell 命令，查看服务器负载、CPU、内存、磁盘和进程状态"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下我机器的服务器负载情况",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "exec_command"
+    assert nudge.should_force_first_call is False
 
 
 def test_sub_agent_call_nudge_skips_when_target_agent_unavailable():

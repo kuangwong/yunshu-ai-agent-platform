@@ -4,6 +4,7 @@ from app.services.branding_settings_service import (
     DEFAULT_ICON_URL,
     DEFAULT_LOGIN_SUBTITLE,
     DEFAULT_PRODUCT_NAME,
+    DEFAULT_AGENT_NAME,
 )
 
 
@@ -16,6 +17,7 @@ class BrandingSettings(BaseModel):
     hide_version_link: bool = False
     contact_markdown: str = ""
     copyright_text: str = ""
+    default_agent_name: str = DEFAULT_AGENT_NAME
 
 
 class BrandingSettingsUpdate(BrandingSettings):
@@ -31,3 +33,4 @@ class PublicBrandingResponse(BaseModel):
     hide_version_link: bool = False
     contact_markdown: str = ""
     copyright_text: str = ""
+    default_agent_name: str

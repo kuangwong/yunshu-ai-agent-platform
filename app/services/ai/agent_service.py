@@ -1302,6 +1302,11 @@ class AgentService:
                 return
 
         runner = self._build_agentscope_runner_from_pending(pending, user_info=user_info)
+        await self._restore_runner_execution_context(
+            runner,
+            pending,
+            user_info=user_info,
+        )
 
         yield {
             "type": "permission_result",
@@ -1397,6 +1402,32 @@ class AgentService:
                 )
             )
 
+    async def _restore_runner_execution_context(
+        self,
+        runner: Any,
+        pending: Any,
+        *,
+        user_info: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """工具确认/外部执行恢复前重建 AgentContext，避免 user_id 等会话信息丢失。"""
+        effective_user_info = user_info or getattr(runner, "user_info", None)
+        if effective_user_info and getattr(runner, "config", None) is not None:
+            from app.services.ai.context_manager import AgentContextManager
+
+            await AgentContextManager.setup_context(
+                config=runner.config,
+                user_info=effective_user_info,
+                api_key=effective_user_info.get("api_key"),
+                conversation_id=(
+                    getattr(runner, "conversation_id", None)
+                    or pending.snapshot.conversation_id
+                ),
+                trace_buffer=getattr(runner, "trace_buffer", None) or [],
+            )
+            return
+        if hasattr(runner, "_ensure_agent_context"):
+            runner._ensure_agent_context()
+
     def _build_agentscope_runner_from_pending(
         self,
         pending: Any,
@@ -1405,6 +1436,8 @@ class AgentService:
     ) -> Any:
         runner = pending.runner
         if runner is not None:
+            if user_info:
+                runner.user_info = {**(runner.user_info or {}), **user_info}
             return runner
 
         ctx = pending.snapshot.runner_context or {}
@@ -1508,6 +1541,11 @@ class AgentService:
                 return
 
         runner = self._build_agentscope_runner_from_pending(pending, user_info=user_info)
+        await self._restore_runner_execution_context(
+            runner,
+            pending,
+            user_info=user_info,
+        )
         execution_results = self._build_external_execution_results(results)
 
         yield {

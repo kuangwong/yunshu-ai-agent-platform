@@ -40,63 +40,98 @@ class BaseExecutor(ABC):
         """
         pass
 
+    def _user_identity_from_info(self) -> Dict[str, Any]:
+        user_dims: Dict[str, Any] = {}
+        u_id_val = None
+        is_admin_val = False
+        if not self.user_info:
+            return {
+                "u_id_val": None,
+                "is_admin_val": False,
+                "user_dims": user_dims,
+            }
+
+        raw_uid = self.user_info.get("user_id", self.user_info.get("id"))
+        if raw_uid:
+            u_id_val = int(raw_uid)
+        is_admin_val = self.user_info.get("role") == "admin"
+        user_dims = {
+            "id": u_id_val,
+            "user_name": self.user_info.get("user_name"),
+            "real_name": self.user_info.get("real_name"),
+            "role": self.user_info.get("role"),
+            "dept_code": self.user_info.get("dept_code"),
+            "org_path": self.user_info.get("org_path"),
+        }
+        extra_data = self.user_info.get("extra_data")
+        if extra_data:
+            try:
+                import json
+                if isinstance(extra_data, str):
+                    extra_dict = json.loads(extra_data)
+                else:
+                    extra_dict = extra_data
+                if isinstance(extra_dict, dict):
+                    for k, v in extra_dict.items():
+                        if k not in user_dims:
+                            user_dims[k] = v
+            except Exception:
+                pass
+        user_dims["extra_data"] = extra_data
+        return {
+            "u_id_val": u_id_val,
+            "is_admin_val": is_admin_val,
+            "user_dims": user_dims,
+        }
+
+    def _apply_user_identity_to_context(self, ctx: Any, identity: Dict[str, Any]) -> None:
+        u_id_val = identity.get("u_id_val")
+        if u_id_val is None:
+            return
+        ctx.user_id = u_id_val
+        ctx.is_admin = bool(identity.get("is_admin_val"))
+        ctx.user_dimensions = dict(identity.get("user_dims") or {})
+        if self.user_info and self.user_info.get("api_key"):
+            ctx.api_key = self.user_info.get("api_key")
+        if self.conversation_id:
+            ctx.conversation_id = self.conversation_id
+        ctx.permission_options = dict(self.permission_options or {})
+        if self.trace_buffer is not None:
+            ctx.trace_buffer = self.trace_buffer
+
     def _ensure_agent_context(self) -> Any:
         from app.core.context import get_current_agent_context, set_agent_context, AgentContext
         ctx = get_current_agent_context()
-        if not ctx:
-            from app.services.ai.knowledge_utils import merge_dataset_id_sources
-            engine_config = self.config.engine_config or {}
-            agent_dataset_ids = merge_dataset_id_sources(engine_config.get("dataset_ids"))
+        identity = self._user_identity_from_info()
+        if ctx is not None:
+            self._apply_user_identity_to_context(ctx, identity)
+            return ctx
 
-            user_dims = {}
-            u_id_val = None
-            is_admin_val = False
-            if self.user_info:
-                raw_uid = self.user_info.get("user_id", self.user_info.get("id"))
-                if raw_uid:
-                    u_id_val = int(raw_uid)
-                is_admin_val = self.user_info.get("role") == "admin"
-                user_dims = {
-                    "id": u_id_val,
-                    "user_name": self.user_info.get("user_name"),
-                    "real_name": self.user_info.get("real_name"),
-                    "role": self.user_info.get("role"),
-                    "dept_code": self.user_info.get("dept_code"),
-                    "org_path": self.user_info.get("org_path"),
-                }
-                extra_data = self.user_info.get("extra_data")
-                if extra_data:
-                    try:
-                        import json
-                        if isinstance(extra_data, str):
-                            extra_dict = json.loads(extra_data)
-                        else:
-                            extra_dict = extra_data
-                        for k, v in extra_dict.items():
-                            if k not in user_dims:
-                                user_dims[k] = v
-                    except Exception:
-                        pass
-                user_dims["extra_data"] = extra_data
+        from app.services.ai.knowledge_utils import merge_dataset_id_sources
+        engine_config = self.config.engine_config or {}
+        agent_dataset_ids = merge_dataset_id_sources(engine_config.get("dataset_ids"))
+        u_id_val = identity.get("u_id_val")
+        is_admin_val = identity.get("is_admin_val", False)
+        user_dims = identity.get("user_dims") or {}
 
-            ctx = AgentContext(
-                agent_id=self.config.agent_id,
-                agent_name=self.config.agent_name,
-                dataset_ids=agent_dataset_ids,
-                knowledge_dataset_ids=[],
-                require_explicit_dataset=False,
-                engine_type=self.config.engine_type or "LOCAL",
-                engine_config=engine_config,
-                user_id=u_id_val,
-                conversation_id=self.conversation_id,
-                is_admin=is_admin_val,
-                api_key=self.user_info.get("api_key") if self.user_info else None,
-                user_dimensions=user_dims,
-                trace_buffer=self.trace_buffer or [],
-                delegation_depth=0,
-                permission_options=dict(self.permission_options or {}),
-            )
-            set_agent_context(ctx)
+        ctx = AgentContext(
+            agent_id=self.config.agent_id,
+            agent_name=self.config.agent_name,
+            dataset_ids=agent_dataset_ids,
+            knowledge_dataset_ids=[],
+            require_explicit_dataset=False,
+            engine_type=self.config.engine_type or "LOCAL",
+            engine_config=engine_config,
+            user_id=u_id_val,
+            conversation_id=self.conversation_id,
+            is_admin=is_admin_val,
+            api_key=self.user_info.get("api_key") if self.user_info else None,
+            user_dimensions=user_dims,
+            trace_buffer=self.trace_buffer or [],
+            delegation_depth=0,
+            permission_options=dict(self.permission_options or {}),
+        )
+        set_agent_context(ctx)
         return ctx
 
     def _increment_step(self) -> int:

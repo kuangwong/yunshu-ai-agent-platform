@@ -1171,6 +1171,118 @@ async def test_agent_service_resumes_agentscope_ask_from_snapshot(chat_config):
 
 
 @pytest.mark.asyncio
+async def test_permission_resume_restores_user_context_for_user_scoped_tools(chat_config):
+    """工具确认恢复后应能读到当前 user_id（如钉钉/企微 webhook 查询依赖 AgentContext）。"""
+    from agentscope.credential import CredentialBase
+    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.context import get_current_agent_context, set_agent_context
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.agent_service import AgentService
+    from app.services.ai.runtime.agentscope.confirmations import (
+        pending_agentscope_confirmations,
+    )
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    pending_agentscope_confirmations.clear()
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            if not any(msg.has_content_blocks("tool_result") for msg in messages):
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_user_scoped_tool",
+                            name="send_message",
+                            input='{"message": "hello"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            tool_result = next(
+                block
+                for msg in messages
+                for block in msg.get_content_blocks("tool_result")
+            )
+            return ChatResponse(
+                content=[TextBlock(text=f"final: {tool_result.output[0].text}")],
+                is_last=True,
+            )
+
+    captured_user_ids = []
+
+    async def send_message(message: str):
+        ctx = get_current_agent_context()
+        captured_user_ids.append(ctx.user_id if ctx else None)
+        return f"sent:{message}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="send_message",
+        description="Send a message",
+        parameters_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+        },
+        source_type="static",
+        callable=send_message,
+        permission_scope="ask",
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=FakeModel(
+            credential=FakeCredential(),
+            model="fake-native-general",
+            parameters=FakeModel.Parameters(),
+            stream=False,
+            max_retries=0,
+        ),
+        model_name="fake-native-general",
+        temperature=0.0,
+        streaming=True,
+    )
+    executor = AssistantExecutor(
+        config=chat_config,
+        trace_id="test-permission-user-context",
+        trace_buffer=[],
+        user_info={"user_id": "42", "user_name": "tester"},
+        conversation_id="conv-user-context",
+    )
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")), \
+         patch("app.services.ai.runners.assistant_agent_runner.get_local_workspace", AsyncMock(return_value=None)), \
+         patch("app.services.memory_config_service.MemoryConfigService.get_bool", AsyncMock(return_value=False)):
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "Send it"}]):
+            events.append(chunk)
+
+        permission_event = next(event for event in events if event.get("type") == "permission_required")
+        pending_agentscope_confirmations._items.clear()
+        set_agent_context(None)
+
+        resume_events = []
+        async for chunk in AgentService().resume_agentscope_permission_stream(
+            permission_request_id=permission_event["permission_request_id"],
+            confirmed=True,
+            user_info={"user_id": "42", "user_name": "tester"},
+        ):
+            resume_events.append(chunk)
+
+    assert captured_user_ids == [42]
+
+
+@pytest.mark.asyncio
 async def test_knowledge_runner_uses_agentscope_native_agent(chat_config):
     """KnowledgeAgentRunner 应自动检索知识库并走 AgentScope 原生 Agent。"""
     from agentscope.credential import CredentialBase

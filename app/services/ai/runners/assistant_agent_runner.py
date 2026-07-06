@@ -1270,7 +1270,11 @@ class AssistantAgentRunner(BaseExecutor):
         pending: Any,
         resume_event: Any,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        self._ensure_agent_context()
+        from app.core.context import set_agent_context
+
+        ctx = self._ensure_agent_context()
+        if ctx:
+            set_agent_context(ctx)
         agent_name = self._runtime_agent_name()
         loop_detector = await self._create_tool_loop_detector()
         try:

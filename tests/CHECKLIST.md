@@ -21,7 +21,7 @@
 | XML 报文解析 (XML Parsing)                      | `tests/test_xml_parsing.py`                                      | 验证从模型输出中稳健提取 XML 格式的工具调用 (fallback to Regex)                                      | ✅ 通过        | 2026-01-11  |
 | 聊天日志审计 (Chat Log Insight)                 | `frontend/src/views/ChatLogs.vue`                                | 独立审计页面、多维高级过滤、权限隔离、Paginated API、执行链路 (Trace) 可视化                         | ✅ 通过        | 2026-01-11  |
 | SSO 认证集成 (SSO Integration)                  | `app/api/portal/endpoints/auth.py`                               | 统一认证登录、本地权限映射、SSO 认证成功但本地无账号/禁用的异常处理                                  | 🛠 开发完成    | 2026-01-14  |
-| 通用助手执行引擎 (Assistant Executor)           | `tests/ai/executors/test_chat_executor.py`                         | 验证 ReAct 循环、AgentScope 原生工具链、权限挂起恢复、流式 reconcile                                    | ✅ 通过        | 2026-01-18  |
+| 通用助手执行引擎 (Assistant Executor)           | `tests/ai/executors/test_chat_executor.py`                         | 验证 ReAct 循环、AgentScope 原生工具链、权限挂起恢复、流式 reconcile，以及工具确认恢复后重建 AgentContext 与用户身份注入校验 | ✅ 通过        | 2026-07-06  |
 | 数据执行引擎 (Data Executor)                    | `test_data_executor.py`                                          | 验证全流程、XML 解析自修正、拖延检测 (Nudge)、干跑模式、自愈反馈、**日志详情精简正则修复**、**SQL 结果预览** | ✅ 通过        | 2026-03-24  |
 | RAG 执行引擎 (RAG Executor)                     | `test_rag_executor.py`                                           | 验证流式交互、引用展示 (Citation)、重试逻辑、异常处理                                                | ✅ 通过        | 2026-01-15  |
 | 智能路由增强 (Router V2/CoT)                    | `test_router_service.py`, `test_router_context.py`               | **指代消解 (Coreference)**、**思维链 (CoT)**、结构化 JSON 鲁棒解析、忽略大小写匹配                   | ✅ 通过        | 2026-01-16  |

@@ -58,6 +58,8 @@ async def resume_agentscope_native_stream(
     pending: Any,
     resume_event: Any,
 ) -> AsyncGenerator[Dict[str, Any], None]:
+    if hasattr(runner, "_ensure_agent_context"):
+        runner._ensure_agent_context()
     agent_name = runner._runtime_agent_name()
     try:
         async with agentscope_session_lock.hold(

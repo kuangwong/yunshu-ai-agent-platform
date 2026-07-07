@@ -666,6 +666,11 @@ defineExpose({ fetchMetrics })
       <SchemaGraph :dataset-id="datasetId" :tables="tables" />
     </div>
 
+    <!-- Content: Changelog -->
+    <div v-if="activeTab === 'changelog'">
+      <ChangelogList :dataset-id="datasetId" />
+    </div>
+
     <!-- Content: Permissions -->
     <div v-if="activeTab === 'permissions'" class="bg-white p-6 rounded-xl border border-gray-100 shadow-sm space-y-6">
       <div class="flex items-center justify-between border-b pb-4">

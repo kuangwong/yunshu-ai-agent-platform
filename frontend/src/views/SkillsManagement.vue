@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import axios from '../utils/axios'
 import { useToast } from '../composables/useToast'
 import SkillFileTree from '../components/SkillFileTree.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 
 interface Skill {
   id: string
@@ -20,6 +21,14 @@ interface FileNode {
 }
 
 const { showToast } = useToast()
+
+const confirmState = ref({
+  show: false,
+  title: '',
+  message: '',
+  type: 'danger' as 'danger' | 'primary' | 'warning',
+  onConfirm: () => {}
+})
 
 const skills = ref<Skill[]>([])
 const loading = ref(false)
@@ -138,22 +147,28 @@ const createSkill = async () => {
 }
 
 // 物理删除整个技能（注销）
-const deleteSkill = async (skillId: string) => {
-  if (!confirm(`确定要彻底删除技能 [${skillId}] 吗？\n该操作会物理删除对应的技能目录及其所有子资产脚本，且不可恢复！`)) {
-    return
-  }
-
-  try {
-    const response = await axios.delete(`/api/portal/skills/${skillId}`)
-    if (response.data && response.data.status === 'success') {
-      showToast(`技能 ${skillId} 已成功物理删除`, 'success')
-      fetchSkills()
-      if (activeSkillId.value === skillId) {
-        showDrawer.value = false
+const deleteSkill = (skillId: string) => {
+  confirmState.value = {
+    show: true,
+    title: '彻底删除技能',
+    message: `确定要彻底删除技能 [${skillId}] 吗？\n该操作会物理删除对应的技能目录及其所有子资产脚本，且不可恢复！`,
+    type: 'danger',
+    onConfirm: async () => {
+      try {
+        const response = await axios.delete(`/api/portal/skills/${skillId}`)
+        if (response.data && response.data.status === 'success') {
+          showToast(`技能 ${skillId} 已成功物理删除`, 'success')
+          fetchSkills()
+          if (activeSkillId.value === skillId) {
+            showDrawer.value = false
+          }
+        }
+      } catch (e: any) {
+        showToast(e.response?.data?.detail || '注销技能失败', 'error')
+      } finally {
+        confirmState.value.show = false
       }
     }
-  } catch (e: any) {
-    showToast(e.response?.data?.detail || '注销技能失败', 'error')
   }
 }
 
@@ -216,17 +231,29 @@ const loadFileContent = async (skillId: string, filePath: string) => {
 
 // 选中某个文件进行编辑
 const selectFileForEdit = async (path: string) => {
-  if (hasUnsavedChanges.value) {
-    if (!confirm('当前文件有未保存的修改，切换文件将丢失这些修改。确定要切换吗？')) {
-      return
+  const doSelect = async () => {
+    selectedFilePath.value = path
+    if (path === 'SKILL.md') {
+      await fetchSkillDetail(activeSkillId.value)
+    } else {
+      await loadFileContent(activeSkillId.value, path)
     }
   }
-  selectedFilePath.value = path
-  if (path === 'SKILL.md') {
-    await fetchSkillDetail(activeSkillId.value)
-  } else {
-    await loadFileContent(activeSkillId.value, path)
+
+  if (hasUnsavedChanges.value) {
+    confirmState.value = {
+      show: true,
+      title: '未保存修改确认',
+      message: '当前文件有未保存的修改，切换文件将丢失这些修改。确定要切换吗？',
+      type: 'warning',
+      onConfirm: async () => {
+        confirmState.value.show = false
+        await doSelect()
+      }
+    }
+    return
   }
+  await doSelect()
 }
 
 // 是否有未保存的修改
@@ -261,24 +288,30 @@ const saveFileContent = async () => {
 }
 
 // 删除技能目录下的某个子文件或子目录
-const deleteSkillFile = async (filePath: string) => {
-  if (!confirm(`确定要删除物理资产 [${filePath}] 吗？\n该删除操作无法撤销！`)) {
-    return
-  }
-
-  try {
-    const response = await axios.delete(`/api/portal/skills/${activeSkillId.value}/files`, {
-      params: { path: filePath }
-    })
-    if (response.data && response.data.status === 'success') {
-      showToast('资产已成功物理删除', 'success')
-      if (selectedFilePath.value === filePath) {
-        selectedFilePath.value = 'SKILL.md'
+const deleteSkillFile = (filePath: string) => {
+  confirmState.value = {
+    show: true,
+    title: '删除资产文件',
+    message: `确定要删除物理资产 [${filePath}] 吗？\n该删除操作无法撤销！`,
+    type: 'danger',
+    onConfirm: async () => {
+      try {
+        const response = await axios.delete(`/api/portal/skills/${activeSkillId.value}/files`, {
+          params: { path: filePath }
+        })
+        if (response.data && response.data.status === 'success') {
+          showToast('资产已成功物理删除', 'success')
+          if (selectedFilePath.value === filePath) {
+            selectedFilePath.value = 'SKILL.md'
+          }
+          await fetchSkillDetail(activeSkillId.value)
+        }
+      } catch (e: any) {
+        showToast(e.response?.data?.detail || '删除资产失败', 'error')
+      } finally {
+        confirmState.value.show = false
       }
-      await fetchSkillDetail(activeSkillId.value)
     }
-  } catch (e: any) {
-    showToast(e.response?.data?.detail || '删除资产失败', 'error')
   }
 }
 
@@ -864,6 +897,15 @@ onMounted(() => {
       </div>
     </div>
   </div>
+
+  <ConfirmModal
+    v-if="confirmState.show"
+    :title="confirmState.title"
+    :message="confirmState.message"
+    :type="confirmState.type"
+    @confirm="confirmState.onConfirm"
+    @cancel="confirmState.show = false"
+  />
 </template>
 
 <style scoped>

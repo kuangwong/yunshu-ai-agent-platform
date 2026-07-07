@@ -232,12 +232,11 @@ onUnmounted(() => {
       </div>
 
       <div
-        class="citation-popover-body flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-2.5 text-sm text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-wrap custom-scrollbar"
+        class="citation-popover-body flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-2.5 text-xs text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-wrap custom-scrollbar"
+        v-html="citation.content"
         @wheel.stop
         @touchmove.stop
-      >
-        {{ citation.content }}
-      </div>
+      />
 
       <div class="flex items-center justify-between gap-2 px-3 py-2 border-t border-gray-100 dark:border-gray-700/60 flex-shrink-0">
         <span
@@ -273,3 +272,66 @@ onUnmounted(() => {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.citation-popover-body :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  background-color: #ffffff;
+}
+
+.dark .citation-popover-body :deep(table) {
+  background-color: #1f2937;
+}
+
+.citation-popover-body :deep(th),
+.citation-popover-body :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 8px;
+  text-align: left;
+  word-break: break-all;
+}
+
+.dark .citation-popover-body :deep(th),
+.dark .citation-popover-body :deep(td) {
+  border-color: #374151;
+}
+
+.citation-popover-body :deep(th) {
+  background-color: #f3f4f6;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.dark .citation-popover-body :deep(th) {
+  background-color: #374151;
+  color: #f9fafb;
+}
+
+.citation-popover-body :deep(tr:nth-child(even)) {
+  background-color: #f9fafb;
+}
+
+.dark .citation-popover-body :deep(tr:nth-child(even)) {
+  background-color: rgba(31, 41, 55, 0.4);
+}
+
+.citation-popover-body :deep(caption) {
+  font-size: 10px;
+  color: #6b7280;
+  padding: 6px 4px;
+  font-weight: 700;
+  text-align: left;
+  background-color: rgba(243, 244, 246, 0.5);
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.dark .citation-popover-body :deep(caption) {
+  color: #9ca3af;
+  background-color: rgba(55, 65, 81, 0.5);
+  border-color: #4b5563;
+}
+</style>

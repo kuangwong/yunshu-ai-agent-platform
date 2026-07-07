@@ -42,6 +42,8 @@ type KnowledgeDocument = {
   size?: number
   update_time?: string
   created_at?: string
+  progress?: number
+  progress_msg?: string
 }
 
 type RagFlowConfigSummary = {
@@ -80,7 +82,6 @@ const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const deletingDataset = ref<KnowledgeBase | null>(null)
 const deletingDocument = ref<KnowledgeDocument | null>(null)
-const uploadFile = ref<File | null>(null)
 
 const form = ref({
   name: '',
@@ -267,7 +268,24 @@ const fetchDocumentsForDataset = async (dsId: string) => {
   documentsLoadingMap.value[dsId] = true
   try {
     const response = await axios.get(`/api/portal/ragflow/datasets/${dsId}/documents`)
-    documentsMap.value[dsId] = apiData(response)
+    const docs = apiData(response)
+    documentsMap.value[dsId] = docs
+
+    // 自动更新并同步清理 parsingDocIds
+    const nextParsing = { ...parsingDocIds.value }
+    let updated = false
+    for (const d of docs) {
+      if (nextParsing[d.id] && getDocStatus(d) !== 'parsing') {
+        delete nextParsing[d.id]
+        updated = true
+      }
+    }
+    if (updated) {
+      parsingDocIds.value = nextParsing
+    }
+
+    // 自动触发或检查是否需要轮询
+    checkAndStartDatasetPolling(dsId)
   } catch (err) {
     showToast(extractError(err), 'error')
     documentsMap.value[dsId] = []
@@ -276,13 +294,33 @@ const fetchDocumentsForDataset = async (dsId: string) => {
   }
 }
 
+const datasetPermissions = ref<{ users: any[], roles: any[] }>({ users: [], roles: [] })
+const loadingPermissions = ref(false)
+
+const fetchDatasetPermissions = async (datasetId: string) => {
+  loadingPermissions.value = true
+  datasetPermissions.value = { users: [], roles: [] }
+  try {
+    const response = await axios.get(`/api/portal/ragflow/datasets/${datasetId}/permissions`)
+    datasetPermissions.value = response.data?.data || { users: [], roles: [] }
+  } catch (err) {
+    console.error('获取知识库权限分配失败:', err)
+  } finally {
+    loadingPermissions.value = false
+  }
+}
+
 // 选中知识库节点
 const selectDatasetNode = (dataset: KnowledgeBase) => {
   selectedType.value = 'dataset'
-  selectedId.value = dataset.ragflow_dataset_id || dataset.id || ''
+  const dsId = dataset.ragflow_dataset_id || dataset.id || ''
+  selectedId.value = dsId
   selectedDataset.value = dataset
   selectedDocument.value = null
   toggleDatasetExpand(dataset, true)
+  if (dsId) {
+    fetchDatasetPermissions(dsId)
+  }
 }
 
 // 选中文档节点
@@ -293,11 +331,11 @@ const selectDocumentNode = (doc: KnowledgeDocument, dataset: KnowledgeBase) => {
   selectedDocument.value = doc
   const dsId = dataset.ragflow_dataset_id || dataset.id || ''
   const status = getDocStatus(doc)
-    if (dsId && (status === 'parsing' || parsingDocIds.value[doc.id])) {
+  if (dsId && (status === 'parsing' || parsingDocIds.value[doc.id])) {
     if (!parsingDocIds.value[doc.id]) {
       parsingDocIds.value = { ...parsingDocIds.value, [doc.id]: true }
     }
-    startParseStatusPolling(dsId, doc.id)
+    checkAndStartDatasetPolling(dsId)
   }
 }
 
@@ -411,16 +449,50 @@ const updateMetadata = async () => {
   }
 }
 
+const triggerDeleteDataset = (dataset: KnowledgeBase) => {
+  deletingDataset.value = dataset
+  const dsId = dataset.ragflow_dataset_id || dataset.id
+  if (dsId) {
+    // 异步静默拉取该知识库的最新授权记录，以便在确认弹窗中即时呈现正确的同步警告
+    fetchDatasetPermissions(dsId)
+  }
+}
+
+const deleteDatasetMessage = computed(() => {
+  if (!deletingDataset.value) return ''
+  const name = deletingDataset.value.platform_name || deletingDataset.value.name
+  
+  // 检查当前拉取出来的 datasetPermissions 中是否有授权角色或用户
+  const hasPerms = datasetPermissions.value.users?.length > 0 || datasetPermissions.value.roles?.length > 0
+  
+  if (deletingDataset.value.is_missing_in_ragflow) {
+    let baseMsg = '检测到该知识库已在 RAGFlow 端不存在或已被物理删除，确定清理云枢平台本地残留的相关配置和元数据信息吗？'
+    if (hasPerms) {
+      baseMsg += '（⚠️ 该知识库当前已授权的角色/用户访问权限关系也将被同步清除）'
+    }
+    return baseMsg
+  } else {
+    let baseMsg = `确定真实删除知识库「${name}」吗？RAGFlow 侧相应集群数据也将同步卸载，此操作不可逆。`
+    if (hasPerms) {
+      baseMsg += '（⚠️ 注意：该知识库当前已授权给角色/用户，删除后系统关联的全部授权记录将被同步擦除清理）'
+    }
+    return baseMsg
+  }
+})
+
 const confirmDeleteDataset = async () => {
-  if (!isEngineReady.value) {
+  // 如果当前删除的是在 RAGFlow 中已失效的配置，允许跳过引擎连接校验直接清理
+  if (!isEngineReady.value && !deletingDataset.value?.is_missing_in_ragflow) {
     showToast('知识库引擎未连接，暂不能删除知识库', 'warning')
     return
   }
   if (!deletingDataset.value) return
+  deleting.value = true
   try {
     const id = deletingDataset.value.ragflow_dataset_id || deletingDataset.value.id
+    const isMissing = deletingDataset.value.is_missing_in_ragflow
     await axios.delete('/api/portal/ragflow/datasets', { data: { ids: [id] } })
-    showToast('知识库已删除', 'success')
+    showToast(isMissing ? '本地失效配置已清理' : '知识库已删除', 'success')
     
     const deletedId = id
     deletingDataset.value = null
@@ -436,12 +508,18 @@ const confirmDeleteDataset = async () => {
     await fetchDatasets()
   } catch (err) {
     showToast(extractError(err), 'error')
+  } finally {
+    deleting.value = false
   }
 }
 
 const onFileChange = (event: Event) => {
   const input = event.target as HTMLInputElement
-  uploadFile.value = input.files?.[0] || null
+  if (input.files) {
+    const files = Array.from(input.files)
+    const newFiles = files.filter(f => !uploadFiles.value.some(existing => existing.name === f.name && existing.size === f.size))
+    uploadFiles.value = [...uploadFiles.value, ...newFiles]
+  }
 }
 
 const uploadDocument = async () => {
@@ -449,21 +527,61 @@ const uploadDocument = async () => {
     showToast('知识库引擎未连接，暂不能上传文档', 'warning')
     return
   }
-  if (!uploadFile.value || !selectedDatasetId.value) {
-    showToast('请选择要上传的文件', 'warning')
+  if (uploadFiles.value.length === 0 || !selectedDatasetId.value) {
+    showToast('请先选择要上传的文件', 'warning')
     return
   }
-  const payload = new FormData()
-  payload.append('file', uploadFile.value)
-  try {
-    await axios.post(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/documents/upload`, payload)
-    showToast('文档上传成功，请在右侧或文档节点中触发解析', 'success')
-    uploadFile.value = null
-    // 重新获取该知识库下的文档
-    await fetchDocumentsForDataset(selectedDatasetId.value)
-  } catch (err) {
-    showToast(extractError(err), 'error')
+  uploading.value = true
+  
+  const total = uploadFiles.value.length
+  let successCount = 0
+  let failCount = 0
+  
+  for (let i = 0; i < total; i++) {
+    const file = uploadFiles.value[i]
+    if (!file) continue
+    uploadProgressText.value = `正在上传并解析: ${i + 1} / ${total} (${file.name})`
+    
+    const payload = new FormData()
+    payload.append('file', file)
+    
+    try {
+      const response = await axios.post(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/documents/upload`, payload)
+      const resData = response.data?.data || {}
+      const docId = resData.id
+      
+      if (docId) {
+        parsingDocIds.value = { ...parsingDocIds.value, [docId]: true }
+        try {
+          await axios.post(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/documents/parse`, {
+            ids: [docId]
+          })
+        } catch (parseErr) {
+          const nextParsing = { ...parsingDocIds.value }
+          delete nextParsing[docId]
+          parsingDocIds.value = nextParsing
+          console.error(`文档 ${file.name} 自动解析失败:`, parseErr)
+        }
+      }
+      successCount++
+    } catch (err) {
+      failCount++
+      console.error(`文档 ${file.name} 上传失败:`, err)
+    }
   }
+  
+  if (failCount === 0) {
+    showToast(`成功批量上传并触发解析了 ${successCount} 个文档`, 'success')
+  } else if (successCount > 0) {
+    showToast(`批量上传完成：成功 ${successCount} 个，失败 ${failCount} 个`, 'warning')
+  } else {
+    showToast('全部文档上传失败，请检查网络或知识库配置', 'error')
+  }
+  
+  clearAllUploadFiles()
+  await fetchDocumentsForDataset(selectedDatasetId.value)
+  uploading.value = false
+  uploadProgressText.value = ''
 }
 
 const confirmDeleteDocument = async () => {
@@ -472,6 +590,7 @@ const confirmDeleteDocument = async () => {
     return
   }
   if (!deletingDocument.value || !selectedDatasetId.value) return
+  deleting.value = true
   try {
     const docId = deletingDocument.value.id
     await axios.delete(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/documents`, {
@@ -491,19 +610,97 @@ const confirmDeleteDocument = async () => {
     await fetchDocumentsForDataset(selectedDatasetId.value)
   } catch (err) {
     showToast(extractError(err), 'error')
+  } finally {
+    deleting.value = false
   }
 }
 
 /** 已触发解析、等待 RAGFlow 返回终态（防重复点击） */
 const parsingDocIds = ref<Record<string, boolean>>({})
-const parsePollTimers = new Map<string, ReturnType<typeof setInterval>>()
 
-const syncSelectedDocumentFromMap = (dsId: string, docId: string) => {
-  const updatedDoc = (documentsMap.value[dsId] || []).find(d => d.id === docId)
-  if (updatedDoc && selectedDocument.value?.id === docId) {
-    selectedDocument.value = updatedDoc
+// 基于知识库维度的自适应渐进退避轮询机制
+const datasetPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const datasetPollCounts = new Map<string, number>()
+
+const stopDatasetPolling = (dsId: string) => {
+  const timer = datasetPollTimers.get(dsId)
+  if (timer) {
+    clearTimeout(timer)
+    datasetPollTimers.delete(dsId)
   }
-  return updatedDoc
+  datasetPollCounts.delete(dsId)
+}
+
+const checkAndStartDatasetPolling = (dsId: string) => {
+  const docs = documentsMap.value[dsId] || []
+  const hasParsing = docs.some(d => getDocStatus(d) === 'parsing')
+  
+  if (hasParsing) {
+    startDatasetStatusPolling(dsId)
+  } else {
+    stopDatasetPolling(dsId)
+  }
+}
+
+const startDatasetStatusPolling = (dsId: string) => {
+  if (datasetPollTimers.has(dsId)) return
+  datasetPollCounts.set(dsId, 0)
+  
+  const poll = async () => {
+    let count = datasetPollCounts.get(dsId) || 0
+    count += 1
+    datasetPollCounts.set(dsId, count)
+    
+    try {
+      await fetchDocumentsForDataset(dsId)
+      
+      // 同步当前选中的文档详情信息
+      const currentDocument = selectedDocument.value
+      if (currentDocument && selectedDatasetId.value === dsId) {
+        const updatedDoc = (documentsMap.value[dsId] || []).find(d => d.id === currentDocument.id)
+        if (updatedDoc) {
+          selectedDocument.value = updatedDoc
+        }
+      }
+      
+      const docs = documentsMap.value[dsId] || []
+      const stillHasParsing = docs.some(d => getDocStatus(d) === 'parsing')
+      
+      if (!stillHasParsing) {
+        stopDatasetPolling(dsId)
+        return
+      }
+      
+      const maxPolls = 60 // 约 5-6 分钟
+      if (count >= maxPolls) {
+        stopDatasetPolling(dsId)
+        showToast('文档解析状态轮询超时，请手动刷新查看', 'warning')
+        return
+      }
+      
+      // 自适应渐进退避间隔：1~5次3秒，6~20次6秒，21次以上15秒
+      let interval = 3000
+      if (count > 20) {
+        interval = 15000
+      } else if (count > 5) {
+        interval = 6000
+      }
+      
+      const timer = setTimeout(poll, interval)
+      datasetPollTimers.set(dsId, timer)
+    } catch {
+      const maxPolls = 60
+      if (count >= maxPolls) {
+        stopDatasetPolling(dsId)
+      } else {
+        const timer = setTimeout(poll, 10000)
+        datasetPollTimers.set(dsId, timer)
+      }
+    }
+  }
+  
+  const timer = setTimeout(poll, 3000)
+  datasetPollTimers.set(dsId, timer)
 }
 
 const isDocParsing = (doc?: KnowledgeDocument | null) => {
@@ -516,56 +713,6 @@ const isDocParsing = (doc?: KnowledgeDocument | null) => {
 const isParseButtonDisabled = (doc?: KnowledgeDocument | null) => {
   if (!isEngineReady.value || !doc) return true
   return isDocParsing(doc)
-}
-
-const stopParsePolling = (docId: string) => {
-  const timer = parsePollTimers.get(docId)
-  if (timer) {
-    clearInterval(timer)
-    parsePollTimers.delete(docId)
-  }
-}
-
-const unmarkDocParsing = (docId: string) => {
-  stopParsePolling(docId)
-  if (!parsingDocIds.value[docId]) return
-  const next = { ...parsingDocIds.value }
-  delete next[docId]
-  parsingDocIds.value = next
-}
-
-const startParseStatusPolling = (dsId: string, docId: string) => {
-  stopParsePolling(docId)
-  let seenParsing = false
-  let pollCount = 0
-  const maxPolls = 90 // ~3 分钟
-
-  const timer = setInterval(async () => {
-    pollCount += 1
-    try {
-      await fetchDocumentsForDataset(dsId)
-      const doc = syncSelectedDocumentFromMap(dsId, docId)
-      const status = getDocStatus(doc)
-      if (status === 'parsing') {
-        seenParsing = true
-      }
-      const terminal = status !== 'parsing'
-      if (terminal && (seenParsing || pollCount >= 2)) {
-        unmarkDocParsing(docId)
-        return
-      }
-      if (pollCount >= maxPolls) {
-        unmarkDocParsing(docId)
-        showToast('解析状态轮询超时，请手动刷新查看', 'warning')
-      }
-    } catch {
-      if (pollCount >= maxPolls) {
-        unmarkDocParsing(docId)
-      }
-    }
-  }, 2000)
-
-  parsePollTimers.set(docId, timer)
 }
 
 // 解析单个文档
@@ -589,12 +736,10 @@ const parseSingleDocument = async (docId: string) => {
     })
     showToast('解析任务已触发', 'success')
     await fetchDocumentsForDataset(dsId)
-    syncSelectedDocumentFromMap(dsId, docId)
-
-    // 轮询直到解析完成/失败（RAGFlow 状态切换可能有延迟）
-    startParseStatusPolling(dsId, docId)
   } catch (err) {
-    unmarkDocParsing(docId)
+    const nextParsing = { ...parsingDocIds.value }
+    delete nextParsing[docId]
+    parsingDocIds.value = nextParsing
     showToast(extractError(err), 'error')
   }
 }
@@ -630,19 +775,24 @@ const canViewChunks = (dataset?: KnowledgeBase | null) => {
 
 const getDocStatus = (doc: any) => {
   if (!doc) return 'unparsed'
-  // RAGFlow returns parsing status in the 'run' field:
-  // "0": unparsed, "1": completed/parsed, "2": parsing, "3": failed
-  const run = String(doc.run ?? '')
-  if (run === '1') return 'parsed'
-  if (run === '2') return 'parsing'
-  if (run === '3') return 'failed'
-  if (run === '0') return 'unparsed'
   
-  // Fallback to doc.status if run is not available
-  const status = String(doc.status ?? '')
-  if (status === 'completed' || status === 'parsed' || status === '1') return 'parsed'
-  if (status === 'running' || status === 'parsing' || status === '2') return 'parsing'
-  if (status === 'failed' || status === '3') return 'failed'
+  // RAGFlow returns parsing status in the 'run' field:
+  // "0" / "UNSTART": unparsed, "1" / "DONE": completed/parsed, "2" / "RUNNING": parsing, "3" / "FAIL": failed
+  const run = String(doc.run ?? '').toUpperCase()
+  if (run === 'RUNNING' || run === '2') return 'parsing'
+  if (run === 'DONE' || run === '1') return 'parsed'
+  if (run === 'FAIL' || run === '3') return 'failed'
+  if (run === 'UNSTART' || run === '0') return 'unparsed'
+  
+  // Fallback to doc.status only if run is completely unavailable
+  if (doc.run === undefined || doc.run === null) {
+    const status = String(doc.status ?? '').toUpperCase()
+    // Note: status '1' in RAGFlow means file is active/enabled. DO NOT map '1' or '0' to parsing status here!
+    if (status === 'COMPLETED' || status === 'PARSED') return 'parsed'
+    if (status === 'RUNNING' || status === 'PARSING') return 'parsing'
+    if (status === 'FAILED') return 'failed'
+  }
+  
   return 'unparsed'
 }
 
@@ -703,10 +853,112 @@ const fetchChunks = async () => {
     loadingChunks.value = false
   }
 }
+const uploading = ref(false)
+const uploadProgressText = ref('')
+const isDragOver = ref(false)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const uploadFiles = ref<File[]>([])
+
+const triggerFileSelect = () => {
+  if (uploading.value) return
+  fileInputRef.value?.click()
+}
+
+const clearAllUploadFiles = () => {
+  uploadFiles.value = []
+  if (fileInputRef.value) {
+    fileInputRef.value.value = ''
+  }
+}
+
+const removeUploadFile = (index: number) => {
+  uploadFiles.value.splice(index, 1)
+  if (uploadFiles.value.length === 0 && fileInputRef.value) {
+    fileInputRef.value.value = ''
+  }
+}
+
+const onFileDrop = (e: DragEvent) => {
+  isDragOver.value = false
+  if (uploading.value) return
+  const files = e.dataTransfer?.files
+  if (files && files.length > 0) {
+    const fileList = Array.from(files)
+    const newFiles = fileList.filter(f => !uploadFiles.value.some(existing => existing.name === f.name && existing.size === f.size))
+    uploadFiles.value = [...uploadFiles.value, ...newFiles]
+  }
+}
+
+const getFileExtension = (filename: string) => {
+  if (!filename) return 'FILE'
+  const idx = filename.lastIndexOf('.')
+  return idx !== -1 ? filename.slice(idx + 1).toLowerCase() : 'FILE'
+}
+
+const getFileIconClass = (filename: string) => {
+  const ext = getFileExtension(filename)
+  switch (ext) {
+    case 'pdf': return 'bg-red-500 shadow-[0_0_4px_#ef4444]'
+    case 'doc':
+    case 'docx': return 'bg-blue-500 shadow-[0_0_4px_#3b82f6]'
+    case 'xls':
+    case 'xlsx': return 'bg-emerald-500 shadow-[0_0_4px_#10b981]'
+    case 'ppt':
+    case 'pptx': return 'bg-orange-500 shadow-[0_0_4px_#f97316]'
+    case 'txt':
+    case 'md': return 'bg-gray-500 shadow-[0_0_4px_#6b7280]'
+    default: return 'bg-primary shadow-[0_0_4px_#1e40af]'
+  }
+}
+
+const formatFileSize = (bytes: number) => {
+  if (bytes === 0) return '0 Bytes'
+  const k = 1024
+  const sizes = ['Bytes', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+const deleting = ref(false)
+const refreshingDocs = ref(false)
+const handleManualRefreshDocs = async () => {
+  const dsId = selectedDataset.value?.ragflow_dataset_id || selectedDataset.value?.id
+  if (!dsId) return
+  refreshingDocs.value = true
+  try {
+    await fetchDocumentsForDataset(dsId)
+    showToast('已刷新当前文档列表及状态', 'success')
+  } catch (err) {
+    showToast(extractError(err), 'error')
+  } finally {
+    refreshingDocs.value = false
+  }
+}
+
+const reparsingDocId = ref('')
+const handleReparseDocument = async (doc: any) => {
+  if (!isEngineReady.value) {
+    showToast('知识库引擎未连接，暂不能重新解析', 'warning')
+    return
+  }
+  reparsingDocId.value = doc.id
+  try {
+    await axios.post(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/documents/parse`, {
+      ids: [doc.id]
+    })
+    showToast('已重新触发该文档的解析任务', 'success')
+    parsingDocIds.value = { ...parsingDocIds.value, [doc.id]: true }
+    await fetchDocumentsForDataset(selectedDatasetId.value)
+  } catch (err) {
+    showToast(extractError(err), 'error')
+  } finally {
+    reparsingDocId.value = ''
+  }
+}
 
 onUnmounted(() => {
-  for (const docId of parsePollTimers.keys()) {
-    unmarkDocParsing(docId)
+  for (const dsId of datasetPollTimers.keys()) {
+    stopDatasetPolling(dsId)
   }
 })
 
@@ -876,13 +1128,13 @@ onMounted(async () => {
                   <!-- Display doc count -->
                   <span
                     v-if="!dataset.is_missing_in_ragflow"
-                    class="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-semibold"
+                    class="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-semibold group-hover:hidden transition-all duration-150"
                   >
                     {{ dataset.doc_count ?? dataset.document_count ?? 0 }}
                   </span>
                   <span
                     v-else
-                    class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700"
+                    class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 group-hover:hidden transition-all duration-150"
                   >
                     失联
                   </span>
@@ -903,7 +1155,7 @@ onMounted(async () => {
                       v-if="canDelete && !isReadOnlyDataset(dataset)"
                       class="p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all bg-inherit"
                       title="删除知识库"
-                      @click.stop="deletingDataset = dataset"
+                      @click.stop="triggerDeleteDataset(dataset)"
                     >
                       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -954,7 +1206,7 @@ onMounted(async () => {
                     <div class="flex items-center gap-2 shrink-0 min-w-[12px] justify-end">
                       <!-- Status indicators -->
                       <span
-                        class="w-1.5 h-1.5 rounded-full shrink-0 transition-all"
+                        class="w-1.5 h-1.5 rounded-full shrink-0 transition-all group-hover/doc:hidden"
                         :class="{
                           'bg-emerald-500 shadow-[0_0_4px_#10b981]': getDocStatus(doc) === 'parsed',
                           'bg-amber-500 animate-pulse shadow-[0_0_4px_#f59e0b]': getDocStatus(doc) === 'parsing',
@@ -999,16 +1251,36 @@ onMounted(async () => {
               </div>
               <p class="text-sm text-gray-500 mt-1.5">{{ selectedDataset.platform_description || selectedDataset.description || '暂无对该知识库的描述' }}</p>
             </div>
-            <button
-              v-if="canEdit && !isReadOnlyDataset(selectedDataset)"
-              class="px-4 py-2 text-sm font-medium border border-gray-200 rounded-xl hover:bg-gray-50 transition-all flex items-center gap-1.5 shrink-0"
-              @click="openEdit(selectedDataset)"
-            >
-              <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-              </svg>
-              编辑元数据
-            </button>
+            <div class="flex items-center gap-2 shrink-0">
+              <button
+                v-if="!selectedDataset.is_missing_in_ragflow"
+                class="p-2 border border-gray-200 rounded-xl hover:bg-gray-50 transition-all flex items-center justify-center text-gray-500 hover:text-primary hover:border-primary/30 shrink-0"
+                title="刷新文档及状态"
+                :disabled="refreshingDocs"
+                @click="handleManualRefreshDocs"
+              >
+                <svg 
+                  class="w-4 h-4" 
+                  :class="{ 'animate-spin': refreshingDocs }" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+              </button>
+              <button
+                v-if="canEdit && !isReadOnlyDataset(selectedDataset)"
+                class="px-4 py-2 text-sm font-medium border border-gray-200 rounded-xl hover:bg-gray-50 transition-all flex items-center gap-1.5"
+                @click="openEdit(selectedDataset)"
+              >
+                <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                编辑元数据
+              </button>
+            </div>
           </div>
 
           <!-- RAG Parameters cards grid -->
@@ -1066,34 +1338,185 @@ onMounted(async () => {
             </div>
           </div>
 
+          <!-- 权限分配说明卡片 -->
+          <div class="space-y-2 bg-gray-50/20 p-4 rounded-xl border border-gray-150">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider select-none">系统授权分配详情</h3>
+              <span v-if="loadingPermissions" class="text-xs text-gray-400 animate-pulse flex items-center gap-1 select-none">
+                <span class="w-2.5 h-2.5 rounded-full border border-gray-300 border-t-transparent animate-spin"></span>
+                正在读取权限分配...
+              </span>
+            </div>
+            
+            <div class="text-xs space-y-3 mt-1.5">
+              <!-- 可见性基本说明 -->
+              <p class="text-gray-500 leading-normal select-none">
+                公开级别为 
+                <span class="font-bold text-gray-800 uppercase px-1.5 py-0.5 rounded bg-gray-100 text-[10px]">{{ selectedDataset.visibility || 'Private' }}</span>。
+                <span v-if="selectedDataset.visibility === 'public'">此知识库全平台公开，所有配置该权限的角色或平台用户均有权进行检索。</span>
+                <span v-else-if="selectedDataset.visibility === 'team'">此知识库部门公开，创建者、系统管理员以及业务归属部门（{{ selectedDataset.owner || '未指派' }}）的用户有权访问。</span>
+                <span v-else>此知识库为私有，仅创建者、系统管理员以及下方被额外明确指派了权限的角色/用户有权进行访问。</span>
+              </p>
+
+              <!-- 被指派的用户/角色列表 -->
+              <div v-if="!loadingPermissions && (datasetPermissions.users.length || datasetPermissions.roles.length)" class="flex flex-col gap-2.5 pt-2 border-t border-gray-100">
+                <div v-if="datasetPermissions.roles.length" class="flex items-start gap-2">
+                  <span class="text-gray-400 font-medium shrink-0 mt-0.5 select-none">授权角色:</span>
+                  <div class="flex flex-wrap gap-1.5">
+                    <span 
+                      v-for="r in datasetPermissions.roles" 
+                      :key="r.code"
+                      class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100/50 flex items-center gap-1 select-none"
+                    >
+                      <svg class="w-3 h-3 text-blue-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.257l4-1.714a1 1 0 11.788 1.838L7.667 9.088l1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.838l-7-3zM3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762zM9.3 16.573A9.026 9.026 0 007 14.935v-3.957l1.818.78a3 3 0 002.364 0l5.508-2.361a11.026 11.026 0 01.25 3.762 1 1 0 01-.89.89 8.968 8.968 0 00-5.35 2.524 1 1 0 01-1.4 0z" />
+                      </svg>
+                      {{ r.name }} ({{ r.code }})
+                    </span>
+                  </div>
+                </div>
+                
+                <div v-if="datasetPermissions.users.length" class="flex items-start gap-2">
+                  <span class="text-gray-400 font-medium shrink-0 mt-0.5 select-none">授权用户:</span>
+                  <div class="flex flex-wrap gap-1.5">
+                    <span 
+                      v-for="u in datasetPermissions.users" 
+                      :key="u.user_name"
+                      class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold border border-emerald-100/50 flex items-center gap-1 select-none"
+                    >
+                      <svg class="w-3 h-3 text-emerald-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
+                      </svg>
+                      {{ u.real_name || u.user_name }} ({{ u.user_name }})
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <div v-else-if="!loadingPermissions" class="text-gray-400 italic pt-2 border-t border-gray-100 select-none">
+                未分配额外的用户或角色角色访问权限。
+              </div>
+            </div>
+          </div>
+
           <!-- Document Upload Region -->
           <div class="space-y-3">
             <h3 class="text-sm font-semibold text-gray-800">上传新文档到此知识库</h3>
             <div
               v-if="canUpload && !selectedDataset.is_missing_in_ragflow && !isReadOnlyDataset(selectedDataset)"
-              class="border-2 border-dashed border-gray-300 hover:border-primary rounded-2xl p-6 transition-all flex flex-col items-center justify-center bg-gray-50/30 group"
+              class="border-2 border-dashed rounded-2xl p-6 transition-all duration-300 flex flex-col items-center justify-center bg-gray-50/30 group relative overflow-hidden"
+              :class="[
+                isDragOver ? 'border-primary bg-primary/5 scale-[1.01]' : 'border-gray-300 hover:border-primary',
+                uploading ? 'pointer-events-none' : ''
+              ]"
+              @dragover.prevent="isDragOver = true"
+              @dragleave.prevent="isDragOver = false"
+              @drop.prevent="onFileDrop"
             >
-              <svg class="w-10 h-10 text-gray-400 group-hover:text-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-              </svg>
+              <!-- 隐藏的真实多文件输入框 -->
               <input
+                ref="fileInputRef"
                 type="file"
-                class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 file:cursor-pointer mt-4"
-                :disabled="!isEngineReady"
+                multiple
+                class="hidden"
+                accept=".pdf,.docx,.doc,.txt,.csv,.xlsx,.xls,.pptx,.ppt,.md"
+                :disabled="uploading || !isEngineReady"
                 @change="onFileChange"
               />
-              <div class="flex items-center gap-3 mt-4 w-full max-w-xs">
-                <button
-                  class="w-full px-4 py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold shadow hover:bg-gray-800 transition-all disabled:opacity-50"
-                  :disabled="!uploadFile || !isEngineReady"
-                  @click="uploadDocument"
-                >
-                  上传至服务器
-                </button>
+
+              <!-- 上传中全局模糊遮罩 -->
+              <div
+                v-if="uploading"
+                class="absolute inset-0 bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center rounded-2xl transition-all duration-300 z-10 p-4"
+              >
+                <span class="w-9 h-9 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
+                <p class="text-xs font-bold text-gray-800 mt-4 text-center animate-pulse leading-relaxed">
+                  {{ uploadProgressText || '正在上传文件，请稍候...' }}
+                </p>
               </div>
-              <p class="text-xs text-gray-400 mt-2">支持 PDF, DOCX, TXT 等任意结构化文档，上传后可在左侧树节点展开管理和手动解析。</p>
+
+              <!-- 1. 未选择文件时的引导界面 -->
+              <div 
+                v-if="uploadFiles.length === 0"
+                class="w-full flex flex-col items-center justify-center py-5 cursor-pointer select-none"
+                @click="triggerFileSelect"
+              >
+                <div class="w-12 h-12 rounded-full bg-primary/5 flex items-center justify-center text-primary group-hover:scale-110 transition-transform duration-300">
+                  <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                </div>
+                <p class="text-sm font-medium text-gray-700 mt-3">
+                  将一个或多个文件拖拽至此处，或 <span class="text-primary hover:underline font-semibold">点击上传</span>
+                </p>
+                <p class="text-xs text-gray-400 mt-1.5">支持多文件上传，类型包含 PDF, DOCX, TXT, MD, XLSX 等</p>
+              </div>
+
+              <!-- 2. 已选择文件时的批量卡片队列展示 -->
+              <div v-else class="w-full space-y-4">
+                <div class="flex items-center justify-between text-xs text-gray-400 border-b pb-2 select-none">
+                  <span>待上传队列 ({{ uploadFiles.length }} 个文件)</span>
+                  <button class="text-red-500 hover:underline font-semibold" @click="clearAllUploadFiles">清空全部</button>
+                </div>
+                
+                <!-- 待上传文件滚动卡片容器 -->
+                <div class="max-h-[160px] overflow-y-auto pr-1 space-y-2 custom-scrollbar">
+                  <div 
+                    v-for="(f, fIdx) in uploadFiles" 
+                    :key="fIdx"
+                    class="flex items-center gap-3 p-2.5 bg-white rounded-xl border border-gray-150 shadow-sm relative group/card"
+                  >
+                    <!-- 文件后缀高亮块 -->
+                    <div 
+                      class="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 font-bold text-[9px] uppercase select-none"
+                      :class="getFileIconClass(f.name)"
+                    >
+                      {{ getFileExtension(f.name) }}
+                    </div>
+                    <!-- 文件名与大小 -->
+                    <div class="flex-1 min-w-0">
+                      <p class="text-xs font-semibold text-gray-800 truncate" :title="f.name">
+                        {{ f.name }}
+                      </p>
+                      <p class="text-[10px] text-gray-400 mt-0.5 select-none">
+                        {{ formatFileSize(f.size) }}
+                      </p>
+                    </div>
+                    <!-- 移出队列按钮 -->
+                    <button 
+                      class="p-1 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                      title="移出队列"
+                      @click="removeUploadFile(fIdx)"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 动作按钮区 -->
+                <div class="flex items-center justify-center gap-3 pt-2">
+                  <button
+                    class="px-4 py-2 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-600 text-xs font-semibold transition-all"
+                    @click="triggerFileSelect"
+                  >
+                    继续添加文件
+                  </button>
+                  <button
+                    class="px-5 py-2 rounded-xl bg-primary hover:bg-primary/90 text-white text-xs font-semibold shadow-md shadow-primary/10 hover:shadow-lg transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    :disabled="uploading || !isEngineReady"
+                    @click="uploadDocument"
+                  >
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    <span>确认批量上传解析</span>
+                  </button>
+                </div>
+              </div>
             </div>
-            <div v-else class="rounded-xl bg-gray-50/50 p-4 border text-center text-sm text-gray-400">
+            <div v-else class="rounded-xl bg-gray-50/50 p-4 border text-center text-sm text-gray-400 select-none">
               <span v-if="isReadOnlyDataset(selectedDataset)" class="text-amber-600 font-medium">⚠️ 只读模式：您不是该知识库的创建人，仅可查看，不可修改或上传文档</span>
               <span v-else>当前状态无法向知识库上传文档（可能由于 RAGFlow 失联或权限受限）</span>
             </div>
@@ -1201,6 +1624,97 @@ onMounted(async () => {
             <div class="bg-gray-50/50 p-4 rounded-xl border border-gray-150">
               <span class="text-xs text-gray-400 font-semibold uppercase tracking-wider block">上传及最后更新时间</span>
               <span class="text-sm font-bold text-gray-800 mt-2.5 block truncate">{{ formatTime(selectedDocument.update_time || selectedDocument.created_at) }}</span>
+            </div>
+          </div>
+
+          <!-- RAG 解析状态诊断看板 -->
+          <div 
+            v-if="selectedDocument"
+            class="p-4 rounded-xl border select-none"
+            :class="{
+              'bg-blue-50/20 border-blue-100': getDocStatus(selectedDocument) === 'parsing',
+              'bg-red-50/20 border-red-100': getDocStatus(selectedDocument) === 'failed',
+              'bg-emerald-50/20 border-emerald-100': getDocStatus(selectedDocument) === 'parsed',
+              'bg-gray-50/30 border-gray-150': getDocStatus(selectedDocument) === 'unparsed'
+            }"
+          >
+            <div class="flex items-start justify-between gap-4">
+              <div class="space-y-1.5 flex-1 min-w-0">
+                <span class="text-xs font-bold uppercase tracking-wider block" :class="{
+                  'text-blue-600': getDocStatus(selectedDocument) === 'parsing',
+                  'text-red-600': getDocStatus(selectedDocument) === 'failed',
+                  'text-emerald-600': getDocStatus(selectedDocument) === 'parsed',
+                  'text-gray-400': getDocStatus(selectedDocument) === 'unparsed'
+                }">
+                  RAG 解析状态诊断
+                </span>
+                
+                <!-- 解析中：显示进度条 -->
+                <div v-if="getDocStatus(selectedDocument) === 'parsing'" class="space-y-2 mt-2">
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="text-gray-500 font-medium">切片构建进度：</span>
+                    <span class="font-bold text-blue-600">{{ ((selectedDocument.progress ?? 0) * 100).toFixed(1) }}%</span>
+                  </div>
+                  <div class="w-full bg-blue-100/50 rounded-full h-2 overflow-hidden">
+                    <div 
+                      class="bg-blue-500 h-2 rounded-full transition-all duration-500 ease-out"
+                      :style="{ width: `${Math.min(100, (selectedDocument.progress ?? 0) * 100)}%` }"
+                    ></div>
+                  </div>
+                  <p class="text-[11px] text-blue-500/80 font-mono italic mt-1.5 truncate" :title="selectedDocument.progress_msg">
+                    实时状态: {{ selectedDocument.progress_msg || '正在启动解析器...' }}
+                  </p>
+                </div>
+
+                <!-- 解析失败：显示红字报错 -->
+                <div v-else-if="getDocStatus(selectedDocument) === 'failed'" class="space-y-1.5 mt-2">
+                  <div class="flex items-start gap-1.5 text-xs text-red-600 bg-red-50/50 p-2.5 rounded-lg border border-red-100/30">
+                    <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <div class="break-all font-mono leading-normal">
+                      <strong>解析失败原因：</strong>
+                      {{ selectedDocument.progress_msg || '未知外部切片解析故障。请确保文件可读且非加密 PDF。' }}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 解析完成 -->
+                <div v-else-if="getDocStatus(selectedDocument) === 'parsed'" class="text-xs text-emerald-600/80 mt-2 flex items-center gap-1.5">
+                  <svg class="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>该文档已顺利完成切片构建与向量化，当前可提供高质量的语义召回服务。</span>
+                </div>
+
+                <!-- 未解析 -->
+                <div v-else class="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
+                  <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span>文档处于就绪态，尚未执行分块解析。请点击上方按钮触发解析。</span>
+                </div>
+              </div>
+
+              <!-- 右侧独立控制：失败时的一键重新解析 -->
+              <div v-if="getDocStatus(selectedDocument) === 'failed' && !isReadOnlyDataset(selectedDataset)" class="shrink-0 self-center">
+                <button
+                  class="px-3 py-1.5 rounded-lg border border-red-200 hover:border-red-300 bg-white hover:bg-red-50 text-red-600 hover:text-red-700 text-xs font-semibold shadow-sm transition-all flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                  :disabled="reparsingDocId === selectedDocument.id || !isEngineReady"
+                  @click="handleReparseDocument(selectedDocument)"
+                >
+                  <svg 
+                    class="w-3.5 h-3.5" 
+                    :class="{ 'animate-spin': reparsingDocId === selectedDocument.id }"
+                    fill="none" 
+                    stroke="currentColor" 
+                    viewBox="0 0 24 24"
+                  >
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 15H18" />
+                  </svg>
+                  <span>重新解析</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1338,9 +1852,10 @@ onMounted(async () => {
     <!-- Confirm delete modals -->
     <ConfirmModal
       v-if="deletingDataset"
-      title="删除知识库"
-      :message="`确定真实删除知识库「${deletingDataset.platform_name || deletingDataset.name}」吗？RAGFlow 侧相应集群数据也将同步卸载，此操作不可逆。`"
-      confirm-text="确认物理删除"
+      :title="deletingDataset.is_missing_in_ragflow ? '清理失效残留配置' : '删除知识库'"
+      :message="deleteDatasetMessage"
+      :confirm-text="deletingDataset.is_missing_in_ragflow ? '确认清理残留配置' : '确认物理删除'"
+      :loading="deleting"
       @confirm="confirmDeleteDataset"
       @cancel="deletingDataset = null"
     />
@@ -1349,6 +1864,7 @@ onMounted(async () => {
       title="删除文档"
       :message="`确定从当前知识库中删除文档「${deletingDocument.name || deletingDocument.id}」吗？已解析的 Vector Chunks 数据将同步清空，此操作不可逆。`"
       confirm-text="确认删除"
+      :loading="deleting"
       @confirm="confirmDeleteDocument"
       @cancel="deletingDocument = null"
     />

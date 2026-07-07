@@ -248,11 +248,48 @@ class RagFlowClient:
         """List chunks of a document"""
         await self._ensure_config()
         url = f"{self.base_url}/api/v1/datasets/{dataset_id}/documents/{document_id}/chunks"
-        params = {"page": page, "page_size": page_size}
         
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, headers=self._get_headers(), params=params)
-            return await self._handle_response(resp, "List Chunks")
+        # RAGFlow limits page_size to <= 100. If larger, we fetch multiple pages of max size 100
+        if page_size <= 100:
+            params = {"page": page, "page_size": page_size}
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(url, headers=self._get_headers(), params=params)
+                return await self._handle_response(resp, "List Chunks")
+        else:
+            merged_chunks = []
+            doc_meta = {}
+            start_offset = (page - 1) * page_size
+            end_offset = start_offset + page_size
+            
+            ragflow_page_size = 100
+            start_page = (start_offset // ragflow_page_size) + 1
+            end_page = ((end_offset - 1) // ragflow_page_size) + 1
+            
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                for p in range(start_page, end_page + 1):
+                    params = {"page": p, "page_size": ragflow_page_size}
+                    resp = await client.get(url, headers=self._get_headers(), params=params)
+                    data = await self._handle_response(resp, f"List Chunks Page {p}")
+                    
+                    if isinstance(data, dict):
+                        page_chunks = data.get("chunks") or []
+                        if not doc_meta and "doc" in data:
+                            doc_meta = data["doc"]
+                    else:
+                        page_chunks = []
+                        
+                    if not page_chunks:
+                        break
+                    merged_chunks.extend(page_chunks)
+                    if len(page_chunks) < ragflow_page_size:
+                        break
+            
+            slice_start = start_offset - (start_page - 1) * ragflow_page_size
+            slice_end = slice_start + page_size
+            return {
+                "chunks": merged_chunks[slice_start:slice_end],
+                "doc": doc_meta
+            }
 
     async def chat_stream(
         self, 

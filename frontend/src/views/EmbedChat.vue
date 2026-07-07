@@ -1584,6 +1584,7 @@
     <div
       v-if="showSaveReportModal"
       class="fixed inset-y-0 left-0 z-[250] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      :class="saveReportModalOverlayClass"
       :style="saveReportModalOverlayStyle"
       @click.self="showSaveReportModal = false"
     >
@@ -1681,6 +1682,7 @@
     <div
       v-if="showReportRunModal"
       class="fixed inset-y-0 left-0 z-[250] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      :class="saveReportModalOverlayClass"
       :style="saveReportModalOverlayStyle"
       @click.self="showReportRunModal = false"
     >
@@ -5566,6 +5568,9 @@ const saveReportModalOverlayStyle = computed(() => {
   const rem = pinnedDrawerRightRem.value;
   return { right: rem > 0 ? `${rem}rem` : "0" };
 });
+const saveReportModalOverlayClass = computed(() =>
+  showPortalDrawer.value && portalPinned.value ? 'right-[28rem]' : 'right-0'
+);
 
 const pinnedDrawerMarginStyle = computed(() => {
   const rem = pinnedDrawerRightRem.value;

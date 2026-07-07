@@ -395,7 +395,29 @@ async def delete_ragflow_datasets(
     client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
     try:
-        await client.delete_datasets(payload.ids)
+        # 获取当前 RAGFlow 侧的所有有效数据集，以防删除已不存在的知识库时报错
+        try:
+            ragflow_datasets = await client.list_datasets(page=1, page_size=500)
+            existing_ids = {str(ds.get("id")) for ds in ragflow_datasets if ds.get("id")}
+        except Exception:
+            # 列表获取失败时的安全降级兜底：假设所有传入 ID 都在 RAGFlow 侧存在
+            existing_ids = set(payload.ids)
+
+        to_delete_in_ragflow = [kb_id for kb_id in payload.ids if kb_id in existing_ids]
+
+        if to_delete_in_ragflow:
+            await client.delete_datasets(to_delete_in_ragflow)
+
+        # 同步删除相关用户和角色的 ResourcePermission 授权记录
+        from app.models.permission import ResourcePermission
+        from sqlalchemy import delete
+        await db.execute(
+            delete(ResourcePermission).where(
+                ResourcePermission.resource_type == "dataset",
+                ResourcePermission.resource_id.in_(payload.ids)
+            )
+        )
+
         await metadata_service.mark_deleted(payload.ids, user_name=user.get("user_name"))
         await record_knowledge_audit(request, user, "datasets:delete", 200, {
             "action": "delete_dataset",
@@ -581,3 +603,49 @@ async def retrieval_test(
             "query_summary": payload.query[:200],
         }, error_message=str(e), started_at=started)
         raise
+
+
+@router.get("/datasets/{dataset_id}/permissions")
+async def get_dataset_permissions(
+    dataset_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    获取指定知识库授权的所有用户和角色列表
+    """
+    from app.models.permission import ResourcePermission, Role
+    from app.models.user import User
+    from sqlalchemy import select
+
+    stmt = select(ResourcePermission).where(
+        ResourcePermission.resource_type == "dataset",
+        ResourcePermission.resource_id == dataset_id,
+        ResourcePermission.enabled == True
+    )
+    result = await db.execute(stmt)
+    perms = result.scalars().all()
+
+    user_ids = [p.user_id for p in perms if p.user_id is not None]
+    role_ids = [p.role_id for p in perms if p.role_id is not None]
+
+    granted_users = []
+    granted_roles = []
+
+    if user_ids:
+        user_stmt = select(User.user_name, User.real_name).where(User.id.in_(user_ids), User.status == 1)
+        user_res = await db.execute(user_stmt)
+        granted_users = [{"user_name": u.user_name, "real_name": u.real_name} for u in user_res.all()]
+
+    if role_ids:
+        role_stmt = select(Role.code, Role.name).where(Role.id.in_(role_ids))
+        role_res = await db.execute(role_stmt)
+        granted_roles = [{"code": r.code, "name": r.name} for r in role_res.all()]
+
+    return {
+        "code": 0,
+        "data": {
+            "users": granted_users,
+            "roles": granted_roles
+        }
+    }

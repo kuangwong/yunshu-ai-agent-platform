@@ -14,6 +14,8 @@ from app.schemas.metadata import (
     MetricSchema, MetricResponse,
     RelationshipSchema, RelationshipResponse
 )
+from app.models.user import User
+from app.models.permission import Role
 from app.core.dependencies import require_admin, get_current_user, require_permission
 from app.core.errors import ErrorCode
 from app.services.permission_service import PermissionService
@@ -69,6 +71,193 @@ async def get_dataset(
         raise HTTPException(status_code=404, detail="数据集不存在")
     await MetadataService.repair_stale_local_sync_flags([ds])
     return ds
+
+
+@router.get("/datasets/{dataset_id}/permissions")
+async def get_metadata_dataset_permissions(
+    dataset_id: int,
+    conn: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """获取元数据数据集授权的所有角色和用户列表"""
+    from app.models.permission import ResourcePermission, Role
+    from app.models.user import User
+    from sqlalchemy import select
+
+    stmt = select(ResourcePermission).where(
+        ResourcePermission.resource_type == "metadata",
+        ResourcePermission.resource_id == str(dataset_id),
+        ResourcePermission.enabled == True
+    )
+    result = await conn.execute(stmt)
+    perms = result.scalars().all()
+
+    user_ids = [p.user_id for p in perms if p.user_id is not None]
+    role_ids = [p.role_id for p in perms if p.role_id is not None]
+
+    granted_users = []
+    granted_roles = []
+
+    if user_ids:
+        user_stmt = select(User.user_name, User.real_name).where(User.id.in_(user_ids), User.status == 1)
+        user_res = await conn.execute(user_stmt)
+        granted_users = [{"user_name": u.user_name, "real_name": u.real_name} for u in user_res.all()]
+
+    if role_ids:
+        role_stmt = select(Role.code, Role.name).where(Role.id.in_(role_ids))
+        role_res = await conn.execute(role_stmt)
+        granted_roles = [{"code": r.code, "name": r.name} for r in role_res.all()]
+
+    return {
+        "code": 0,
+        "data": {
+            "users": granted_users,
+            "roles": granted_roles
+        }
+    }
+
+
+class AddPermissionsRequest(BaseModel):
+    target_type: str  # "user" 或 "role"
+    target_ids: List[int]
+
+class DeletePermissionRequest(BaseModel):
+    target_type: str  # "user" 或 "role"
+    target_id: int
+
+
+@router.get("/candidates")
+async def get_metadata_auth_candidates(
+    conn: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(require_permission("element", "element:metadata:edit"))
+):
+    """获取可用于数据集权限分配的活跃角色和用户候选列表 (需数据集编辑权限)"""
+    from app.models.permission import Role
+    from app.models.user import User
+    from sqlalchemy import select
+
+    role_stmt = select(Role.id, Role.code, Role.name)
+    role_res = await conn.execute(role_stmt)
+    roles = [{"id": r.id, "code": r.code, "name": r.name} for r in role_res.all()]
+
+    user_stmt = select(User.id, User.user_name, User.real_name).where(User.status == 1)
+    user_res = await conn.execute(user_stmt)
+    users = [{"id": u.id, "user_name": u.user_name, "real_name": u.real_name} for u in user_res.all()]
+
+    return {
+        "code": 0,
+        "data": {
+            "roles": roles,
+            "users": users
+        }
+    }
+
+
+@router.post("/datasets/{dataset_id}/permissions", dependencies=[Depends(require_permission("element", "element:metadata:edit"))])
+async def add_metadata_dataset_permissions(
+    dataset_id: int,
+    payload: AddPermissionsRequest,
+    conn: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """添加元数据数据集的授权角色或用户 (需数据集编辑权限)"""
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select
+    
+    perm_service = PermissionService(conn)
+    affected_user_ids = set()
+
+    for tid in payload.target_ids:
+        # 查询是否已经有对应记录了
+        stmt = select(ResourcePermission).where(
+            ResourcePermission.resource_type == "metadata",
+            ResourcePermission.resource_id == str(dataset_id)
+        )
+        if payload.target_type == "user":
+            stmt = stmt.where(ResourcePermission.user_id == tid)
+            affected_user_ids.add(tid)
+        else:
+            stmt = stmt.where(ResourcePermission.role_id == tid)
+            # 获取该角色下的所有关联用户
+            r_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id == tid)
+            r_users_res = await conn.execute(r_users_stmt)
+            for uid in r_users_res.scalars().all():
+                affected_user_ids.add(uid)
+
+        result = await conn.execute(stmt)
+        record = result.scalar_one_or_none()
+
+        if record:
+            record.enabled = True
+        else:
+            new_perm = ResourcePermission(
+                resource_type="metadata",
+                resource_id=str(dataset_id),
+                enabled=True
+            )
+            if payload.target_type == "user":
+                new_perm.user_id = tid
+            else:
+                new_perm.role_id = tid
+            conn.add(new_perm)
+
+    await conn.flush()
+
+    # 清理受影响用户的缓存，使其变更即刻生效
+    if affected_user_ids:
+        await perm_service.invalidate_cached_permissions_for_users(affected_user_ids)
+        from app.services.ai.config import invalidate_dataset_menu_cache
+        for uid in affected_user_ids:
+            await invalidate_dataset_menu_cache(user_id=uid)
+
+    return {"code": 0, "message": "权限配置已成功添加"}
+
+
+@router.delete("/datasets/{dataset_id}/permissions", dependencies=[Depends(require_permission("element", "element:metadata:edit"))])
+async def delete_metadata_dataset_permission(
+    dataset_id: int,
+    payload: DeletePermissionRequest,
+    conn: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """移除元数据数据集关联的某个角色或用户授权 (需数据集编辑权限)"""
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select, delete
+
+    perm_service = PermissionService(conn)
+    affected_user_ids = set()
+
+    # 查出受影响的用户列表以作缓存清理
+    if payload.target_type == "user":
+        affected_user_ids.add(payload.target_id)
+    else:
+        r_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id == payload.target_id)
+        r_users_res = await conn.execute(r_users_stmt)
+        for uid in r_users_res.scalars().all():
+            affected_user_ids.add(uid)
+
+    # 物理清除
+    stmt = delete(ResourcePermission).where(
+        ResourcePermission.resource_type == "metadata",
+        ResourcePermission.resource_id == str(dataset_id)
+    )
+    if payload.target_type == "user":
+        stmt = stmt.where(ResourcePermission.user_id == payload.target_id)
+    else:
+        stmt = stmt.where(ResourcePermission.role_id == payload.target_id)
+
+    await conn.execute(stmt)
+    await conn.flush()
+
+    # 清理权限缓存
+    if affected_user_ids:
+        await perm_service.invalidate_cached_permissions_for_users(affected_user_ids)
+        from app.services.ai.config import invalidate_dataset_menu_cache
+        for uid in affected_user_ids:
+            await invalidate_dataset_menu_cache(user_id=uid)
+
+    return {"code": 0, "message": "权限配置已成功移除"}
+
 
 @router.put("/datasets/{dataset_id}", response_model=DatasetResponse, dependencies=[Depends(require_permission("element", "element:metadata:edit"))])
 async def update_dataset(

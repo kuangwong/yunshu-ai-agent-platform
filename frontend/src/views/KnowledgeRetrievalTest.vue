@@ -536,8 +536,8 @@ onMounted(fetchRagFlowConfig)
             </div>
 
             <!-- Error B -->
-            <div v-if="errorMessage_B" class="mx-3 mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 shrink-0">
-              <div class="font-semibold truncate">B组错误：{{ errorMessage_B }}</div>
+            <div v-if="friendlyRagFlowErrorB" class="mx-3 mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 shrink-0">
+              <div class="font-semibold truncate">B组错误：{{ friendlyRagFlowErrorB }}</div>
             </div>
 
             <!-- Body B -->

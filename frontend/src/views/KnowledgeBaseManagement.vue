@@ -42,6 +42,8 @@ type KnowledgeDocument = {
   size?: number
   update_time?: string
   created_at?: string
+  progress?: number
+  progress_msg?: string
 }
 
 type RagFlowConfigSummary = {
@@ -537,6 +539,7 @@ const uploadDocument = async () => {
   
   for (let i = 0; i < total; i++) {
     const file = uploadFiles.value[i]
+    if (!file) continue
     uploadProgressText.value = `正在上传并解析: ${i + 1} / ${total} (${file.name})`
     
     const payload = new FormData()
@@ -652,8 +655,9 @@ const startDatasetStatusPolling = (dsId: string) => {
       await fetchDocumentsForDataset(dsId)
       
       // 同步当前选中的文档详情信息
-      if (selectedDocument.value && selectedDatasetId.value === dsId) {
-        const updatedDoc = (documentsMap.value[dsId] || []).find(d => d.id === selectedDocument.value.id)
+      const currentDocument = selectedDocument.value
+      if (currentDocument && selectedDatasetId.value === dsId) {
+        const updatedDoc = (documentsMap.value[dsId] || []).find(d => d.id === currentDocument.id)
         if (updatedDoc) {
           selectedDocument.value = updatedDoc
         }

@@ -1241,82 +1241,84 @@
       @view-original="handleViewOriginal"
     />
 
-    <!-- Canvas RAG 原地物理高亮预览抽屉 -->
-    <div
-      class="fixed top-0 right-0 h-full w-[45%] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl z-[210] flex flex-col transition-transform duration-300 ease-in-out transform"
-      :class="ragPreviewVisible ? 'translate-x-0' : 'translate-x-full'"
-    >
-      <!-- Header -->
-      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0 bg-gray-50/50 dark:bg-gray-800/40">
-        <div class="min-w-0">
-          <h3 class="text-sm font-bold text-gray-800 dark:text-gray-100 truncate" :title="ragPreviewDocName">
-            {{ ragPreviewDocName }}
-          </h3>
-          <p class="text-[11px] text-gray-400 mt-0.5">
-            第 {{ ragPreviewPageNo }} 页 RAG 关联原档智能高亮预览
-          </p>
-        </div>
-        <button
-          @click="ragPreviewVisible = false"
-          class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
-          title="关闭预览"
-        >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      <!-- Content Area -->
-      <div class="flex-1 min-h-0 flex flex-col divide-y divide-gray-100 dark:divide-gray-800">
-        <!-- Top: High fidelity PDF/iframe viewer -->
-        <div class="flex-1 min-h-0 bg-gray-100/30 relative flex flex-col items-center justify-center">
-          <!-- Friendly Tip for Office Documents -->
-          <div v-if="isOfficeDocument" class="p-8 text-center max-w-sm space-y-4 flex flex-col items-center">
-            <div class="inline-flex p-4 bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 rounded-full">
-              <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </div>
-            <div>
-              <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">Office 文档暂不支持在线预览</h4>
-              <p class="text-xs text-gray-400 mt-1.5 leading-relaxed">
-                由于您的文件是 Word/Excel 类型，系统已自动拉起浏览器进行本地下载。若未开始，可点击下方按钮重新发起下载。
-              </p>
-            </div>
-            <button
-              @click="downloadOriginalFile"
-              class="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all"
-            >
-              重新下载原档
-            </button>
+    <teleport to="body">
+      <!-- Canvas RAG 原地物理高亮预览抽屉 -->
+      <div
+        class="fixed top-0 right-0 h-full w-[45%] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl z-[260] flex flex-col transition-transform duration-300 ease-in-out transform"
+        :class="ragPreviewVisible ? 'translate-x-0' : 'translate-x-full'"
+      >
+        <!-- Header -->
+        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0 bg-gray-50/50 dark:bg-gray-800/40">
+          <div class="min-w-0">
+            <h3 class="text-sm font-bold text-gray-800 dark:text-gray-100 truncate" :title="ragPreviewDocName">
+              {{ ragPreviewDocName }}
+            </h3>
+            <p class="text-[11px] text-gray-400 mt-0.5">
+              第 {{ ragPreviewPageNo }} 页 RAG 关联原档智能高亮预览
+            </p>
           </div>
-
-          <iframe
-            v-else-if="ragPreviewVisible && ragPreviewDocId"
-            :src="`/api/portal/ragflow/documents/${ragPreviewDocId}/file#page=${ragPreviewPageNo}`"
-            class="w-full h-full border-none"
-          />
-          <div v-else class="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
-            正在加载文档预览...
-          </div>
-        </div>
-        
-        <!-- Bottom: Referenced citation snippet card -->
-        <div class="h-44 flex-shrink-0 flex flex-col bg-white dark:bg-gray-900 p-4 border-t border-gray-100 dark:divide-gray-800">
-          <h4 class="text-xs font-bold text-gray-700 dark:text-gray-200 tracking-wider uppercase mb-2 flex items-center gap-1.5">
-            <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          <button
+            @click="ragPreviewVisible = false"
+            class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
+            title="关闭预览"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
-            被引用原文段落
-          </h4>
-          <div 
-            class="flex-1 min-h-0 overflow-y-auto p-3 bg-blue-50/30 dark:bg-blue-900/5 border border-blue-100/50 dark:border-blue-900/10 rounded-xl text-xs text-gray-600 dark:text-gray-300 leading-relaxed custom-table-render scrollbar-thin"
-            v-html="ragPreviewContent"
-          />
+          </button>
+        </div>
+
+        <!-- Content Area -->
+        <div class="flex-1 min-h-0 flex flex-col divide-y divide-gray-100 dark:divide-gray-800">
+          <!-- Top: High fidelity PDF/iframe viewer -->
+          <div class="flex-1 min-h-0 bg-gray-100/30 relative flex flex-col items-center justify-center">
+            <!-- Friendly Tip for Office Documents -->
+            <div v-if="isOfficeDocument" class="p-8 text-center max-w-sm space-y-4 flex flex-col items-center">
+              <div class="inline-flex p-4 bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 rounded-full">
+                <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">Office 文档暂不支持在线预览</h4>
+                <p class="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                  由于您的文件是 Word/Excel 类型，系统已自动拉起浏览器进行本地下载。若未开始，可点击下方按钮重新发起下载。
+                </p>
+              </div>
+              <button
+                @click="downloadOriginalFile"
+                class="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all"
+              >
+                重新下载原档
+              </button>
+            </div>
+
+            <iframe
+              v-else-if="ragPreviewVisible && ragPreviewDocId"
+              :src="`/api/portal/ragflow/documents/${ragPreviewDocId}/file#page=${ragPreviewPageNo}`"
+              class="w-full h-full border-none"
+            />
+            <div v-else class="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
+              正在加载文档预览...
+            </div>
+          </div>
+
+          <!-- Bottom: Referenced citation snippet card -->
+          <div class="h-44 flex-shrink-0 flex flex-col bg-white dark:bg-gray-900 p-4 border-t border-gray-100 dark:divide-gray-800">
+            <h4 class="text-xs font-bold text-gray-700 dark:text-gray-200 tracking-wider uppercase mb-2 flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              被引用原文段落
+            </h4>
+            <div
+              class="flex-1 min-h-0 overflow-y-auto p-3 bg-blue-50/30 dark:bg-blue-900/5 border border-blue-100/50 dark:border-blue-900/10 rounded-xl text-xs text-gray-600 dark:text-gray-300 leading-relaxed custom-table-render scrollbar-thin"
+              v-html="ragPreviewContent"
+            />
+          </div>
         </div>
       </div>
-    </div>
+    </teleport>
 
     <!-- Input Area -->
     <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 relative z-20">
@@ -2474,7 +2476,6 @@ import ChatSettings from "@/components/embed/ChatSettings.vue";
 import ChatCanvas from "@/components/embed/ChatCanvas.vue";
 import ChatInput from "@/components/embed/ChatInput.vue";
 import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
-import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
 import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
 import SkillBrowserDrawer from "@/components/embed/SkillBrowserDrawer.vue";
@@ -2920,11 +2921,6 @@ const statsSummary = computed(() => {
   };
 });
 
-const getSelectedKnowledgeBaseIds = () => {
-  const attached = chatInputRef.value?.uploadedFiles?.find((f: any) => f.type === "knowledge_base");
-  return attached?.url ? String(attached.url).split(",").filter(Boolean) : [];
-};
-
 /** 知识库问答专家（与路由 agent_name=knowledge-base 对齐） */
 const resolveKnowledgeExpertAgent = () => {
   return allowedAgents.value.find((a) => {
@@ -2961,41 +2957,6 @@ const buildKnowledgeBaseAttachmentHint = (datasetIdLine: string) => {
     : `本次为知识库查询，须优先选择知识库专家（agent_name: knowledge-base）；自动路由时不得分发给 ChatBI、运维或其他专家。`;
 
   return `${expertHint}\n\n【必须执行】${datasetIdLine}`;
-};
-
-const handleSelectKnowledgeBase = async (val: string | string[]) => {
-  const ids = (Array.isArray(val) ? val : [val]).map((id) => String(id).trim()).filter(Boolean);
-  if (!chatInputRef.value) {
-    showKnowledgeBaseSelector.value = false;
-    return;
-  }
-
-  const files = chatInputRef.value.uploadedFiles || [];
-  chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "knowledge_base");
-
-  if (ids.length > 0) {
-    if (!hasFetchedAgents.value) {
-      await fetchAllowedAgents(true);
-    }
-    const kbExpert = resolveKnowledgeExpertAgent();
-    if (kbExpert) {
-      config.expertAgentId = kbExpert.id;
-      config.routingMode = "expert";
-      saveRoutingSettings();
-      config.overrideAgentId = "";
-      showAutoRoutingHint.value = false;
-    }
-
-    chatInputRef.value.uploadedFiles.push({
-      type: "knowledge_base",
-      url: ids.join(","),
-      filename: `已选择 ${ids.length} 个知识库`,
-      size: 0,
-      ext: "knowledge_base",
-    });
-  }
-
-  showKnowledgeBaseSelector.value = false;
 };
 
 const handleSelectLocalFs = (payload: { type: 'local_file' | 'local_dir'; path: string; name: string; size: number; ext: string }) => {
@@ -5752,7 +5713,7 @@ watch(showKnowledgePortal, (val) => {
     // 只有在未打开数据门户的情况下，关闭知识库中心才退回到自动路由
     if (!showPortalDrawer.value) {
       config.routingMode = "auto";
-      config.expertAgentId = null;
+      config.expertAgentId = "";
       saveRoutingSettings();
       showAutoRoutingHint.value = true;
       setTimeout(() => {
@@ -5809,11 +5770,6 @@ const workspacePinnedDockClass = computed(() => {
 
 const memoryPinnedDockClass = computed(() => {
   const rem = pinnedDrawerDockOffsetRem("memory");
-  return rem > 0 ? `right-[${rem}rem]` : "right-0";
-});
-
-const knowledgePinnedDockClass = computed(() => {
-  const rem = pinnedDrawerDockOffsetRem("knowledge");
   return rem > 0 ? `right-[${rem}rem]` : "right-0";
 });
 

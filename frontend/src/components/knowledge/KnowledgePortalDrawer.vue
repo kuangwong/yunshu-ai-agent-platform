@@ -466,7 +466,7 @@
                         相关文档
                         <!-- 文档数量徽章 -->
                         <span
-                          v-if="datasetDocuments[ds.id]?.docs?.length > 0 || ds.doc_count > 0 || ds.document_count > 0"
+                          v-if="(datasetDocuments[ds.id]?.docs?.length || 0) > 0 || (ds.doc_count ?? 0) > 0 || (ds.document_count ?? 0) > 0"
                           class="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 leading-none"
                         >
                           {{ datasetDocuments[ds.id]?.docs?.length ?? ds.doc_count ?? ds.document_count }}
@@ -500,7 +500,7 @@
                         <div v-if="datasetDocuments[ds.id]?.loading" class="flex justify-center py-4">
                           <div class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-gray-300 border-t-green-500" />
                         </div>
-                        <template v-else-if="datasetDocuments[ds.id] && datasetDocuments[ds.id].docs && datasetDocuments[ds.id].docs.length > 0">
+                        <template v-else-if="(datasetDocuments[ds.id]?.docs?.length || 0) > 0">
                           <div
                             v-for="doc in (datasetDocuments[ds.id]?.docs || [])"
                             :key="doc.id"
@@ -552,7 +552,7 @@
                                   <div class="animate-spin rounded-full h-3 w-3 border border-gray-300 border-t-green-500" />
                                 </div>
                                 
-                                <div v-else-if="documentRecommendations[doc.id] && documentRecommendations[doc.id].questions && documentRecommendations[doc.id].questions.length > 0" class="space-y-1">
+                                <div v-else-if="(documentRecommendations[doc.id]?.questions?.length || 0) > 0" class="space-y-1">
                                   <div
                                     v-for="(q, idx) in (documentRecommendations[doc.id]?.questions || [])"
                                     :key="idx"
@@ -594,7 +594,7 @@
 
                   <!-- Recommended Questions Section (Always visible) -->
                   <div
-                    v-if="recommendations[ds.id] && (recommendations[ds.id].loading || (recommendations[ds.id].questions && recommendations[ds.id].questions.length > 0))"
+                    v-if="recommendations[ds.id]?.loading || (recommendations[ds.id]?.questions?.length || 0) > 0"
                     class="relative pt-2.5 border-t border-gray-100 dark:border-gray-700/60"
                   >
                     <div class="mb-2 flex items-center justify-between select-none">
@@ -628,7 +628,7 @@
                     </div>
 
                     <!-- horizontal flex-wrap layout matching data portal -->
-                    <div v-else-if="recommendations[ds.id] && recommendations[ds.id].questions && recommendations[ds.id].questions.length > 0" class="flex flex-wrap gap-2">
+                    <div v-else-if="(recommendations[ds.id]?.questions?.length || 0) > 0" class="flex flex-wrap gap-2">
                       <div
                         v-for="(q, idx) in (recommendations[ds.id]?.questions || [])"
                         :key="idx"
@@ -714,7 +714,6 @@ const emit = defineEmits<{
   (e: "load-document-recommendations", datasetId: string, documentId: string): void;
 }>();
 
-const expandedId = ref<string | null>(null);
 const expandedDocId = ref<string | null>(null);
 const expandedDocRecsId = ref<string | null>(null);
 const showAdvancedConfig = ref(false);

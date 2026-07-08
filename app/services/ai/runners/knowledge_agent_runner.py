@@ -170,6 +170,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         is_empty = False
         max_score = 0.0
         citations = []
+        parsed = None
         try:
             import json
             parsed = json.loads(output)
@@ -193,7 +194,8 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             pass
 
         service_unavailable = self._is_knowledge_service_unavailable(output)
-        if not service_unavailable and (is_empty or max_score < similarity_threshold):
+        parsed_ok = isinstance(parsed, dict)
+        if parsed_ok and not service_unavailable and (is_empty or max_score < similarity_threshold):
             logger.info(f"[KnowledgeAgentRunner] Knowledge recall weak (max_score={max_score} < threshold={similarity_threshold}). Activating web search backoff...")
             web_tool_id = f"web_prefetch_{uuid.uuid4().hex[:8]}"
             web_started = time.time()

@@ -77,7 +77,7 @@ async def get_dataset(
 async def get_metadata_dataset_permissions(
     dataset_id: int,
     conn: AsyncSession = Depends(get_db_session),
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(require_permission("element", "element:metadata:edit")),
 ):
     """获取元数据数据集授权的所有角色和用户列表"""
     from app.models.permission import ResourcePermission, Role

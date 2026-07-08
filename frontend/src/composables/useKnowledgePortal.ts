@@ -1,4 +1,4 @@
-import { ref, watch, nextTick } from "vue";
+import { ref, watch } from "vue";
 import axios from "@/utils/axios";
 
 export interface KnowledgeDataset {
@@ -28,6 +28,8 @@ export interface UseKnowledgePortalOptions {
 
 export const isMobileViewport = () =>
   typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
+
+const INITIAL_RECOMMENDATION_PREFETCH_LIMIT = 3;
 
 const readStoredBoolean = (storageKey: string, defaultVal: boolean): boolean => {
   const val = localStorage.getItem(storageKey);
@@ -86,6 +88,16 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
 
   const rawPrefs = ref<any>(null);
 
+  const prefetchInitialRecommendations = () => {
+    const pinned = datasets.value.filter((ds) => pinnedDatasetIds.value.includes(ds.id));
+    const unpinned = datasets.value.filter((ds) => !pinnedDatasetIds.value.includes(ds.id));
+    [...pinned, ...unpinned]
+      .slice(0, INITIAL_RECOMMENDATION_PREFETCH_LIMIT)
+      .forEach((ds) => {
+        fetchRecommendations(ds.id, false);
+      });
+  };
+
   const fetchDatasets = async () => {
     if (loadingDatasets.value) return;
     loadingDatasets.value = true;
@@ -111,13 +123,7 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
         const nowStr = new Date().toLocaleString("zh-CN", { hour12: false });
         knowledgeGeneratedAt.value = nowStr;
         localStorage.setItem("knowledge_portal_generated_at", nowStr);
-        
-        // 自动为加载出的知识库初始化首批推荐提问
-        nextTick(() => {
-          datasets.value.forEach((ds: any) => {
-            fetchRecommendations(ds.id, false);
-          });
-        });
+        prefetchInitialRecommendations();
       } else {
         datasets.value = response.data.data || [];
       }

@@ -2560,10 +2560,18 @@ const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLEle
 };
 
 const ragPreviewVisible = ref(false);
+const ragPreviewDatasetId = ref("");
 const ragPreviewDocId = ref("");
 const ragPreviewDocName = ref("");
 const ragPreviewPageNo = ref<string | number>(1);
 const ragPreviewContent = ref("");
+
+const ragPreviewFileUrl = computed(() => {
+  if (!ragPreviewDatasetId.value || !ragPreviewDocId.value) return "";
+  const datasetId = encodeURIComponent(ragPreviewDatasetId.value);
+  const docId = encodeURIComponent(ragPreviewDocId.value);
+  return `/api/portal/ragflow/datasets/${datasetId}/documents/${docId}/file`;
+});
 
 const isOfficeDocument = computed(() => {
   const name = ragPreviewDocName.value.toLowerCase();
@@ -2573,9 +2581,9 @@ const isOfficeDocument = computed(() => {
 });
 
 const downloadOriginalFile = () => {
-  if (ragPreviewDocId.value) {
+  if (ragPreviewFileUrl.value) {
     const link = document.createElement("a");
-    link.href = `/api/portal/ragflow/documents/${ragPreviewDocId.value}/file`;
+    link.href = ragPreviewFileUrl.value;
     link.download = ragPreviewDocName.value;
     document.body.appendChild(link);
     link.click();
@@ -2590,11 +2598,12 @@ const handleViewOriginal = (citation: any) => {
       window.open(citation.link, "_blank");
     }
   } else {
+    ragPreviewDatasetId.value = citation.dataset_id || "";
     ragPreviewDocId.value = citation.doc_id || "";
     ragPreviewDocName.value = citation.doc_name || "文件预览";
     ragPreviewPageNo.value = citation.page_no || 1;
     ragPreviewContent.value = citation.content || "";
-    ragPreviewVisible.value = true;
+    ragPreviewVisible.value = Boolean(ragPreviewDatasetId.value && ragPreviewDocId.value);
   }
 };
 
@@ -4982,8 +4991,8 @@ onUnmounted(() => {
           </div>
 
           <iframe
-            v-else-if="ragPreviewVisible && ragPreviewDocId"
-            :src="`/api/portal/ragflow/documents/${ragPreviewDocId}/file#page=${ragPreviewPageNo}`"
+            v-else-if="ragPreviewVisible && ragPreviewFileUrl"
+            :src="`${ragPreviewFileUrl}#page=${ragPreviewPageNo}`"
             class="w-full h-full border-none"
           />
           <div v-else class="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">

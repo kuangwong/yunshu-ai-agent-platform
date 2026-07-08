@@ -594,7 +594,6 @@
 
                   <!-- Recommended Questions Section (Always visible) -->
                   <div
-                    v-if="recommendations[ds.id]?.loading || (recommendations[ds.id]?.questions?.length || 0) > 0"
                     class="relative pt-2.5 border-t border-gray-100 dark:border-gray-700/60"
                   >
                     <div class="mb-2 flex items-center justify-between select-none">
@@ -660,8 +659,17 @@
                       </div>
                     </div>
 
-                    <div v-else class="text-[11px] text-gray-400 text-center py-2 select-none">
-                      该库下暂无建议提问，请先上传文档喔
+                    <div v-else class="flex justify-center py-1">
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-3 py-1.5 text-[11px] font-bold text-gray-500 dark:text-gray-400 hover:border-green-500/40 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50/30 dark:hover:bg-green-950/10 transition-all active:scale-95"
+                        @click.stop="emit('load-recommendations', ds.id, false)"
+                      >
+                        <svg class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                        </svg>
+                        <span>生成推荐</span>
+                      </button>
                     </div>
                   </div>
                 </div>

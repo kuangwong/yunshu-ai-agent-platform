@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import json
@@ -5,7 +6,7 @@ import json
 from app.schemas.agent import ChatConfig
 from app.services.ai.hallucination_evaluator import HallucinationEvaluator
 from app.services.ai.runners.knowledge_agent_runner import KnowledgeAgentRunner
-from app.services.ai.runtime.agentscope.compat import AIMessage
+from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -33,15 +34,26 @@ def _kb_runner(kb_config, **kwargs):
     )
 
 
+def _search_knowledge_tool(output: str = "{}") -> RuntimeToolSpec:
+    async def fake_search(**kwargs):
+        return output
+
+    return RuntimeToolSpec(
+        name="search_knowledge_base",
+        description="Search knowledge base",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="system",
+        callable=fake_search,
+        permission_scope="read",
+    )
+
+
 @pytest.mark.asyncio
 async def test_hallucination_evaluator_success():
     """验证 HallucinationEvaluator 是否能正确请求大模型并解析幻觉判定 JSON。"""
     mock_llm = MagicMock()
     mock_client = AsyncMock()
-    
-    mock_response = MagicMock()
-    mock_response.content = '{"is_hallucinated": true, "reason": "回答包含了事实文献未提及的新参数 B"}'
-    mock_client.generate_async.return_value = mock_response
+    mock_client.generate_text.return_value = '{"is_hallucinated": true, "reason": "回答包含了事实文献未提及的新参数 B"}'
 
     with patch("app.services.ai.hallucination_evaluator.get_llm_async", AsyncMock(return_value=mock_llm)), \
          patch("app.services.ai.hallucination_evaluator.chat_client_from_handle", return_value=mock_client):
@@ -78,8 +90,7 @@ async def test_hybrid_search_trigger_on_empty_recall(kb_config):
         }
     ]
 
-    kb_spec = MagicMock()
-    kb_spec.callable = AsyncMock(return_value=kb_empty_output)
+    kb_spec = _search_knowledge_tool(kb_empty_output)
 
     with patch("app.services.ai.runners.knowledge_agent_runner.collect_citation_ids_from_payload", return_value=[]), \
          patch("app.services.ai.tools.advanced_auxiliary_tools.web_search_baidu_raw", AsyncMock(return_value=mock_web_results)):
@@ -99,12 +110,32 @@ async def test_hybrid_search_trigger_on_empty_recall(kb_config):
         # 4. 检查最终 output 里是否融入了网页 context 和 citation 节点
         final_info = next(c for c in chunks if "__knowledge_output__" in c)
         final_output_str = final_info["__knowledge_output__"]
-        final_output = json.loads(final_output_str)
+        citation_event = next(c for c in chunks if c.get("type") == "citation")
 
-        assert "【互联网参考事实文献】" in final_output["content"]
-        assert len(final_output["citations"]) == 1
-        assert final_output["citations"][0]["source_type"] == "web"
-        assert "网页: 百度百科: 混合检索" in final_output["citations"][0]["doc_name"]
+        assert "【互联网参考事实文献】" in final_output_str
+        assert len(citation_event["data"]) == 1
+        assert citation_event["data"][0]["source_type"] == "web"
+        assert "网页: 百度百科: 混合检索" in citation_event["data"][0]["doc_name"]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_does_not_trigger_on_tool_error(kb_config):
+    """知识库工具错误不能被当成低相似度召回去触发联网补检索。"""
+    runner = _kb_runner(kb_config)
+    kb_spec = _search_knowledge_tool("[TOOL_ERROR] 自动检索知识库失败: timeout")
+
+    with patch("app.services.ai.tools.advanced_auxiliary_tools.web_search_baidu_raw", AsyncMock()) as web_search:
+        chunks = []
+        async for chunk in runner._auto_invoke_search_knowledge_base(
+            query="系统 A 支持什么？",
+            tools=[kb_spec],
+            dataset_ids="default",
+        ):
+            chunks.append(chunk)
+
+    web_search.assert_not_awaited()
+    assert not any(c.get("title") == "触发联网辅助检索" for c in chunks)
+    assert any(c.get("__knowledge_service_unavailable__") is True for c in chunks)
 
 
 @pytest.mark.asyncio
@@ -128,16 +159,38 @@ async def test_hallucination_reflection_loop_corrects(kb_config):
 
     # Mock 第一次判定有幻觉，第二次判定无幻觉
     eval_call_count = 0
-    async def mock_evaluate(query, context, response):
+    async def mock_evaluate(query, context, response, enabled=True):
         nonlocal eval_call_count
         eval_call_count += 1
         if eval_call_count == 1:
             return {"is_hallucinated": True, "reason": "文献里没写支持 B"}
         return {"is_hallucinated": False, "reason": ""}
 
+    async def mock_auto_prefetch(*args, **kwargs):
+        yield {
+            "__knowledge_output__": json.dumps({
+                "content": "文献提到：系统 A 支持 C。",
+                "citations": [
+                    {
+                        "chunk_id": "chunk_1",
+                        "doc_id": "doc-1",
+                        "dataset_id": "ds-1",
+                        "doc_name": "系统说明.pdf",
+                    }
+                ],
+            })
+        }
+
     with patch.object(runner, "_execute_with_agentscope_native_agent", mock_execute_agentscope), \
+         patch.object(runner, "_resolve_knowledge_tools", AsyncMock(return_value=[_search_knowledge_tool()])), \
+         patch.object(runner, "_auto_invoke_search_knowledge_base", mock_auto_prefetch), \
          patch("app.services.ai.hallucination_evaluator.HallucinationEvaluator.evaluate", mock_evaluate), \
-         patch.object(runner, "_is_hallucinated_with_rag_reply", return_value=False):
+         patch.object(runner, "_is_hallucinated_with_rag_reply", return_value=False), \
+         patch("app.services.ai.runners.knowledge_agent_runner.is_knowledge_base_enabled", AsyncMock(return_value=True)), \
+         patch("app.services.ai.runners.knowledge_agent_runner.resolve_knowledge_dataset_ids", AsyncMock(return_value=(["ds-1"], None))), \
+         patch("app.services.ai.runners.knowledge_agent_runner.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=SimpleNamespace(native_model=object()))), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")), \
+         patch("app.core.redis.get_redis", AsyncMock(return_value=None)):
 
         events = []
         async for chunk in runner._execute_raw([{"role": "user", "content": "系统 A 支持什么？"}]):
@@ -160,11 +213,32 @@ async def test_hallucination_max_retries_triggers_fatal_fallback(kb_config):
         yield {"content": "系统 A 支持 B。"}
 
     # 持续判定有幻觉
-    async def mock_evaluate(query, context, response):
+    async def mock_evaluate(query, context, response, enabled=True):
         return {"is_hallucinated": True, "reason": "持续包含臆造事实"}
 
+    async def mock_auto_prefetch(*args, **kwargs):
+        yield {
+            "__knowledge_output__": json.dumps({
+                "content": "文献提到：系统 A 支持 C。",
+                "citations": [
+                    {
+                        "chunk_id": "chunk_1",
+                        "doc_id": "doc-1",
+                        "dataset_id": "ds-1",
+                        "doc_name": "系统说明.pdf",
+                    }
+                ],
+            })
+        }
+
     with patch.object(runner, "_execute_with_agentscope_native_agent", mock_execute_agentscope), \
-         patch("app.services.ai.hallucination_evaluator.HallucinationEvaluator.evaluate", mock_evaluate):
+         patch.object(runner, "_resolve_knowledge_tools", AsyncMock(return_value=[_search_knowledge_tool()])), \
+         patch.object(runner, "_auto_invoke_search_knowledge_base", mock_auto_prefetch), \
+         patch("app.services.ai.hallucination_evaluator.HallucinationEvaluator.evaluate", mock_evaluate), \
+         patch("app.services.ai.runners.knowledge_agent_runner.is_knowledge_base_enabled", AsyncMock(return_value=True)), \
+         patch("app.services.ai.runners.knowledge_agent_runner.resolve_knowledge_dataset_ids", AsyncMock(return_value=(["ds-1"], None))), \
+         patch("app.services.ai.runners.knowledge_agent_runner.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=SimpleNamespace(native_model=object()))), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
 
         events = []
         async for chunk in runner._execute_raw([{"role": "user", "content": "系统 A 支持什么？"}]):

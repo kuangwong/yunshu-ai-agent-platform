@@ -183,6 +183,34 @@ async def _grant_dataset_to_creator(db: AsyncSession, user: dict, dataset_id: st
     await service._invalidate_user_cache(int(user["user_id"]))
 
 
+async def _collect_affected_dataset_permission_user_ids(
+    db: AsyncSession,
+    dataset_ids: List[str],
+) -> set[int]:
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select
+
+    if not dataset_ids:
+        return set()
+
+    stmt = select(ResourcePermission).where(
+        ResourcePermission.resource_type == "dataset",
+        ResourcePermission.resource_id.in_(dataset_ids),
+        ResourcePermission.enabled == True,
+    )
+    result = await db.execute(stmt)
+    perms = result.scalars().all()
+
+    affected_user_ids = {int(p.user_id) for p in perms if p.user_id is not None}
+    role_ids = [int(p.role_id) for p in perms if p.role_id is not None]
+    if role_ids:
+        role_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id.in_(role_ids))
+        role_users_res = await db.execute(role_users_stmt)
+        affected_user_ids.update(int(uid) for uid in role_users_res.scalars().all())
+
+    return affected_user_ids
+
+
 @router.get("/config")
 async def get_ragflow_config_summary():
     from app.services.ai.knowledge_utils import is_knowledge_base_enabled
@@ -255,6 +283,15 @@ async def list_ragflow_datasets(
     """
     Proxy to list RAGFlow datasets (knowledge bases) with permission filtering.
     """
+    service = PermissionService(db)
+    access = await service.get_knowledge_base_access(
+        int(user["user_id"]),
+        user.get("user_name"),
+    )
+    is_admin = access["is_admin"]
+    if (override_url or override_key) and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required for temporary RAGFlow overrides")
+
     real_url = override_url if override_url else None
     real_key = override_key if override_key and "****" not in override_key else None
 
@@ -264,14 +301,6 @@ async def list_ragflow_datasets(
         override_key=real_key
     )
     metadata_service = KnowledgeBaseMetadataService(db)
-
-    # 1. Check Permissions
-    service = PermissionService(db)
-    access = await service.get_knowledge_base_access(
-        int(user["user_id"]),
-        user.get("user_name"),
-    )
-    is_admin = access["is_admin"]
 
     try:
         items = await client.list_datasets(page=page, page_size=page_size)
@@ -431,6 +460,8 @@ async def delete_ragflow_datasets(
     client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
     try:
+        affected_user_ids = await _collect_affected_dataset_permission_user_ids(db, payload.ids)
+
         # 获取当前 RAGFlow 侧的所有有效数据集，以防删除已不存在的知识库时报错
         try:
             ragflow_datasets = await client.list_datasets(page=1, page_size=500)
@@ -453,6 +484,8 @@ async def delete_ragflow_datasets(
                 ResourcePermission.resource_id.in_(payload.ids)
             )
         )
+        if affected_user_ids:
+            await PermissionService(db).invalidate_cached_permissions_for_users(affected_user_ids)
 
         await metadata_service.mark_deleted(payload.ids, user_name=user.get("user_name"))
         await record_knowledge_audit(request, user, "datasets:delete", 200, {
@@ -654,6 +687,8 @@ async def get_dataset_permissions(
     from app.models.user import User
     from sqlalchemy import select
 
+    await require_dataset_write_access(user, db, [dataset_id])
+
     stmt = select(ResourcePermission).where(
         ResourcePermission.resource_type == "dataset",
         ResourcePermission.resource_id == dataset_id,
@@ -701,14 +736,7 @@ async def get_ragflow_metrics_summary(
     return {"code": 0, "data": data}
 
 
-@router.get("/documents/{document_id}/file")
-async def get_ragflow_document_file(
-    document_id: str,
-    user: dict = Depends(get_current_user)
-):
-    """
-    获取文档文件二进制流以供前端 iframe 原地预览
-    """
+async def _build_ragflow_document_file_response(document_id: str):
     from fastapi.responses import Response
     client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
@@ -732,15 +760,42 @@ async def get_ragflow_document_file(
         raise HTTPException(status_code=500, detail=f"Failed to fetch document file: {str(e)}")
 
 
+@router.get("/datasets/{dataset_id}/documents/{document_id}/file")
+async def get_ragflow_dataset_document_file(
+    dataset_id: str,
+    document_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    获取文档文件二进制流以供前端 iframe 原地预览；必须具备对应知识库读取权限。
+    """
+    await require_dataset_access(user, db, [dataset_id])
+    return await _build_ragflow_document_file_response(document_id)
+
+
+@router.get("/documents/{document_id}/file", dependencies=[Depends(require_admin)])
+async def get_ragflow_document_file(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    旧版无 dataset 上下文的下载入口仅保留给管理员，避免普通用户绕过知识库授权。
+    """
+    return await _build_ragflow_document_file_response(document_id)
+
+
 @router.get("/datasets/{dataset_id}/portal")
 async def get_dataset_portal_recommendations(
     dataset_id: str,
     exclude: Optional[str] = None,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """
     获取指定知识库数据集的侧边栏推荐提问与扩展概要，支持换一批
     """
+    await require_dataset_access(user, db, [dataset_id])
     client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         # 1. 尝试获取数据集基本信息与文档列表（获取较多文件以支持换一批抽样）

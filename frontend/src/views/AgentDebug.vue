@@ -3870,9 +3870,17 @@ onUnmounted(() => {
                   <template v-if="parts.hasContext">
                     <MessageRenderer v-if="parts.userPart" :content="parts.userPart" />
                     <div v-if="parts.userPart" class="my-2.5 border-t border-white/30" role="separator" />
-                    <div class="whitespace-pre-wrap text-[11px] text-white/90 leading-relaxed opacity-95">
-                      {{ parts.contextPart }}
-                    </div>
+                    <details class="group/sys mt-2 text-[10px] text-white/70 select-none">
+                      <summary class="cursor-pointer hover:text-white flex items-center gap-1 font-semibold focus:outline-none list-none [&::-webkit-details-marker]:hidden">
+                        <svg class="w-3 h-3 transform transition-transform duration-200 group-open/sys:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+                        </svg>
+                        <span>⚙️ 附加系统元数据说明 (点击展开)</span>
+                      </summary>
+                      <div class="mt-1.5 p-2 rounded bg-black/15 text-white/85 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-all select-text selection:bg-white/20">
+                        {{ parts.contextPart }}
+                      </div>
+                    </details>
                   </template>
                   <MessageRenderer v-else :content="msg.content" />
                 </template>

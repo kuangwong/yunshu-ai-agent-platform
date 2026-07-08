@@ -90,7 +90,22 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
         if is_factual and not has_refusal:
             return True
-        return False
+    def _looks_like_rag_followup(self, query: str, history: List[Dict[str, str]]) -> bool:
+        """识别对上一轮检索结果的追问、翻译、总结、解释等上下文操作，以跳过本轮不必要的知识库重复检索。"""
+        if not history or len(history) < 2:
+            return False
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+        
+        # 1. 指代词特征
+        vague_refs = ["刚才", "刚刚", "上面", "上轮", "上一轮", "这个", "这些", "它", "刚才说的", "前一个", "翻译结果", "上一个回答"]
+        # 2. 格式化/翻译/总结/追问等上下文动作特征
+        followup_actions = ["翻译", "英文", "english", "总结", "概括", "简短", "口语化", "解释一下第", "详细说明第", "写得通俗", "翻译成"]
+        
+        is_ref_match = any(ref in q for ref in vague_refs)
+        is_action_match = any(act in q for act in followup_actions)
+        return is_ref_match or is_action_match or (len(q) < 8 and is_action_match)
 
     def _build_synthesis_user_message(self, user_query: str, execution_review: str) -> str:
         return KnowledgeChatPrompts.synthesis_user_message(user_query, execution_review)
@@ -406,37 +421,60 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         system_content = self.config.system_prompt or ""
         system_content = f"{KnowledgeChatPrompts.TURN_SYSTEM_HINT}\n\n{system_content}"
 
-        resolved_dataset_ids, dataset_error = await resolve_knowledge_dataset_ids(
-            query=user_question,
-        )
-        if dataset_error and not resolved_dataset_ids:
-            async for chunk in self._yield_knowledge_no_dataset_abort():
-                yield chunk
-            return
-
-        prefetch_dataset_ids = format_dataset_ids_for_tool(resolved_dataset_ids)
+        # RAG 分类与复用决策
+        is_followup = self._looks_like_rag_followup(user_question, history)
         prefetched_knowledge_output: str | None = None
         prefetched_citations_raw: list | None = None
         knowledge_service_unavailable = False
         prefetch_had_citations = False
-        async for chunk in self._auto_invoke_search_knowledge_base(
-            query=user_question,
-            tools=tools,
-            dataset_ids=prefetch_dataset_ids,
-        ):
-            if chunk.get("__knowledge_service_unavailable__"):
-                knowledge_service_unavailable = True
-            if chunk.get("__knowledge_output__") is not None:
-                prefetched_knowledge_output = str(chunk["__knowledge_output__"])
-                prefetched_citations_raw = chunk.get("__citations_raw__")
-                prefetch_had_citations = knowledge_prefetch_had_citations(prefetched_knowledge_output)
-                continue
-            yield chunk
 
-        if knowledge_service_unavailable:
-            async for chunk in self._yield_knowledge_fatal_abort(prefetched_knowledge_output):
+        if is_followup:
+            yield {
+                "type": "log",
+                "id": f"kb_followup_{uuid.uuid4().hex[:8]}",
+                "title": "自动复用知识库",
+                "details": "检测到对上一轮回答的追问/操作（翻译/总结等），自动复用历史上下文，跳过知识库重新检索。",
+                "status": "success",
+                "category": "intent",
+            }
+            # 提取上一轮被成功引用的 ID，以便在追问中继续复用，通过防幻觉校验
+            last_assistant_content = ""
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    last_assistant_content = str(msg.get("content") or "")
+                    break
+            if last_assistant_content:
+                import re
+                last_citations = re.findall(r"\[ID:\s*(\d+)\]", last_assistant_content)
+                self._valid_citation_ids = set(last_citations)
+        else:
+            resolved_dataset_ids, dataset_error = await resolve_knowledge_dataset_ids(
+                query=user_question,
+            )
+            if dataset_error and not resolved_dataset_ids:
+                async for chunk in self._yield_knowledge_no_dataset_abort():
+                    yield chunk
+                return
+
+            prefetch_dataset_ids = format_dataset_ids_for_tool(resolved_dataset_ids)
+            async for chunk in self._auto_invoke_search_knowledge_base(
+                query=user_question,
+                tools=tools,
+                dataset_ids=prefetch_dataset_ids,
+            ):
+                if chunk.get("__knowledge_service_unavailable__"):
+                    knowledge_service_unavailable = True
+                if chunk.get("__knowledge_output__") is not None:
+                    prefetched_knowledge_output = str(chunk["__knowledge_output__"])
+                    prefetched_citations_raw = chunk.get("__citations_raw__")
+                    prefetch_had_citations = knowledge_prefetch_had_citations(prefetched_knowledge_output)
+                    continue
                 yield chunk
-            return
+
+            if knowledge_service_unavailable:
+                async for chunk in self._yield_knowledge_fatal_abort(prefetched_knowledge_output):
+                    yield chunk
+                return
 
         self._rag_empty = False
         if prefetched_knowledge_output:
@@ -477,7 +515,14 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         max_steps_str = await ConfigService.get("agent_max_iterations")
         max_steps = int(max_steps_str) if max_steps_str else 5
 
-        if prefetch_had_citations:
+        if is_followup:
+            followup_hint = (
+                "【平台已复用上一轮上下文】检测到本轮为针对上一次知识库回答的追问、翻译或格式调整动作，"
+                "系统已自动复用上一轮检索到的事实文献上下文，跳过了本次 search_knowledge_base 重复检索。"
+                "请直接在多轮对话历史中结合上一轮的回答来响应用户，无需再次检索。"
+            )
+            native_system_content = f"{followup_hint}\n\n{system_content}"
+        elif prefetch_had_citations:
             native_system_content = (
                 f"{KnowledgeChatPrompts.PREFETCH_DONE_CORRECTION_MSG}\n\n{system_content}"
             )

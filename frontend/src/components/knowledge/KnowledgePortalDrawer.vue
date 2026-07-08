@@ -464,6 +464,13 @@
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                         </svg>
                         相关文档
+                        <!-- 文档数量徽章 -->
+                        <span
+                          v-if="datasetDocuments[ds.id]?.docs?.length > 0 || ds.doc_count > 0 || ds.document_count > 0"
+                          class="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 leading-none"
+                        >
+                          {{ datasetDocuments[ds.id]?.docs?.length ?? ds.doc_count ?? ds.document_count }}
+                        </span>
                       </span>
                       <svg
                         class="w-3.5 h-3.5 transform transition-transform duration-200"
@@ -480,32 +487,102 @@
                     <transition
                       enter-active-class="transition-all duration-200 ease-out"
                       enter-from-class="max-h-0 opacity-0"
-                      enter-to-class="max-h-[220px] opacity-100"
+                      enter-to-class="max-h-[350px] opacity-100"
                       leave-active-class="transition-all duration-200 ease-in"
-                      leave-from-class="max-h-[220px] opacity-100"
+                      leave-from-class="max-h-[350px] opacity-100"
                       leave-to-class="max-h-0 opacity-0"
                     >
                       <div 
                         v-show="expandedDocId === ds.id" 
-                        class="mt-1.5 border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900 rounded-lg overflow-y-auto max-h-[160px] p-2 space-y-1.5 scrollbar-thin"
+                        class="mt-1.5 border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900 rounded-lg overflow-y-auto max-h-[250px] p-2 space-y-1.5 scrollbar-thin"
                         @click.stop
                       >
                         <div v-if="datasetDocuments[ds.id]?.loading" class="flex justify-center py-4">
                           <div class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-gray-300 border-t-green-500" />
                         </div>
-                        <template v-else-if="datasetDocuments[ds.id]?.docs?.length > 0">
+                        <template v-else-if="datasetDocuments[ds.id] && datasetDocuments[ds.id].docs && datasetDocuments[ds.id].docs.length > 0">
                           <div
-                            v-for="doc in datasetDocuments[ds.id].docs"
+                            v-for="doc in (datasetDocuments[ds.id]?.docs || [])"
                             :key="doc.id"
-                            class="flex items-center justify-between gap-3 text-[10px] text-gray-600 dark:text-gray-400 bg-gray-50/50 dark:bg-gray-800/30 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-850 transition-colors select-none"
+                            class="flex flex-col border border-gray-100/50 dark:border-gray-800/30 bg-gray-50/20 dark:bg-gray-800/10 p-2 rounded-md transition-colors"
                           >
-                            <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                              <span class="text-[11px] shrink-0">📄</span>
-                              <span class="truncate text-[10px] text-gray-700 dark:text-gray-300 font-medium" :title="doc.name">{{ doc.name }}</span>
+                            <!-- Doc Header/Row (Click to expand doc recommendations) -->
+                            <div 
+                              class="flex items-center justify-between gap-3 text-[10px] text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-900 dark:hover:text-gray-200 select-none"
+                              @click.stop="toggleDocRecsExpand(ds.id, doc.id)"
+                            >
+                              <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                                <span class="text-[11px] shrink-0">📄</span>
+                                <span class="truncate text-[10px] text-gray-700 dark:text-gray-300 font-medium" :title="doc.name">{{ doc.name }}</span>
+                              </div>
+                              <div class="flex items-center gap-1.5 shrink-0">
+                                <span class="text-[8px] font-mono text-gray-400">
+                                  {{ formatFileSize(doc.size) }}
+                                </span>
+                                <svg
+                                  class="w-2.5 h-2.5 transform transition-transform duration-200 text-gray-400"
+                                  :class="{ 'rotate-180 text-green-500': expandedDocRecsId === doc.id }"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                </svg>
+                              </div>
                             </div>
-                            <span class="text-[8px] font-mono text-gray-400 shrink-0">
-                              {{ formatFileSize(doc.size) }}
-                            </span>
+
+                            <!-- Single Doc Recommendations List -->
+                            <transition
+                              enter-active-class="transition-all duration-200 ease-out"
+                              enter-from-class="max-h-0 opacity-0"
+                              enter-to-class="max-h-[160px] opacity-100"
+                              leave-active-class="transition-all duration-150 ease-in"
+                              leave-from-class="max-h-[160px] opacity-100"
+                              leave-to-class="max-h-0 opacity-0"
+                            >
+                              <div
+                                v-if="expandedDocRecsId === doc.id"
+                                class="mt-2 pl-4 pr-1 border-t border-dashed border-gray-150 dark:border-gray-800 pt-2 flex flex-col gap-1.5 overflow-hidden"
+                              >
+                                <div class="text-[9px] text-gray-400 dark:text-gray-500 flex items-center gap-1 select-none">
+                                  <span class="text-green-500 font-bold">💡</span> 针对该文件的专属提问：
+                                </div>
+                                
+                                <div v-if="documentRecommendations[doc.id]?.loading" class="flex justify-center py-2">
+                                  <div class="animate-spin rounded-full h-3 w-3 border border-gray-300 border-t-green-500" />
+                                </div>
+                                
+                                <div v-else-if="documentRecommendations[doc.id] && documentRecommendations[doc.id].questions && documentRecommendations[doc.id].questions.length > 0" class="space-y-1">
+                                  <div
+                                    v-for="(q, idx) in (documentRecommendations[doc.id]?.questions || [])"
+                                    :key="idx"
+                                    class="flex items-stretch rounded border border-gray-150 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden hover:border-green-500/50 dark:hover:border-green-500/30 transition-colors"
+                                  >
+                                    <button
+                                      class="flex-1 text-left px-2 py-1.5 text-[10px] leading-snug text-gray-700 dark:text-gray-300 line-clamp-2 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50/30 dark:hover:bg-green-950/10 transition-colors"
+                                      :title="q.query"
+                                      @click.stop="handleQuestionClick(q.query, ds.id, 'send')"
+                                    >
+                                      {{ q.label }}
+                                    </button>
+                                    <div class="w-[1px] bg-gray-150 dark:bg-gray-800" />
+                                    <button
+                                      class="px-2 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-green-500 transition-colors"
+                                      title="填入输入框进行修改"
+                                      @click.stop="handleQuestionClick(q.query, ds.id, 'fill')"
+                                    >
+                                      <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                                
+                                <div v-else class="text-[9px] text-gray-400 dark:text-gray-500 text-center py-1 select-none">
+                                  该文件暂无可用专属提问
+                                </div>
+                              </div>
+                            </transition>
                           </div>
                         </template>
                         <div v-else class="text-[10px] text-gray-400 text-center py-3 select-none">
@@ -517,7 +594,7 @@
 
                   <!-- Recommended Questions Section (Always visible) -->
                   <div
-                    v-if="recommendations[ds.id]?.loading || recommendations[ds.id]?.questions?.length > 0"
+                    v-if="recommendations[ds.id] && (recommendations[ds.id].loading || (recommendations[ds.id].questions && recommendations[ds.id].questions.length > 0))"
                     class="relative pt-2.5 border-t border-gray-100 dark:border-gray-700/60"
                   >
                     <div class="mb-2 flex items-center justify-between select-none">
@@ -551,9 +628,9 @@
                     </div>
 
                     <!-- horizontal flex-wrap layout matching data portal -->
-                    <div v-else-if="recommendations[ds.id]?.questions?.length > 0" class="flex flex-wrap gap-2">
+                    <div v-else-if="recommendations[ds.id] && recommendations[ds.id].questions && recommendations[ds.id].questions.length > 0" class="flex flex-wrap gap-2">
                       <div
-                        v-for="(q, idx) in recommendations[ds.id].questions"
+                        v-for="(q, idx) in (recommendations[ds.id]?.questions || [])"
                         :key="idx"
                         class="inline-flex items-stretch rounded-lg border border-gray-150 dark:border-gray-750 bg-white dark:bg-gray-800 shadow-sm hover:shadow hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 overflow-hidden"
                       >
@@ -622,6 +699,7 @@ const props = defineProps<{
   pinnedDatasetIds: string[];
   recommendations: Record<string, { questions: any[]; loading?: boolean }>;
   datasetDocuments: Record<string, { docs: any[]; loading?: boolean }>;
+  documentRecommendations: Record<string, { questions: any[]; loading?: boolean }>;
   loading?: boolean;
   generatedAt?: string;
 }>();
@@ -633,10 +711,12 @@ const emit = defineEmits<{
   (e: "refresh"): void;
   (e: "toggle-pin", id: string): void;
   (e: "load-documents", id: string): void;
+  (e: "load-document-recommendations", datasetId: string, documentId: string): void;
 }>();
 
 const expandedId = ref<string | null>(null);
 const expandedDocId = ref<string | null>(null);
+const expandedDocRecsId = ref<string | null>(null);
 const showAdvancedConfig = ref(false);
 const activeTooltip = ref<string | null>(null);
 
@@ -657,14 +737,7 @@ const sortedDatasets = computed(() => {
 const sheetEnterFrom = computed(() => (isMobile.value ? "translate-y-full" : "translate-x-full"));
 const sheetLeaveTo = computed(() => (isMobile.value ? "translate-y-full" : "translate-x-full"));
 
-const toggleExpand = (id: string) => {
-  if (expandedId.value === id) {
-    expandedId.value = null;
-  } else {
-    expandedId.value = id;
-    emit("load-recommendations", id, false);
-  }
-};
+// toggleExpand removed
 
 const handleRefreshRecommendations = (id: string) => {
   emit("load-recommendations", id, true);
@@ -676,6 +749,15 @@ const toggleDocsExpand = (id: string) => {
   } else {
     expandedDocId.value = id;
     emit("load-documents", id);
+  }
+};
+
+const toggleDocRecsExpand = (datasetId: string, documentId: string) => {
+  if (expandedDocRecsId.value === documentId) {
+    expandedDocRecsId.value = null;
+  } else {
+    expandedDocRecsId.value = documentId;
+    emit("load-document-recommendations", datasetId, documentId);
   }
 };
 

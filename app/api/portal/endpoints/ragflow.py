@@ -823,3 +823,122 @@ async def get_dataset_portal_recommendations(
         return {"code": 0, "data": {"questions": default_questions}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate dataset portal info: {str(e)}")
+
+
+@router.get("/datasets/{dataset_id}/documents/{document_id}/portal")
+async def get_document_portal_recommendations(
+    dataset_id: str,
+    document_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    获取指定单个文档的专属推荐提问，支持 Redis 缓存（7天）与首尾切片大纲推断
+    """
+    await require_dataset_access(user, db, [dataset_id])
+    
+    # 1. 尝试从 Redis 缓存中获取
+    from app.core.redis import get_redis
+    redis_client = await get_redis()
+    cache_key = f"ragflow:doc_recommendations:{document_id}"
+    
+    try:
+        cached_data = None
+        if redis_client:
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
+                import json
+                return {"code": 0, "data": json.loads(cached_data)}
+    except Exception as redis_err:
+        import logging
+        logging.warning(f"Failed to read Redis cache for document portal: {str(redis_err)}")
+        
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
+    
+    # 2. 默认兜底提问
+    default_questions = [
+        {"label": "总结文档核心要点", "query": "根据选中的文档，请帮我梳理并详细总结一下它的核心内容与背景信息。"},
+        {"label": "列出核心概念", "query": "这篇文档里有哪些值得注意的关键术语或核心概念？分别代表什么含义？"},
+        {"label": "常见问题解答", "query": "我想知道这篇文档中可能包含的常见问题以及它们对应的解答。"}
+    ]
+    
+    try:
+        # 3. 异步获取文件前 3 个分块内容以作为大纲提取
+        chunks_res = await client.list_document_chunks(dataset_id, document_id, page=1, page_size=3)
+        chunks = chunks_res.get("chunks") or []
+        doc_info = chunks_res.get("doc") or {}
+        filename = doc_info.get("name") or "当前文档"
+        
+        # 4. 如果有分块文本，则结合大模型生成专属问题
+        if chunks:
+            text_snippets = []
+            for c in chunks:
+                content = c.get("content_with_weight") or c.get("content") or ""
+                if content.strip():
+                    text_snippets.append(content.strip()[:400]) # 限制每个片段字数，防止过大
+                    
+            if text_snippets:
+                try:
+                    from app.core.llm.client import get_llm_async
+                    from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+                    from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+                    import json
+                    import re
+                    
+                    llm = await get_llm_async(streaming=False, temperature=0.7)
+                    if llm:
+                        chat_client = chat_client_from_handle(llm)
+                        snippets_str = "\n---\n".join(text_snippets)
+                        prompt = (
+                            f"你是一个专业的文档分析助手。当前文件名为《{filename}》，它的核心大纲及前言片段如下：\n"
+                            f"\"\"\"\n{snippets_str}\n\"\"\"\n\n"
+                            f"请根据以上文件片段及文件名，策划生成 3 个针对该文件的、高频、专业且极为具体的提问。\n"
+                            f"要求：\n"
+                            f"1. 每个问题必须是一句完整、具体的提问，不要宽泛（如“如何配置ERP组织架构”而不是“关于配置问题”）；\n"
+                            f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题一\", \"问题二\", \"问题三\"]\n"
+                            f"3. 只输出 JSON 数组本身，严禁任何 Markdown 标记包围或多余解释。"
+                        )
+                        messages = [
+                            RuntimeMessage(
+                                role="system",
+                                content=[RuntimeContentBlock(type="text", text="你是一个严谨的 JSON 提问生成器。")]
+                            ),
+                            RuntimeMessage(
+                                role="user",
+                                content=[RuntimeContentBlock(type="text", text=prompt)]
+                            )
+                        ]
+                        raw_text = await chat_client.generate_text(messages)
+                        raw_text = str(raw_text or "").strip()
+                        match = re.search(r"\[[\s\S]*\]", raw_text)
+                        if match:
+                            parsed_questions = json.loads(match.group())
+                            if isinstance(parsed_questions, list) and len(parsed_questions) >= 3:
+                                dynamic_questions = []
+                                for q in parsed_questions[:3]:
+                                    q_str = str(q).strip()
+                                    label = q_str[:30] + "..." if len(q_str) > 31 else q_str
+                                    dynamic_questions.append({
+                                        "label": label,
+                                        "query": q_str
+                                    })
+                                res_payload = {"questions": dynamic_questions}
+                                
+                                # 写入 Redis 缓存（有效期 7 天：604800 秒）
+                                try:
+                                    await redis_client.setex(cache_key, 604800, json.dumps(res_payload, ensure_ascii=False))
+                                except Exception as cache_err:
+                                    import logging
+                                    logging.warning(f"Failed to write Redis cache for document portal: {str(cache_err)}")
+                                    
+                                return {"code": 0, "data": res_payload}
+                except Exception as llm_err:
+                    import logging
+                    logging.exception("Failed to generate dynamic questions for document via LLM")
+                    
+        # 兜底返回
+        return {"code": 0, "data": {"questions": default_questions}}
+    except Exception as e:
+        import logging
+        logging.exception(f"Failed to fetch document recommendations: {str(e)}")
+        return {"code": 0, "data": {"questions": default_questions}}

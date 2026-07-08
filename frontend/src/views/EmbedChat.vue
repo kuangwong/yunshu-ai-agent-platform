@@ -1388,6 +1388,7 @@
       :recommendations="datasetRecommendations"
       :pinned-dataset-ids="pinnedDatasetIds"
       :dataset-documents="datasetDocuments"
+      :document-recommendations="documentRecommendations"
       :loading="loadingKnowledgeDatasets"
       @toggle-active="(id) => toggleDatasetActive(id, chatInputRef)"
       @load-recommendations="fetchRecommendations"
@@ -1395,6 +1396,7 @@
       @refresh="fetchDatasets"
       @toggle-pin="toggleDatasetPinned"
       @load-documents="fetchDatasetDocuments"
+      @load-document-recommendations="fetchDocumentRecommendations"
     />
 
     <WorkspaceBrowserDrawer
@@ -5708,8 +5710,10 @@ const {
   datasetRecommendations,
   pinnedDatasetIds,
   datasetDocuments,
+  documentRecommendations,
   toggleDatasetPinned,
   fetchDatasetDocuments,
+  fetchDocumentRecommendations,
   fetchDatasets,
   fetchRecommendations,
   syncActiveDatasetsFromInput,

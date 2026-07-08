@@ -46,7 +46,6 @@ import { buildQuotaStatusMarkdown } from "@/utils/quotaDisplay";
 import { isActiveThoughtStep, isDimmedThoughtStep } from "@/utils/turnLogDisplay";
 
 import ChatInput from "@/components/embed/ChatInput.vue";
-import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
 import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
 import SkillBrowserDrawer from "@/components/embed/SkillBrowserDrawer.vue";
@@ -1892,10 +1891,6 @@ onUnmounted(() => {
   window.removeEventListener('resize', handleResize);
 });
 
-const getSelectedKnowledgeBaseIds = () => {
-  const attached = chatInputRef.value?.uploadedFiles?.find((f: any) => f.type === "knowledge_base");
-  return attached?.url ? String(attached.url).split(",").filter(Boolean) : [];
-};
 
 /** 知识库问答专家（与路由 agent_name=knowledge-base 对齐） */
 const resolveKnowledgeExpertAgent = () => {
@@ -1935,34 +1930,6 @@ const buildKnowledgeBaseAttachmentHint = (datasetIdLine: string) => {
   return `${expertHint}\n\n【必须执行】${datasetIdLine}`;
 };
 
-const handleSelectKnowledgeBase = async (val: string | string[]) => {
-  const ids = (Array.isArray(val) ? val : [val]).map((id) => String(id).trim()).filter(Boolean);
-  if (!chatInputRef.value) {
-    showKnowledgeBaseSelector.value = false;
-    return;
-  }
-
-  const files = chatInputRef.value.uploadedFiles || [];
-  chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "knowledge_base");
-
-  if (ids.length > 0) {
-    const kbExpert = resolveKnowledgeExpertAgent();
-    if (kbExpert) {
-      debugMode.value = 'specific';
-      agentParams.agent_id = kbExpert.id;
-    }
-
-    chatInputRef.value.uploadedFiles.push({
-      type: "knowledge_base",
-      url: ids.join(","),
-      filename: `已选择 ${ids.length} 个知识库`,
-      size: 0,
-      ext: "knowledge_base",
-    });
-  }
-
-  showKnowledgeBaseSelector.value = false;
-};
 
 const handleSelectLocalFs = (payload: { type: 'local_file' | 'local_dir'; path: string; name: string; size: number; ext: string }) => {
   if (!chatInputRef.value) return;
@@ -2374,8 +2341,10 @@ const {
   datasetRecommendations,
   pinnedDatasetIds,
   datasetDocuments,
+  documentRecommendations,
   toggleDatasetPinned,
   fetchDatasetDocuments,
+  fetchDocumentRecommendations,
   fetchDatasets,
   fetchRecommendations,
   syncActiveDatasetsFromInput,
@@ -2462,10 +2431,6 @@ const memoryPinnedDockClass = computed(() => {
   return rem > 0 ? `right-[${rem}rem]` : "right-0";
 });
 
-const knowledgePinnedDockClass = computed(() => {
-  const rem = pinnedDrawerDockOffsetRem("knowledge");
-  return rem > 0 ? `right-[${rem}rem]` : "right-0";
-});
 
 const skillPinnedDockClass = computed(() => {
   const rem = pinnedDrawerDockOffsetRem("skill");
@@ -5487,6 +5452,7 @@ onUnmounted(() => {
     :recommendations="datasetRecommendations"
     :pinned-dataset-ids="pinnedDatasetIds"
     :dataset-documents="datasetDocuments"
+    :document-recommendations="documentRecommendations"
     :loading="loadingKnowledgeDatasets"
     @toggle-active="(id) => toggleDatasetActive(id, chatInputRef)"
     @load-recommendations="fetchRecommendations"
@@ -5494,6 +5460,7 @@ onUnmounted(() => {
     @refresh="fetchDatasets"
     @toggle-pin="toggleDatasetPinned"
     @load-documents="fetchDatasetDocuments"
+    @load-document-recommendations="fetchDocumentRecommendations"
   />
 
   <WorkspaceBrowserDrawer

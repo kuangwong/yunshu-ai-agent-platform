@@ -1,4 +1,4 @@
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, watch, nextTick } from "vue";
 import axios from "@/utils/axios";
 
 export interface KnowledgeDataset {
@@ -131,7 +131,7 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
 
   const fetchRecommendations = async (datasetId: string, refresh: boolean = false) => {
     if (!datasetId) return;
-    if (!refresh && datasetRecommendations.value[datasetId]?.questions?.length > 0) return;
+    if (!refresh && (datasetRecommendations.value[datasetId]?.questions || []).length > 0) return;
 
     if (!datasetRecommendations.value[datasetId]) {
       datasetRecommendations.value[datasetId] = { questions: [], loading: true };
@@ -141,7 +141,7 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
 
     try {
       const params: Record<string, any> = {};
-      if (refresh && datasetRecommendations.value[datasetId]?.questions?.length > 0) {
+      if (refresh && (datasetRecommendations.value[datasetId]?.questions || []).length > 0) {
         const queries = datasetRecommendations.value[datasetId].questions.map((q: any) => q.query);
         params.exclude = queries.join(",");
       }
@@ -249,7 +249,7 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
 
   const fetchDatasetDocuments = async (datasetId: string) => {
     if (!datasetId) return;
-    if (datasetDocuments.value[datasetId]?.docs?.length > 0) return;
+    if ((datasetDocuments.value[datasetId]?.docs || []).length > 0) return;
 
     datasetDocuments.value[datasetId] = { docs: [], loading: true };
     try {
@@ -267,6 +267,30 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
     } catch (error) {
       console.error("Failed to load dataset documents", error);
       datasetDocuments.value[datasetId] = { docs: [], loading: false };
+    }
+  };
+
+  // 单文件专属推荐提问管理
+  const documentRecommendations = ref<Record<string, { questions: RecommendationQuestion[]; loading: boolean }>>({});
+
+  const fetchDocumentRecommendations = async (datasetId: string, documentId: string) => {
+    if (!datasetId || !documentId) return;
+    if ((documentRecommendations.value[documentId]?.questions || []).length > 0) return;
+
+    documentRecommendations.value[documentId] = { questions: [], loading: true };
+    try {
+      const response = await axios.get(`/api/portal/ragflow/datasets/${datasetId}/documents/${documentId}/portal`);
+      if (response.data && response.data.code === 0) {
+        documentRecommendations.value[documentId] = {
+          questions: response.data.data.questions || [],
+          loading: false
+        };
+      } else {
+        documentRecommendations.value[documentId] = { questions: [], loading: false };
+      }
+    } catch (error) {
+      console.error("Failed to fetch document recommendations for " + documentId, error);
+      documentRecommendations.value[documentId] = { questions: [], loading: false };
     }
   };
 
@@ -297,8 +321,10 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
     datasetRecommendations,
     pinnedDatasetIds,
     datasetDocuments,
+    documentRecommendations,
     toggleDatasetPinned,
     fetchDatasetDocuments,
+    fetchDocumentRecommendations,
     fetchDatasets,
     fetchRecommendations,
     syncActiveDatasetsFromInput,

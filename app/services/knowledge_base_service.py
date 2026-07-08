@@ -171,6 +171,10 @@ class KnowledgeBaseMetadataService:
             for dataset_id, local in metadata_by_id.items():
                 if dataset_id in ragflow_by_id:
                     continue
+                # 过滤掉特殊的案例库和元数据管理库的失联记录
+                local_name = (local.name or "").lower()
+                if "chatbi-example" in local_name or local_name.startswith("meta-"):
+                    continue
                 merged.append({
                     "id": dataset_id,
                     "ragflow_dataset_id": dataset_id,

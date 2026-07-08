@@ -275,7 +275,11 @@ async def list_ragflow_datasets(
 
     try:
         items = await client.list_datasets(page=page, page_size=page_size)
-        items = [item for item in items if not item.get("name", "").startswith("meta-")]
+        items = [
+            item for item in items 
+            if not item.get("name", "").startswith("meta-")
+            and "chatbi-example" not in item.get("name", "").lower()
+        ]
 
         if not is_admin:
             allowed = access["accessible_ids"] or set()
@@ -726,4 +730,80 @@ async def get_ragflow_document_file(
         return Response(content=content, media_type=content_type, headers=headers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch document file: {str(e)}")
+
+
+@router.get("/datasets/{dataset_id}/portal")
+async def get_dataset_portal_recommendations(
+    dataset_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """
+    获取指定知识库数据集的侧边栏推荐提问与扩展概要
+    """
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
+    try:
+        # 1. 尝试获取数据集基本信息与文档列表
+        docs = await client.list_documents(dataset_id, page_size=20)
+        doc_names = [d.get("name", "") for d in docs if d.get("name")]
+        
+        # 2. 默认快捷兜底问题
+        default_questions = [
+            {"label": "总结该知识库核心内容", "query": "请帮我梳理并总结一下当前选中的知识库里的核心要点和背景信息。"},
+            {"label": "列出包含的所有文件", "query": "这个知识库里一共有哪些文档？分别介绍下它们的主题是什么。"},
+            {"label": "检索使用说明", "query": "我想知道当前选中的这些文档里有哪些值得注意的关键条款或常见问题？"}
+        ]
+        
+        # 3. 如果包含文档，尝试调用大模型动态生成更有针对性的问题
+        if doc_names:
+            try:
+                from app.core.llm.client import get_llm_async
+                from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+                import json
+                import re
+                
+                llm = await get_llm_async(streaming=False, temperature=0.7)
+                if llm:
+                    doc_names_str = ", ".join(doc_names[:10]) # 限制前10个
+                    prompt = (
+                        f"你是一个专业的知识库导航助手。当前知识库包含以下文档列表：[{doc_names_str}]。\n"
+                        f"请根据这些文件的名字所反映的业务内容，生成 3 个用户最有可能向 AI 提问的高频、专业且具体的问题。\n"
+                        f"要求：\n"
+                        f"1. 每个问题必须是一句完整、具体的提问，不要宽泛（如“介绍下XX项目的设计架构”而不是“关于架构的设计”）；\n"
+                        f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题一内容\", \"问题二内容\", \"问题三内容\"]\n"
+                        f"3. 只输出 JSON 数组本身，严禁任何 Markdown 标记包围或多余解释。"
+                    )
+                    messages = [
+                        RuntimeMessage(
+                            role="system",
+                            content=[RuntimeContentBlock(type="text", text="你是一个严谨的 JSON 问答生成器。")]
+                        ),
+                        RuntimeMessage(
+                            role="user",
+                            content=[RuntimeContentBlock(type="text", text=prompt)]
+                        )
+                    ]
+                    raw_text = await llm.generate_text(messages)
+                    raw_text = str(raw_text or "").strip()
+                    match = re.search(r"\[[\s\S]*\]", raw_text)
+                    if match:
+                        parsed_questions = json.loads(match.group())
+                        if isinstance(parsed_questions, list) and len(parsed_questions) >= 3:
+                            # 转换为前端要求的 label + query 格式
+                            dynamic_questions = []
+                            for q in parsed_questions[:3]:
+                                q_str = str(q).strip()
+                                # label 适当截短用于按钮展示
+                                label = q_str[:15] + "..." if len(q_str) > 16 else q_str
+                                dynamic_questions.append({
+                                    "label": label,
+                                    "query": q_str
+                                })
+                            return {"code": 0, "data": {"questions": dynamic_questions}}
+            except Exception as llm_err:
+                # LLM 生成失败时，安静退避到默认问题，不影响 API 的正常可用
+                pass
+                
+        return {"code": 0, "data": {"questions": default_questions}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate dataset portal info: {str(e)}")
 

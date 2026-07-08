@@ -177,6 +177,15 @@ class PermissionService:
             rows = (await self.db.execute(stmt)).scalars().all()
             created_ids = {row for row in rows if row}
 
+        # 合并系统级配置的默认公开知识库
+        from app.services.config_service import ConfigService
+        default_ids_str = await ConfigService.get("knowledge_ragflow_dataset_ids")
+        if default_ids_str:
+            for item in default_ids_str.split(","):
+                token = item.strip()
+                if token:
+                    accessible.add(token)
+
         accessible |= created_ids
         return {
             "is_admin": False,

@@ -1,0 +1,215 @@
+import { ref, computed, watch, nextTick } from "vue";
+import axios from "@/utils/axios";
+
+export interface KnowledgeDataset {
+  id: string;
+  name: string;
+  description: string;
+  doc_count?: number;
+  word_count?: number;
+  status?: string;
+  [key: string]: any;
+}
+
+export interface RecommendationQuestion {
+  label: string;
+  query: string;
+}
+
+export interface RecommendationPayload {
+  questions: RecommendationQuestion[];
+  loading?: boolean;
+}
+
+export interface UseKnowledgePortalOptions {
+  showToast: (message: string, type?: "success" | "error" | "info") => void;
+  onOpenAnotherPortal?: () => void;
+}
+
+export const isMobileViewport = () =>
+  typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
+
+const readStoredBoolean = (storageKey: string, defaultVal: boolean): boolean => {
+  const val = localStorage.getItem(storageKey);
+  if (val === "1") return true;
+  if (val === "0") return false;
+  return defaultVal;
+};
+
+export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
+  const showKnowledgePortal = ref(false);
+  const knowledgePinned = ref(!isMobileViewport() && readStoredBoolean("knowledge_portal_pinned", false));
+  const knowledgeKeepOpenOnQuestion = ref(readStoredBoolean("knowledge_portal_keep_open", !isMobileViewport()));
+
+  const datasets = ref<KnowledgeDataset[]>([]);
+  const loadingDatasets = ref(false);
+  const activeDatasetIds = ref<string[]>([]);
+  const datasetRecommendations = ref<Record<string, RecommendationPayload>>({});
+
+  // 本地持久化配置
+  watch(knowledgePinned, (val) => {
+    localStorage.setItem("knowledge_portal_pinned", val ? "1" : "0");
+  });
+  watch(knowledgeKeepOpenOnQuestion, (val) => {
+    localStorage.setItem("knowledge_portal_keep_open", val ? "1" : "0");
+  });
+
+  // NLI 事实一致性检测开关（默认关闭）
+  const hallucinationCheckEnabled = ref(readStoredBoolean("knowledge_hallucination_check", false));
+  watch(hallucinationCheckEnabled, (val) => {
+    localStorage.setItem("knowledge_hallucination_check", val ? "1" : "0");
+  });
+
+  // 知识库高级检索参数：相似度阈值、向量权重、文档分块 Top-K
+  const knowledgeSimilarityThreshold = ref<number>(
+    parseFloat(localStorage.getItem("knowledge_ragflow_similarity_threshold") || "0.20")
+  );
+  const knowledgeVectorWeight = ref<number>(
+    parseFloat(localStorage.getItem("knowledge_ragflow_vector_weight") || "0.30")
+  );
+  const knowledgeMetadataTopK = ref<number>(
+    parseInt(localStorage.getItem("knowledge_ragflow_metadata_top_k") || "5")
+  );
+  const knowledgeGeneratedAt = ref<string>(
+    localStorage.getItem("knowledge_portal_generated_at") || ""
+  );
+
+  watch(knowledgeSimilarityThreshold, (val) => {
+    localStorage.setItem("knowledge_ragflow_similarity_threshold", val.toString());
+  });
+  watch(knowledgeVectorWeight, (val) => {
+    localStorage.setItem("knowledge_ragflow_vector_weight", val.toString());
+  });
+  watch(knowledgeMetadataTopK, (val) => {
+    localStorage.setItem("knowledge_ragflow_metadata_top_k", val.toString());
+  });
+
+  const fetchDatasets = async () => {
+    if (loadingDatasets.value) return;
+    loadingDatasets.value = true;
+    try {
+      const response = await axios.get("/api/portal/ragflow/datasets", {
+        params: { page: 1, page_size: 100, include_missing: false }
+      });
+      if (response.data && response.data.code === 0) {
+        datasets.value = response.data.data.datasets || response.data.data || [];
+        const nowStr = new Date().toLocaleString("zh-CN", { hour12: false });
+        knowledgeGeneratedAt.value = nowStr;
+        localStorage.setItem("knowledge_portal_generated_at", nowStr);
+      } else {
+        datasets.value = response.data.data || [];
+      }
+    } catch (error) {
+      console.error("Failed to load knowledge bases", error);
+      options.showToast("加载知识库列表失败，请稍后重试", "error");
+    } finally {
+      loadingDatasets.value = false;
+    }
+  };
+
+  const fetchRecommendations = async (datasetId: string) => {
+    if (!datasetId) return;
+    if (datasetRecommendations.value[datasetId]) return;
+
+    datasetRecommendations.value[datasetId] = { questions: [], loading: true };
+    try {
+      const response = await axios.get(`/api/portal/ragflow/datasets/${datasetId}/portal`);
+      if (response.data && response.data.code === 0) {
+        datasetRecommendations.value[datasetId] = {
+          questions: response.data.data.questions || [],
+          loading: false
+        };
+      } else {
+        datasetRecommendations.value[datasetId] = { questions: [], loading: false };
+      }
+    } catch (error) {
+      console.error("Failed to fetch recommendations for " + datasetId, error);
+      datasetRecommendations.value[datasetId] = { questions: [], loading: false };
+    }
+  };
+
+  // 从当前输入框附件中提取已激活的知识库
+  const syncActiveDatasetsFromInput = (chatInputRef: any) => {
+    if (!chatInputRef || !chatInputRef.uploadedFiles) {
+      activeDatasetIds.value = [];
+      return;
+    }
+    const files = chatInputRef.uploadedFiles || [];
+    const kbFile = files.find((f: any) => f.type === "knowledge_base");
+    if (kbFile && kbFile.url) {
+      activeDatasetIds.value = kbFile.url.split(",").map((id: string) => id.trim()).filter(Boolean);
+    } else {
+      activeDatasetIds.value = [];
+    }
+  };
+
+  // 开关切换激活状态
+  const toggleDatasetActive = (datasetId: string, chatInputRef: any) => {
+    if (!chatInputRef) return;
+    if (!chatInputRef.uploadedFiles) {
+      chatInputRef.uploadedFiles = [];
+    }
+
+    const files = chatInputRef.uploadedFiles || [];
+    const otherFiles = files.filter((f: any) => f.type !== "knowledge_base");
+    const kbFile = files.find((f: any) => f.type === "knowledge_base");
+
+    let currentIds = kbFile && kbFile.url
+      ? kbFile.url.split(",").map((id: string) => id.trim()).filter(Boolean)
+      : [];
+
+    if (currentIds.includes(datasetId)) {
+      currentIds = currentIds.filter((id: string) => id !== datasetId);
+    } else {
+      currentIds.push(datasetId);
+    }
+
+    activeDatasetIds.value = currentIds;
+
+    if (currentIds.length > 0) {
+      const newKbFile = {
+        type: "knowledge_base",
+        url: currentIds.join(","),
+        filename: `已选择 ${currentIds.length} 个知识库`,
+        size: 0,
+        ext: "knowledge_base",
+      };
+      chatInputRef.uploadedFiles = [...otherFiles, newKbFile];
+    } else {
+      chatInputRef.uploadedFiles = otherFiles;
+    }
+  };
+
+  const openKnowledgePortal = async () => {
+    if (options.onOpenAnotherPortal) {
+      options.onOpenAnotherPortal();
+    }
+    showKnowledgePortal.value = true;
+    await fetchDatasets();
+  };
+
+  const closeKnowledgePortal = () => {
+    showKnowledgePortal.value = false;
+  };
+
+  return {
+    showKnowledgePortal,
+    knowledgePinned,
+    knowledgeKeepOpenOnQuestion,
+    hallucinationCheckEnabled,
+    knowledgeSimilarityThreshold,
+    knowledgeVectorWeight,
+    knowledgeMetadataTopK,
+    knowledgeGeneratedAt,
+    datasets,
+    loadingDatasets,
+    activeDatasetIds,
+    datasetRecommendations,
+    fetchDatasets,
+    fetchRecommendations,
+    syncActiveDatasetsFromInput,
+    toggleDatasetActive,
+    openKnowledgePortal,
+    closeKnowledgePortal
+  };
+}

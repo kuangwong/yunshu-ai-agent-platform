@@ -15,28 +15,31 @@ class HallucinationEvaluator:
     Evaluator to detect hallucinated content in AI responses relative to RAG context.
     """
 
-    SYSTEM_PROMPT = """你是一个严格的“AI 回答事实一致性判定助手”。
-你的唯一任务是判断“AI 的回答”是否完全忠实于“检索出的事实文献”。
+    SYSTEM_PROMPT = """你是一个"AI 回答事实一致性审核助手"。
+你的任务是判断"AI 的回答"是否基于"检索出的事实文献"，对可能存在的严重幻觉进行标记。
 
 【判定规则】
-1. **严格的事实一致性**：AI 回答中的任何事实性陈述（例如特定步骤、数字、流程说明等），必须能在“事实文献”中找到明确的支撑。
-2. **严禁编造**：AI 的回答中如果出现了文献里完全没有提及的全新规定、流程、外部系统或具体限制（哪怕听起来很合理），则判定为“有幻觉 (is_hallucinated: true)”。
-3. **安全容错**：如果 AI 回答坦白说“文献中没有提到”或“无法回答”，这属于客观回答，不属于幻觉（应判定为 is_hallucinated: false）。
-4. **排除常识**：一般的问候语、礼貌用语、转折词不计入幻觉。
+1. **整体事实一致性（非逐字匹配）**：AI 回答的核心事实性陈述，应能在"事实文献"中找到支撑或合理推断。允许语言组织和合理归纳，不要求逐字一致。
+2. **严禁凭空编造**：仅当 AI 明确断言了文献里完全没有提及的具体数字、特定系统名称或特定限制规定（而非一般性推断）时，才视为幻觉。
+3. **综合/摘要类回答宽容**：当用户提出宽泛性问题（如"有哪些功能""大概介绍"），AI 基于多篇文献归纳综合的回答，只要大多数主要观点有文献支撑，即视为可接受（is_hallucinated: false）。
+4. **安全容错**：如果 AI 坦白说"文献中没有提到"或"无法回答"，属于客观回答，不属于幻觉。
+5. **排除常识与礼貌**：问候语、礼貌用语、逻辑转折词不计入幻觉。
 
 【输出格式】
 你的输出必须是一个有效的 JSON 字符串，包含以下两个字段：
-- is_hallucinated: 布尔值 (true/false)。表示该回答是否包含幻觉或文献中不存在的事实。
-- reason: 字符串。详细说明判定的原因。如果 is_hallucinated 为 true，必须明确指出哪些回答句子是文献中完全不支持的；如果为 false，设为空字符串。
+- is_hallucinated: 布尔值 (true/false)。仅当存在明确的、严重的、无文献依据的核心事实断言时才返回 true。
+- reason: 字符串。如果 is_hallucinated 为 true，必须指出哪些具体句子是文献完全不支持的；如果为 false，设为空字符串。
 
 请只输出 JSON 本身，绝对不要包含任何 Markdown 包裹（如 ```json ... ```），也不要有多余的解释。"""
 
     @classmethod
-    async def evaluate(cls, query: str, context: str, response: str) -> Dict[str, Any]:
+    async def evaluate(cls, query: str, context: str, response: str, enabled: bool = True) -> Dict[str, Any]:
         """
         Evaluate if the response has hallucination relative to the context.
         Returns: {"is_hallucinated": bool, "reason": str}
         """
+        if not enabled:
+            return {"is_hallucinated": False, "reason": "NLI 检测已关闭，跳过"}
         if not context.strip() or not response.strip():
             return {"is_hallucinated": False, "reason": "上下文或回答为空，跳过评估"}
 

@@ -285,6 +285,20 @@ def resolve_rag_retrieval_params(
     threshold = _coerce_float(agent_threshold, threshold)
     vector_weight = _coerce_float(agent_weight, vector_weight)
     top_k = _coerce_int(agent_top_k, top_k)
+
+    # 临时覆盖调试选项：读取 debug_context 中的自定义检索参数
+    from app.core.context import get_debug_option
+    dbg_threshold = get_debug_option("knowledge_ragflow_similarity_threshold")
+    dbg_weight = get_debug_option("knowledge_ragflow_vector_weight")
+    dbg_top_k = get_debug_option("knowledge_ragflow_metadata_top_k")
+
+    if dbg_threshold is not None:
+        threshold = _coerce_float(dbg_threshold, threshold)
+    if dbg_weight is not None:
+        vector_weight = _coerce_float(dbg_weight, vector_weight)
+    if dbg_top_k is not None:
+        top_k = _coerce_int(dbg_top_k, top_k)
+
     return threshold, vector_weight, top_k
 
 

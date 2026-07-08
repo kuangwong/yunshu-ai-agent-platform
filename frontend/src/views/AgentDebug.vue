@@ -8,11 +8,16 @@ import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import MessageRenderer from "@/components/MessageRenderer.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
 import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
+import KnowledgePortalDrawer from "@/components/knowledge/KnowledgePortalDrawer.vue";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
+import { useKnowledgePortal } from "@/composables/useKnowledgePortal";
 import {
   DATASET_PORTAL_SLASH_COMMAND,
   DATASET_PORTAL_SYSTEM_COMMAND_ID,
   isDatasetPortalSlashCommand,
+  KNOWLEDGE_PORTAL_SLASH_COMMAND,
+  KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID,
+  isKnowledgePortalSlashCommand,
 } from "@/constants/datasetPortalCommand";
 import {
   WORKSPACE_SLASH_COMMAND,
@@ -330,7 +335,8 @@ const debugMode = ref<"auto" | "specific">("auto");
 const SYSTEM_SLASH_COMMANDS = [
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -40 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -39 },
-  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
+  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📊 数据门户", sort_order: -35 },
+  { id: KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID, command: KNOWLEDGE_PORTAL_SLASH_COMMAND, label: "📚 知识库中心", sort_order: -34.5 },
   { id: WORKSPACE_SYSTEM_COMMAND_ID, command: WORKSPACE_SLASH_COMMAND, label: "💻 工作空间", sort_order: -34 },
   { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
@@ -1689,7 +1695,6 @@ const formatModelCallTime = (isoStr: string): string => {
 };
 
 const chatInputRef = ref<any>(null);
-const showKnowledgeBaseSelector = ref(false);
 const showWorkspaceDrawer = ref(false);
 
 const readStoredBoolean = (key: string, defaultWhenUnset: boolean) => {
@@ -2269,6 +2274,11 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     showWorkspaceDrawer.value = true;
     return true;
   }
+  if (isKnowledgePortalSlashCommand(normalizedCmd)) {
+    userInput.value = "";
+    await openKnowledgePortal();
+    return true;
+  }
   if (normalizedCmd === "/switch_to_auto" || normalizedCmd === "/switch_agent_auto") {
     userInput.value = "";
     debugMode.value = "auto";
@@ -2349,9 +2359,70 @@ const {
   pinStorageKey: "debug_portal_pinned",
 });
 
-const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "skill") => {
+const {
+  showKnowledgePortal,
+  knowledgePinned,
+  knowledgeKeepOpenOnQuestion,
+  hallucinationCheckEnabled,
+  knowledgeSimilarityThreshold,
+  knowledgeVectorWeight,
+  knowledgeMetadataTopK,
+  knowledgeGeneratedAt,
+  datasets: knowledgeDatasets,
+  loadingDatasets: loadingKnowledgeDatasets,
+  activeDatasetIds,
+  datasetRecommendations,
+  fetchDatasets,
+  fetchRecommendations,
+  syncActiveDatasetsFromInput,
+  toggleDatasetActive,
+  openKnowledgePortal: rawOpenKnowledgePortal,
+  closeKnowledgePortal
+} = useKnowledgePortal({
+  showToast,
+  onOpenAnotherPortal: () => {
+    closePortalDrawer();
+  }
+});
+
+const openKnowledgePortal = async () => {
+  await rawOpenKnowledgePortal();
+  const kbExpert = resolveKnowledgeExpertAgent();
+  if (kbExpert) {
+    debugMode.value = 'specific';
+    agentParams.agent_id = kbExpert.id;
+  }
+};
+
+watch(showPortalDrawer, (val) => {
+  if (val) {
+    closeKnowledgePortal();
+  }
+});
+
+watch(showKnowledgePortal, (val) => {
+  if (!val) {
+    // 只有在未打开数据门户的情况下，关闭知识库中心才退回到自动路由
+    if (!showPortalDrawer.value) {
+      debugMode.value = "auto";
+      agentParams.agent_id = null;
+    }
+  }
+});
+
+// 监听上传文件的变更，保持知识库激活状态在抽屉卡片里是最新同步的
+watch(
+  () => chatInputRef.value?.uploadedFiles,
+  () => {
+    syncActiveDatasetsFromInput(chatInputRef.value);
+  },
+  { deep: true }
+);
+
+const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "skill" | "knowledge") => {
   let rem = 0;
   if (exclude !== "portal" && showPortalDrawer.value && portalPinned.value) rem += 28;
+  if (exclude !== "knowledge" && showKnowledgePortal.value && knowledgePinned.value) rem += 28;
   if (exclude !== "workspace" && showWorkspaceDrawer.value && workspacePinned.value) rem += 28;
   if (exclude !== "memory" && showMemoryDrawer.value && memoryPinned.value) rem += 28;
   if (exclude !== "skill" && showSkillDrawer.value && skillPinned.value) rem += 28;
@@ -2367,9 +2438,10 @@ const saveReportModalOverlayStyle = computed(() => {
   const rem = pinnedDrawerRightRem.value;
   return { right: rem > 0 ? `${rem}rem` : "0" };
 });
-const saveReportModalOverlayClass = computed(() =>
-  showPortalDrawer.value && portalPinned.value ? 'right-[28rem]' : 'right-0'
-);
+const saveReportModalOverlayClass = computed(() => {
+  const isPinned = (showPortalDrawer.value && portalPinned.value) || (showKnowledgePortal.value && knowledgePinned.value);
+  return isPinned ? 'right-[28rem]' : 'right-0';
+});
 
 const pinnedDrawerMarginStyle = computed(() => {
   const rem = pinnedDrawerRightRem.value;
@@ -2383,6 +2455,11 @@ const workspacePinnedDockClass = computed(() => {
 
 const memoryPinnedDockClass = computed(() => {
   const rem = pinnedDrawerDockOffsetRem("memory");
+  return rem > 0 ? `right-[${rem}rem]` : "right-0";
+});
+
+const knowledgePinnedDockClass = computed(() => {
+  const rem = pinnedDrawerDockOffsetRem("knowledge");
   return rem > 0 ? `right-[${rem}rem]` : "right-0";
 });
 
@@ -2803,6 +2880,10 @@ const sendMessage = async () => {
     const debugOptions: any = {
       return_raw_prompt: debugConfig.returnRawPrompt,
       dry_run: debugConfig.dryRun,
+      hallucination_check: hallucinationCheckEnabled.value || undefined,
+      knowledge_ragflow_similarity_threshold: knowledgeSimilarityThreshold.value,
+      knowledge_ragflow_vector_weight: knowledgeVectorWeight.value,
+      knowledge_ragflow_metadata_top_k: knowledgeMetadataTopK.value,
     };
     if (debugConfig.model) debugOptions.model = debugConfig.model;
     if (debugConfig.temperature > 0)
@@ -4610,7 +4691,7 @@ onUnmounted(() => {
             @switch-mode="handleSwitchMode"
             @reorder-commands="handleReorderCommands"
             @select-skill="openSkillSelector"
-            @select-knowledge-base="showKnowledgeBaseSelector = true"
+            @select-knowledge-base="openKnowledgePortal"
             @select-local-fs="showWorkspaceDrawer = true"
             @select-memory="openMemorySelector"
             @system-command="handleSystemCommand"
@@ -4881,7 +4962,7 @@ onUnmounted(() => {
 
   <!-- Canvas RAG 原地物理高亮预览抽屉 -->
   <div
-    class="fixed top-0 right-0 h-full w-[45%] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl z-[210] flex flex-col transition-transform duration-300 ease-in-out transform"
+    class="fixed top-0 right-0 h-full w-[45%] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl z-[115] flex flex-col transition-transform duration-300 ease-in-out transform"
     :class="ragPreviewVisible ? 'translate-x-0' : 'translate-x-full'"
   >
     <!-- Header -->
@@ -5388,11 +5469,23 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <RagFlowResourceSelector
-    v-model="showKnowledgeBaseSelector"
-    type="dataset"
-    :initial-selected="getSelectedKnowledgeBaseIds()"
-    @select="handleSelectKnowledgeBase"
+  <KnowledgePortalDrawer
+    v-model="showKnowledgePortal"
+    v-model:pinned="knowledgePinned"
+    v-model:keep-open-on-question="knowledgeKeepOpenOnQuestion"
+    v-model:hallucination-check="hallucinationCheckEnabled"
+    v-model:similarity-threshold="knowledgeSimilarityThreshold"
+    v-model:vector-weight="knowledgeVectorWeight"
+    v-model:metadata-top-k="knowledgeMetadataTopK"
+    :generated-at="knowledgeGeneratedAt"
+    :datasets="knowledgeDatasets"
+    :active-dataset-ids="activeDatasetIds"
+    :recommendations="datasetRecommendations"
+    :loading="loadingKnowledgeDatasets"
+    @toggle-active="(id) => toggleDatasetActive(id, chatInputRef)"
+    @load-recommendations="fetchRecommendations"
+    @quick-question="handleQuickQuestion"
+    @refresh="fetchDatasets"
   />
 
   <WorkspaceBrowserDrawer

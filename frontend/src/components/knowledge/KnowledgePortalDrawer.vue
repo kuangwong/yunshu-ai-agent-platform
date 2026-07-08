@@ -143,31 +143,111 @@
                   </div>
                 </div>
                 
-                <button
-                  type="button"
-                  class="w-7 h-7 flex items-center justify-center rounded-lg border border-transparent bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-750 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-750 dark:hover:text-gray-200 transition-all cursor-pointer active:scale-90 flex-shrink-0"
-                  title="刷新知识库列表"
-                  :disabled="loading"
-                  @click="emit('refresh')"
-                >
-                  <svg 
-                    class="w-3.5 h-3.5"
-                    :class="{ 'animate-spin': loading }"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                <div class="flex items-center gap-1.5 flex-shrink-0">
+                  <!-- 🔍 搜索折叠切换按钮 -->
+                  <button
+                    type="button"
+                    class="w-7 h-7 flex items-center justify-center rounded-lg border border-transparent transition-all cursor-pointer active:scale-90"
+                    :class="showSearchBar
+                      ? 'bg-green-50 text-green-600 dark:bg-green-955/40 dark:text-green-400 font-bold'
+                      : 'bg-gray-50 text-gray-500 dark:bg-gray-800 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-750'"
+                    title="展开/折叠搜索与标签过滤"
+                    @click="showSearchBar = !showSearchBar"
                   >
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                  </svg>
-                </button>
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="w-7 h-7 flex items-center justify-center rounded-lg border border-transparent bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-750 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-750 dark:hover:text-gray-200 transition-all cursor-pointer active:scale-90"
+                    title="刷新知识库列表"
+                    :disabled="loading"
+                    @click="emit('refresh')"
+                  >
+                    <svg 
+                      class="w-3.5 h-3.5"
+                      :class="{ 'animate-spin': loading }"
+                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
 
+              <!-- Search and Filter Bar -->
+              <transition
+                enter-active-class="transition-all duration-300 ease-out"
+                enter-from-class="transform opacity-0 -translate-y-2 max-h-0 overflow-hidden"
+                enter-to-class="transform opacity-100 translate-y-0 max-h-[120px] overflow-hidden"
+                leave-active-class="transition-all duration-200 ease-in"
+                leave-from-class="transform opacity-100 translate-y-0 max-h-[120px] overflow-hidden"
+                leave-to-class="transform opacity-0 -translate-y-2 max-h-0 overflow-hidden"
+              >
+                <div v-show="showSearchBar" class="space-y-2">
+                  <div class="relative">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400 dark:text-gray-500">
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </span>
+                    <input
+                      v-model="searchQuery"
+                      type="text"
+                      placeholder="搜索分类标签、名称或描述..."
+                      class="w-full pl-9 pr-8 py-1.5 text-[11px] rounded-xl border border-gray-150 dark:border-gray-800 bg-white dark:bg-gray-900/30 text-gray-850 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-all shadow-xs"
+                    />
+                    <button
+                      v-if="searchQuery"
+                      type="button"
+                      class="absolute inset-y-0 right-0 flex items-center pr-2.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                      @click="searchQuery = ''"
+                    >
+                      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div v-if="allTags.length" class="relative">
+                    <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 -mx-0.5 scroll-smooth">
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 text-[9px] font-bold rounded-lg border transition-all whitespace-nowrap cursor-pointer active:scale-95 select-none"
+                        :class="selectedTag === 'All'
+                          ? 'bg-green-600 border-transparent text-white shadow-xs'
+                          : 'bg-gray-50 dark:bg-gray-800/40 border-gray-150 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+                        @click="selectedTag = 'All'"
+                      >
+                        全部
+                      </button>
+                      <button
+                        v-for="tag in allTags"
+                        :key="tag"
+                        type="button"
+                        class="px-2.5 py-1 text-[9px] font-bold rounded-lg border transition-all whitespace-nowrap cursor-pointer active:scale-95 select-none"
+                        :class="selectedTag === tag
+                          ? 'bg-green-600 border-transparent text-white shadow-xs'
+                          : 'bg-gray-50 dark:bg-gray-800/40 border-gray-150 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+                        @click="selectedTag = tag"
+                      >
+                        {{ tag }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </transition>
+
               <!-- ⚙️ 高级选项 (Collapsible) -->
-              <div class="rounded-xl border border-blue-150/70 dark:border-blue-900/40 bg-blue-50/10 dark:bg-blue-950/5 p-3 space-y-2.5">
+              <div class="rounded-xl border border-gray-150 dark:border-gray-800 bg-gray-50/20 dark:bg-gray-900/10 p-3 space-y-2.5 transition-all duration-300">
                 <div
-                  class="flex items-center justify-between w-full text-[10px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wider transition-colors select-none cursor-pointer"
+                  class="flex items-center justify-between w-full text-[10px] font-bold text-gray-500 hover:text-green-600 dark:text-gray-400 dark:hover:text-green-400 uppercase tracking-wider transition-colors select-none cursor-pointer"
                   @click="showAdvancedConfig = !showAdvancedConfig"
                 >
                   <span class="flex items-center gap-1.5">
-                    <span>🛠️</span> 高级配置
+                    <span class="text-xs">⚙️</span> 高级配置
                   </span>
                   <svg
                     class="w-3.5 h-3.5 transform transition-transform duration-300 pointer-events-none"
@@ -384,17 +464,44 @@
                 <div class="relative space-y-2.5">
                   <!-- Header Row -->
                   <div class="flex items-start gap-2.5 min-w-0">
+                    <!-- Collapse Toggle Chevron -->
+                    <button
+                      type="button"
+                      class="flex-shrink-0 flex items-center justify-center w-5 h-9 rounded text-gray-400 hover:text-green-500 hover:bg-green-50/30 dark:hover:bg-green-950/20 transition-all duration-200 cursor-pointer"
+                      @click.stop="toggleCollapse(ds.id)"
+                      :title="isCollapsed(ds.id) ? '展开卡片' : '收起卡片'"
+                    >
+                      <svg
+                        class="w-3.5 h-3.5 transform transition-transform duration-200"
+                        :class="{ '-rotate-90': isCollapsed(ds.id) }"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        viewBox="0 0 24 24"
+                      >
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                      </svg>
+                    </button>
+
                     <div
-                      class="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-xl shadow-xs border text-[18px] bg-green-500/10 border-green-500/20 text-green-600 dark:bg-green-500/20 dark:border-green-500/30 dark:text-green-400"
+                      @click.stop="toggleCollapse(ds.id)"
+                      class="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-xl shadow-xs border text-[18px] bg-green-50/10 border-green-500/20 text-green-600 dark:bg-green-500/20 dark:border-green-500/30 dark:text-green-400 cursor-pointer hover:opacity-80 transition-opacity select-none"
                     >
                       📚
                     </div>
                     
                     <h4
-                      class="flex-1 min-w-0 text-sm font-bold leading-snug break-words pt-0.5 text-gray-800 dark:text-gray-100"
-                      :title="ds.name"
+                      @click.stop="toggleCollapse(ds.id)"
+                      class="flex-1 min-w-0 text-sm font-bold leading-snug break-words pt-0.5 text-gray-800 dark:text-gray-100 flex items-center flex-wrap gap-1.5 cursor-pointer hover:text-green-600 dark:hover:text-green-400 transition-colors select-none"
+                      :title="ds.platform_name || ds.name"
                     >
-                      {{ ds.name }}
+                      <span>{{ ds.platform_name || ds.name }}</span>
+                      <span
+                        v-if="isMyCreated(ds)"
+                        class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-bold tracking-wider uppercase bg-green-50/50 text-green-600 border border-green-200/30 dark:bg-green-950/20 dark:border-green-800/30 dark:text-green-400 select-none"
+                      >
+                        自建
+                      </span>
                     </h4>
                     
                     <!-- Actions (Pin & Toggle switch) -->
@@ -429,6 +536,9 @@
                       </button>
                     </div>
                   </div>
+                  
+                  <!-- Collapsible Content Wrapper -->
+                  <div v-show="!isCollapsed(ds.id)" class="space-y-2.5 pt-0.5">
 
                   <!-- Badges list matching pl-11.5 indentation -->
                   <div class="flex flex-wrap gap-1.5 pl-11.5 min-w-0">
@@ -447,10 +557,10 @@
 
                   <!-- Description Summary Box (blockquote) -->
                   <blockquote
-                    v-if="ds.description"
+                    v-if="ds.platform_description || ds.description"
                     class="relative w-full m-0 px-3.5 py-2.5 text-[11px] leading-relaxed rounded-r-lg border-l-[3px] bg-green-50/40 dark:bg-green-950/10 border-green-500 text-gray-600 dark:text-gray-400 font-medium"
                   >
-                    {{ ds.description }}
+                    {{ ds.platform_description || ds.description }}
                   </blockquote>
 
                   <!-- Collapsible Relevant Documents Section -->
@@ -497,8 +607,15 @@
                         class="mt-1.5 border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900 rounded-lg overflow-y-auto max-h-[250px] p-2 space-y-1.5 scrollbar-thin"
                         @click.stop
                       >
-                        <div v-if="datasetDocuments[ds.id]?.loading" class="flex justify-center py-4">
-                          <div class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-gray-300 border-t-green-500" />
+                        <div v-if="datasetDocuments[ds.id]?.loading" class="space-y-2 py-2">
+                          <div
+                            v-for="i in 3"
+                            :key="i"
+                            class="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-gray-100 dark:border-gray-800"
+                          >
+                            <div class="kp-skeleton-shimmer w-3.5 h-3.5 rounded flex-shrink-0" />
+                            <div class="kp-skeleton-shimmer h-2.5 rounded flex-1" :style="{ maxWidth: i === 1 ? '70%' : '85%' }" />
+                          </div>
                         </div>
                         <template v-else-if="(datasetDocuments[ds.id]?.docs?.length || 0) > 0">
                           <div
@@ -548,8 +665,20 @@
                                   <span class="text-green-500 font-bold">💡</span> 针对该文件的专属提问：
                                 </div>
                                 
-                                <div v-if="documentRecommendations[doc.id]?.loading" class="flex justify-center py-2">
-                                  <div class="animate-spin rounded-full h-3 w-3 border border-gray-300 border-t-green-500" />
+                                <div v-if="documentRecommendations[doc.id]?.loading" class="space-y-2 py-1">
+                                  <div class="flex flex-wrap gap-1.5 kp-question-skeleton-wrap">
+                                    <div
+                                      v-for="(width, i) in ['6.5rem', '5.75rem']"
+                                      :key="i"
+                                      class="inline-flex items-center h-7 rounded-md border border-green-500/10 dark:border-green-500/15 bg-green-50/25 dark:bg-green-950/10 overflow-hidden"
+                                      :style="{ width }"
+                                    >
+                                      <div class="kp-skeleton-shimmer h-2 rounded mx-2 w-[calc(100%-1rem)]" />
+                                    </div>
+                                  </div>
+                                  <p class="text-[9px] text-center text-gray-400 dark:text-gray-500 select-none">
+                                    生成专属提问中<span class="kp-loading-dots" aria-hidden="true">...</span>
+                                  </p>
                                 </div>
                                 
                                 <div v-else-if="(documentRecommendations[doc.id]?.questions?.length || 0) > 0" class="space-y-1">
@@ -621,41 +750,115 @@
                       </button>
                     </div>
 
-                    <!-- loading spinner -->
-                    <div v-if="recommendations[ds.id]?.loading" class="flex justify-center py-4">
-                      <div class="animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-green-500" />
+                    <!-- loading skeleton -->
+                    <div v-if="recommendations[ds.id]?.loading" class="space-y-2.5">
+                      <div class="flex flex-wrap gap-2 kp-question-skeleton-wrap">
+                        <div
+                          v-for="(width, i) in ['8.75rem', '10.25rem', '7.5rem']"
+                          :key="i"
+                          class="inline-flex items-center h-[34px] rounded-lg border border-green-500/15 dark:border-green-500/20 bg-green-50/30 dark:bg-green-950/15 overflow-hidden shadow-sm"
+                          :style="{ width }"
+                        >
+                          <div class="flex items-center gap-2 px-3 w-full">
+                            <div class="kp-skeleton-shimmer w-3.5 h-3.5 rounded-full flex-shrink-0" />
+                            <div
+                              class="kp-skeleton-shimmer h-2.5 rounded flex-1"
+                              :style="{ maxWidth: i === 0 ? '72%' : i === 1 ? '88%' : '64%' }"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-center gap-2 py-0.5">
+                        <span class="relative flex h-1.5 w-1.5">
+                          <span class="kp-loading-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-50" />
+                          <span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                        </span>
+                        <span class="text-[10px] font-medium text-gray-400 dark:text-gray-500 select-none">
+                          正在生成推荐提问<span class="kp-loading-dots" aria-hidden="true">...</span>
+                        </span>
+                      </div>
                     </div>
 
                     <!-- horizontal flex-wrap layout matching data portal -->
-                    <div v-else-if="(recommendations[ds.id]?.questions?.length || 0) > 0" class="flex flex-wrap gap-2">
-                      <div
-                        v-for="(q, idx) in (recommendations[ds.id]?.questions || [])"
-                        :key="idx"
-                        class="inline-flex items-stretch rounded-lg border border-gray-150 dark:border-gray-750 bg-white dark:bg-gray-800 shadow-sm hover:shadow hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 overflow-hidden"
-                      >
-                        <!-- Left Question Body (Direct Send) -->
-                        <button
-                          type="button"
-                          @click="handleQuestionClick(q.query, ds.id, 'send')"
-                          class="flex items-center gap-1.5 px-3 py-2 text-left text-xs font-semibold cursor-pointer select-none text-gray-700 dark:text-gray-300 hover:bg-green-50/10 dark:hover:bg-green-950/10 transition-colors leading-normal"
-                        >
-                          <svg class="w-3.5 h-3.5 flex-shrink-0 opacity-80 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                    <div v-else-if="(recommendations[ds.id]?.questions?.length || 0) > 0 || (recommendations[ds.id]?.custom_questions?.length || 0) > 0" class="space-y-3.5 w-full">
+                      <!-- 置顶快捷推荐 -->
+                      <div v-if="(recommendations[ds.id]?.custom_questions?.length || 0) > 0" class="space-y-1.5 w-full">
+                        <div class="flex items-center gap-1 text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase select-none">
+                          <svg class="w-3 h-3 text-amber-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
                           </svg>
-                          <span>{{ q.label }}</span>
-                        </button>
-                        
-                        <!-- Right Edit Pencil Button (Fill to input box without sending) -->
-                        <button
-                          type="button"
-                          @click="handleQuestionClick(q.query, ds.id, 'fill')"
-                          class="flex items-center justify-center px-2 hover:bg-green-50/15 dark:hover:bg-green-950/20 text-gray-400 hover:text-green-600 dark:hover:text-green-400 border-l border-gray-100 dark:border-gray-700/80 transition-colors cursor-pointer"
-                          title="编辑此问题"
-                        >
-                          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                          <span>📌 置顶快捷提问 / 业务指南</span>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                          <div
+                            v-for="(q, idx) in (recommendations[ds.id]?.custom_questions || [])"
+                            :key="'c_'+idx"
+                            class="inline-flex items-stretch rounded-lg border border-amber-250 dark:border-amber-900/40 bg-amber-50/20 dark:bg-amber-950/10 shadow-sm hover:shadow hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 overflow-hidden"
+                          >
+                            <!-- Left Question Body (Direct Send) -->
+                            <button
+                              type="button"
+                              @click="handleQuestionClick(q.query, ds.id, 'send')"
+                              class="flex items-center gap-1.5 px-3 py-2 text-left text-xs font-semibold cursor-pointer select-none text-gray-700 dark:text-gray-300 hover:bg-amber-100/10 dark:hover:bg-amber-900/10 transition-colors leading-normal"
+                            >
+                              <svg class="w-3.5 h-3.5 flex-shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                              </svg>
+                              <span>{{ q.label }}</span>
+                            </button>
+                            <!-- Right Edit Pencil -->
+                            <button
+                              type="button"
+                              @click="handleQuestionClick(q.query, ds.id, 'fill')"
+                              class="flex items-center justify-center px-2 hover:bg-amber-100/15 dark:hover:bg-amber-900/20 text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 border-l border-amber-100 dark:border-amber-900/30 transition-colors cursor-pointer"
+                              title="编辑此问题"
+                            >
+                              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- 智能生成提问 -->
+                      <div v-if="(recommendations[ds.id]?.questions?.length || 0) > 0" class="space-y-1.5 w-full">
+                        <div class="flex items-center gap-1 text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase select-none">
+                          <svg class="w-3 h-3 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                           </svg>
-                        </button>
+                          <span>智能提问推荐（LLM 动态推断）</span>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                          <div
+                            v-for="(q, idx) in (recommendations[ds.id]?.questions || [])"
+                            :key="'d_'+idx"
+                            class="inline-flex items-stretch rounded-lg border border-gray-150 dark:border-gray-750 bg-white dark:bg-gray-800 shadow-sm hover:shadow hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 overflow-hidden"
+                          >
+                            <!-- Left Question Body (Direct Send) -->
+                            <button
+                              type="button"
+                              @click="handleQuestionClick(q.query, ds.id, 'send')"
+                              class="flex items-center gap-1.5 px-3 py-2 text-left text-xs font-semibold cursor-pointer select-none text-gray-700 dark:text-gray-300 hover:bg-green-50/10 dark:hover:bg-green-950/10 transition-colors leading-normal"
+                            >
+                              <svg class="w-3.5 h-3.5 flex-shrink-0 opacity-80 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                              </svg>
+                              <span>{{ q.label }}</span>
+                            </button>
+                            <!-- Right Edit Pencil -->
+                            <button
+                              type="button"
+                              @click="handleQuestionClick(q.query, ds.id, 'fill')"
+                              class="flex items-center justify-center px-2 hover:bg-green-50/15 dark:hover:bg-green-950/20 text-gray-400 hover:text-green-600 dark:hover:text-green-400 border-l border-gray-100 dark:border-gray-700/80 transition-colors cursor-pointer"
+                              title="编辑此问题"
+                            >
+                              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -673,6 +876,7 @@
                     </div>
                   </div>
                 </div>
+              </div>
               </div>
             </div>
           </div>
@@ -705,7 +909,7 @@ const props = defineProps<{
   }>;
   activeDatasetIds: string[];
   pinnedDatasetIds: string[];
-  recommendations: Record<string, { questions: any[]; loading?: boolean }>;
+  recommendations: Record<string, { questions: any[]; custom_questions?: any[]; loading?: boolean }>;
   datasetDocuments: Record<string, { docs: any[]; loading?: boolean }>;
   documentRecommendations: Record<string, { questions: any[]; loading?: boolean }>;
   loading?: boolean;
@@ -725,14 +929,75 @@ const emit = defineEmits<{
 const expandedDocId = ref<string | null>(null);
 const expandedDocRecsId = ref<string | null>(null);
 const showAdvancedConfig = ref(false);
+
+const isMyCreated = (ds: any) => {
+  try {
+    const userInfoStr = localStorage.getItem('user_info');
+    if (userInfoStr) {
+      const userInfo = JSON.parse(userInfoStr);
+      const currentUserName = userInfo.username || userInfo.user_name;
+      return currentUserName && ds.created_by === currentUserName;
+    }
+  } catch (e) {}
+  return false;
+};
+
+// 卡片折叠状态管理
+const collapsedDatasetIds = ref<string[]>([]);
+const isCollapsed = (datasetId: string) => collapsedDatasetIds.value.includes(datasetId);
+const toggleCollapse = (datasetId: string) => {
+  const index = collapsedDatasetIds.value.indexOf(datasetId);
+  if (index > -1) {
+    collapsedDatasetIds.value.splice(index, 1);
+  } else {
+    collapsedDatasetIds.value.push(datasetId);
+  }
+};
+
 const activeTooltip = ref<string | null>(null);
+
+const showSearchBar = ref(false);
+const searchQuery = ref("");
+const selectedTag = ref("All");
 
 const isMobile = computed(() => {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
 });
 
+const allTags = computed(() => {
+  const tagsSet = new Set<string>();
+  props.datasets.forEach(ds => {
+    if (ds.tags && Array.isArray(ds.tags)) {
+      ds.tags.forEach(tag => {
+        if (tag && tag.trim()) {
+          tagsSet.add(tag.trim());
+        }
+      });
+    }
+  });
+  return Array.from(tagsSet).sort();
+});
+
 const sortedDatasets = computed(() => {
-  return [...props.datasets].sort((a, b) => {
+  let filtered = [...props.datasets];
+  
+  if (selectedTag.value !== "All") {
+    filtered = filtered.filter(ds => 
+      ds.tags && Array.isArray(ds.tags) && ds.tags.map(t => t.trim()).includes(selectedTag.value)
+    );
+  }
+  
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase();
+    filtered = filtered.filter(ds => {
+      const name = (ds.platform_name || ds.name || "").toLowerCase();
+      const desc = (ds.platform_description || ds.description || "").toLowerCase();
+      const tags = (ds.tags || []).join(",").toLowerCase();
+      return name.includes(q) || desc.includes(q) || tags.includes(q);
+    });
+  }
+
+  return filtered.sort((a, b) => {
     const aPinned = props.pinnedDatasetIds.includes(a.id);
     const bPinned = props.pinnedDatasetIds.includes(b.id);
     if (aPinned && !bPinned) return -1;
@@ -810,5 +1075,49 @@ const handleQuestionClick = (query: string, dsId: string, action: "send" | "fill
 }
 .scrollbar-thin::-webkit-scrollbar-track {
   background-color: transparent;
+}
+
+@keyframes kp-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.kp-skeleton-shimmer {
+  background: linear-gradient(90deg, rgb(229 231 235) 20%, rgb(209 250 229) 45%, rgb(229 231 235) 80%);
+  background-size: 200% 100%;
+  animation: kp-shimmer 1.5s ease-in-out infinite;
+}
+
+:global(.dark) .kp-skeleton-shimmer {
+  background: linear-gradient(90deg, rgb(31 41 55) 20%, rgb(6 78 59 / 0.45) 45%, rgb(31 41 55) 80%);
+  background-size: 200% 100%;
+}
+
+.kp-question-skeleton-wrap {
+  animation: kp-skeleton-fade 0.35s ease-out;
+}
+
+@keyframes kp-skeleton-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.kp-loading-ping {
+  animation: kp-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes kp-ping {
+  0% { transform: scale(1); opacity: 0.55; }
+  75%, 100% { transform: scale(2.2); opacity: 0; }
+}
+
+.kp-loading-dots {
+  display: inline-block;
+  animation: kp-dots 1.2s ease-in-out infinite;
+}
+
+@keyframes kp-dots {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
 }
 </style>

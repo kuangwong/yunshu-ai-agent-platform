@@ -3,10 +3,17 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from app.core.context import get_current_agent_context
+
+logger = logging.getLogger(__name__)
+
+# RAGFlow 现网 dataset id 缓存（秒）：避免每轮检索都打 list API
+_ALIVE_DATASET_IDS_CACHE_KEY = "knowledge:ragflow:alive_dataset_ids"
+_ALIVE_DATASET_IDS_CACHE_TTL = 60
 
 # 32 位 hex，与 RAGFlow dataset id 常见格式一致
 _DATASET_ID_RE = re.compile(r"^[a-fA-F0-9]{32}$")
@@ -368,6 +375,94 @@ def resolve_bound_dataset_ids(
     )
 
 
+async def _load_ragflow_alive_dataset_ids() -> Optional[Set[str]]:
+    """
+    读取 RAGFlow 现网存在的 dataset id 集合。
+    返回 None 表示未能获取（应做 fail-open，避免检索整条链路被堵死）。
+    """
+    try:
+        from app.core.redis import get_redis
+
+        redis = await get_redis()
+        if redis is not None:
+            cached = await redis.get(_ALIVE_DATASET_IDS_CACHE_KEY)
+            if cached:
+                try:
+                    data = json.loads(cached)
+                    if isinstance(data, list):
+                        return {str(x) for x in data if x}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+    except Exception as exc:
+        logger.debug("[KnowledgeUtils] alive dataset cache read skipped: %s", exc)
+
+    try:
+        from app.services.ai.ragflow_client import RagFlowClient
+
+        client = RagFlowClient(config_prefix="knowledge_ragflow")
+        items = await client.list_datasets(page=1, page_size=500)
+        alive = {
+            str(item.get("id") or "").strip()
+            for item in (items or [])
+            if item.get("id")
+        }
+    except Exception as exc:
+        logger.warning(
+            "[KnowledgeUtils] Failed to load RAGFlow alive dataset ids: %s",
+            exc,
+        )
+        return None
+
+    try:
+        from app.core.redis import get_redis
+
+        redis = await get_redis()
+        if redis is not None:
+            await redis.set(
+                _ALIVE_DATASET_IDS_CACHE_KEY,
+                json.dumps(sorted(alive)),
+                ex=_ALIVE_DATASET_IDS_CACHE_TTL,
+            )
+    except Exception as exc:
+        logger.debug("[KnowledgeUtils] alive dataset cache write skipped: %s", exc)
+
+    return alive
+
+
+async def filter_alive_knowledge_dataset_ids(dataset_ids: List[str]) -> List[str]:
+    """从待检索 ID 中剔除 RAGFlow 侧已不存在（失联）的知识库。"""
+    if not dataset_ids:
+        return []
+
+    # 保序去重，避免同一 ID 重复打到 RAGFlow
+    unique_ids: List[str] = []
+    seen: Set[str] = set()
+    for dataset_id in dataset_ids:
+        if not dataset_id or dataset_id in seen:
+            continue
+        seen.add(dataset_id)
+        unique_ids.append(dataset_id)
+
+    alive = await _load_ragflow_alive_dataset_ids()
+    if alive is None:
+        return unique_ids
+
+    kept: List[str] = []
+    dropped: List[str] = []
+    for dataset_id in unique_ids:
+        if dataset_id in alive:
+            kept.append(dataset_id)
+        else:
+            dropped.append(dataset_id)
+
+    if dropped:
+        logger.warning(
+            "[KnowledgeUtils] Dropped missing RAGFlow dataset ids before retrieve: %s",
+            dropped,
+        )
+    return kept
+
+
 async def resolve_knowledge_dataset_ids(
     *,
     explicit_tool_ids: Any = None,
@@ -386,7 +481,13 @@ async def resolve_knowledge_dataset_ids(
         query=query,
     )
     if bound_ids:
-        return bound_ids, None
+        alive_ids = await filter_alive_knowledge_dataset_ids(bound_ids)
+        if not alive_ids:
+            return [], (
+                "⚠️ 所选知识库在 RAGFlow 侧已失联或不存在，本次知识库问答已终止。\n"
+                "请重新选择可用知识库，或联系管理员清理失效授权后重试。"
+            )
+        return alive_ids, None
 
     ctx = get_current_agent_context()
     if ctx and ctx.require_explicit_dataset:
@@ -395,7 +496,12 @@ async def resolve_knowledge_dataset_ids(
     default_ids_str = await ConfigService.get("knowledge_ragflow_dataset_ids")
     fallback_ids = normalize_dataset_ids(default_ids_str) if default_ids_str else []
     if fallback_ids:
-        return fallback_ids, None
+        alive_ids = await filter_alive_knowledge_dataset_ids(fallback_ids)
+        if not alive_ids:
+            return [], (
+                "[System Warning] Configured knowledge_ragflow_dataset_ids are missing in RAGFlow."
+            )
+        return alive_ids, None
 
     return [], (
         "[System Warning] No knowledge base datasets configured. "

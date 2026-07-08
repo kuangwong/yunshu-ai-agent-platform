@@ -390,3 +390,224 @@ async def test_record_knowledge_audit_masks_api_key(monkeypatch):
     assert captured["endpoint"] == "/api/portal/ragflow/retrieval-test"
     request_params = json.loads(captured["request_params"])
     assert request_params == {"dataset_ids": ["ds-1"]}
+
+
+@pytest.mark.asyncio
+async def test_add_dataset_permissions_success(monkeypatch):
+    calls = {}
+    
+    async def fake_require_write(user, db, ids):
+        calls["require_write_ids"] = ids
+        
+    class FakePermissionService:
+        def __init__(self, db):
+            pass
+        async def invalidate_cached_permissions_for_users(self, user_ids):
+            calls["invalidated_user_ids"] = user_ids
+
+    class FakeSession:
+        def __init__(self):
+            self.added = []
+            
+        def add(self, model):
+            self.added.append(model)
+            
+        async def execute(self, stmt):
+            class FakeResult:
+                def scalar_one_or_none(self):
+                    return None
+            return FakeResult()
+            
+        async def flush(self):
+            calls["flushed"] = True
+
+    monkeypatch.setattr(ragflow, "require_dataset_write_access", fake_require_write)
+    monkeypatch.setattr(ragflow, "PermissionService", FakePermissionService)
+
+    payload = ragflow.AddDatasetPermissionsRequest(target_type="user", target_ids=[123])
+    db_session = FakeSession()
+
+    res = await ragflow.add_dataset_permissions(
+        dataset_id="ds-1",
+        payload=payload,
+        db=db_session,
+        user={"user_id": 1, "role": "admin"}
+    )
+    
+    assert res["code"] == 0
+    assert calls["require_write_ids"] == ["ds-1"]
+    assert calls["flushed"] is True
+    assert calls["invalidated_user_ids"] == {123}
+    assert len(db_session.added) == 1
+    assert db_session.added[0].user_id == 123
+    assert db_session.added[0].resource_type == "dataset"
+    assert db_session.added[0].resource_id == "ds-1"
+
+
+@pytest.mark.asyncio
+async def test_delete_dataset_permission_success(monkeypatch):
+    calls = {}
+    
+    async def fake_require_write(user, db, ids):
+        calls["require_write_ids"] = ids
+        
+    class FakePermissionService:
+        def __init__(self, db):
+            pass
+        async def invalidate_cached_permissions_for_users(self, user_ids):
+            calls["invalidated_user_ids"] = user_ids
+
+    class FakeSession:
+        def __init__(self):
+            self.executed = []
+            
+        async def execute(self, stmt):
+            self.executed.append(stmt)
+            class FakeResult:
+                def scalars(self):
+                    class FakeScalars:
+                        def all(self):
+                            return []
+                    return FakeScalars()
+            return FakeResult()
+            
+        async def flush(self):
+            calls["flushed"] = True
+
+    monkeypatch.setattr(ragflow, "require_dataset_write_access", fake_require_write)
+    monkeypatch.setattr(ragflow, "PermissionService", FakePermissionService)
+
+    payload = ragflow.DeleteDatasetPermissionRequest(target_type="user", target_id=123)
+    db_session = FakeSession()
+
+    res = await ragflow.delete_dataset_permission(
+        dataset_id="ds-1",
+        payload=payload,
+        db=db_session,
+        user={"user_id": 1, "role": "admin"}
+    )
+    
+    assert res["code"] == 0
+    assert calls["require_write_ids"] == ["ds-1"]
+    assert calls["flushed"] is True
+    assert calls["invalidated_user_ids"] == {123}
+    assert len(db_session.executed) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_portal_recommendations_with_custom_questions(monkeypatch):
+    class FakeSession:
+        async def execute(self, stmt):
+            class FakeResult:
+                def scalar_one_or_none(self):
+                    return SimpleNamespace(
+                        extra_config={
+                            "custom_questions": [
+                                {"label": "问题1", "query": "完整提问1"},
+                                {"label": "问题2", "query": "完整提问2"},
+                                {"label": "问题3", "query": "完整提问3"}
+                            ]
+                        }
+                    )
+            return FakeResult()
+
+    async def fake_require_access(user, db, ids):
+        pass
+
+    class FakeRagFlowClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def list_documents(self, dataset_id, page_size):
+            return [{"id": "doc-1", "name": "测试文档.pdf"}]
+
+    class FakeLLMClient:
+        async def generate_text(self, messages):
+            return '["生成提问1", "生成提问2", "生成提问3"]'
+
+    async def fake_get_llm(streaming, temperature):
+        class FakeLLM:
+            pass
+        return FakeLLM()
+
+    def fake_chat_client(llm):
+        return FakeLLMClient()
+
+    monkeypatch.setattr(ragflow, "require_dataset_access", fake_require_access)
+    monkeypatch.setattr(ragflow, "RagFlowClient", FakeRagFlowClient)
+    monkeypatch.setattr("app.core.llm.client.get_llm_async", fake_get_llm)
+    monkeypatch.setattr("app.services.ai.runtime.agentscope.chat.chat_client_from_handle", fake_chat_client)
+
+    res = await ragflow.get_dataset_portal_recommendations(
+        dataset_id="ds-1",
+        user={"user_id": 1, "role": "user"},
+        db=FakeSession()
+    )
+
+    assert res["code"] == 0
+    data = res["data"]
+    custom_qs = data["custom_questions"]
+    qs = data["questions"]
+    assert len(custom_qs) == 3
+    assert custom_qs[0]["label"] == "问题1"
+    assert custom_qs[0]["query"] == "完整提问1"
+    assert len(qs) == 3
+    assert qs[0]["label"] == "生成提问1"
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_portal_recommendations_hybrid(monkeypatch):
+    class FakeSession:
+        async def execute(self, stmt):
+            class FakeResult:
+                def scalar_one_or_none(self):
+                    return SimpleNamespace(
+                        extra_config={
+                            "custom_questions": [
+                                {"label": "固定问题", "query": "固定提问内容"}
+                            ]
+                        }
+                    )
+            return FakeResult()
+
+    async def fake_require_access(user, db, ids):
+        pass
+
+    class FakeRagFlowClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def list_documents(self, dataset_id, page_size):
+            return [{"id": "doc-1", "name": "测试文档.pdf"}]
+
+    class FakeLLMClient:
+        async def generate_text(self, messages):
+            return '["生成提问1", "生成提问2", "生成提问3"]'
+
+    async def fake_get_llm(streaming, temperature):
+        class FakeLLM:
+            pass
+        return FakeLLM()
+
+    def fake_chat_client(llm):
+        return FakeLLMClient()
+
+    monkeypatch.setattr(ragflow, "require_dataset_access", fake_require_access)
+    monkeypatch.setattr(ragflow, "RagFlowClient", FakeRagFlowClient)
+    monkeypatch.setattr("app.core.llm.client.get_llm_async", fake_get_llm)
+    monkeypatch.setattr("app.services.ai.runtime.agentscope.chat.chat_client_from_handle", fake_chat_client)
+
+    res = await ragflow.get_dataset_portal_recommendations(
+        dataset_id="ds-1",
+        user={"user_id": 1, "role": "user"},
+        db=FakeSession()
+    )
+
+    assert res["code"] == 0
+    data = res["data"]
+    custom_qs = data["custom_questions"]
+    qs = data["questions"]
+    assert len(custom_qs) == 1
+    assert custom_qs[0]["label"] == "固定问题"
+    assert custom_qs[0]["query"] == "固定提问内容"
+    assert len(qs) == 3
+    assert qs[0]["label"] == "生成提问1"
+    assert qs[0]["query"] == "生成提问1"

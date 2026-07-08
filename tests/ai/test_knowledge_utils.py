@@ -156,3 +156,73 @@ async def test_resolve_knowledge_dataset_ids_blocks_without_explicit_dataset():
                 require_explicit_dataset=False,
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_filter_alive_knowledge_dataset_ids_drops_missing():
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.ai.knowledge_utils import filter_alive_knowledge_dataset_ids
+
+    alive = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    missing = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    with patch(
+        "app.services.ai.knowledge_utils._load_ragflow_alive_dataset_ids",
+        new_callable=AsyncMock,
+        return_value={alive},
+    ):
+        filtered = await filter_alive_knowledge_dataset_ids([alive, missing, alive])
+    assert filtered == [alive]
+
+
+@pytest.mark.asyncio
+async def test_filter_alive_knowledge_dataset_ids_keeps_all_when_live_set_unknown():
+    """RAGFlow 列表不可用时不误伤：保留原 ID，避免检索整条链路被堵死。"""
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.ai.knowledge_utils import filter_alive_knowledge_dataset_ids
+
+    ids = [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ]
+    with patch(
+        "app.services.ai.knowledge_utils._load_ragflow_alive_dataset_ids",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        filtered = await filter_alive_knowledge_dataset_ids(ids)
+    assert filtered == ids
+
+
+@pytest.mark.asyncio
+async def test_resolve_knowledge_dataset_ids_excludes_missing_from_ragflow():
+    from unittest.mock import AsyncMock, patch
+
+    alive = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    missing = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    set_agent_context(
+        AgentContext(
+            agent_id="kb",
+            agent_name="knowledge-base",
+            dataset_ids=[alive, missing],
+            require_explicit_dataset=False,
+        )
+    )
+    try:
+        with patch(
+            "app.services.ai.knowledge_utils.filter_alive_knowledge_dataset_ids",
+            new_callable=AsyncMock,
+            side_effect=lambda ids: [i for i in ids if i == alive],
+        ):
+            ids, err = await resolve_knowledge_dataset_ids(query="换电")
+        assert ids == [alive]
+        assert err is None
+    finally:
+        set_agent_context(
+            AgentContext(
+                agent_id="test-reset",
+                agent_name="test-reset",
+                require_explicit_dataset=False,
+            )
+        )

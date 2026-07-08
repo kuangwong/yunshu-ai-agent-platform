@@ -313,18 +313,31 @@
                             <label 
                                 v-for="res in currentResources" 
                                 :key="res.id" 
-                                class="flex items-start p-2.5 rounded-lg border transition-all cursor-pointer shadow-sm group bg-white hover:border-blue-200"
-                                :class="resCardActiveClass(res.id)"
+                                class="flex items-start p-2.5 rounded-lg border transition-all shadow-sm group bg-white"
+                                :class="[
+                                    isMissingKnowledgeBase(res)
+                                      ? 'opacity-70 cursor-not-allowed border-amber-200 bg-amber-50/40'
+                                      : 'cursor-pointer hover:border-blue-200',
+                                    resCardActiveClass(res.id)
+                                ]"
+                                :title="isMissingKnowledgeBase(res) ? '该知识库已在 RAGFlow 失联，不可分配权限' : undefined"
                             >
                                 <input 
                                     type="checkbox" 
                                     :value="res.id" 
                                     v-model="(permissionData as any)[activeResTab]"
-                                    class="h-4 w-4 rounded mt-0.5 flex-shrink-0 border-gray-300 focus:ring-2"
+                                    :disabled="isMissingKnowledgeBase(res)"
+                                    class="h-4 w-4 rounded mt-0.5 flex-shrink-0 border-gray-300 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
                                     :class="resCheckboxClass()"
                                 />
                                 <div class="ml-2.5 min-w-0 flex-1">
-                                    <span class="font-bold text-gray-900 block truncate text-xs leading-tight mb-0.5">{{ res.display_name || res.name }}</span>
+                                    <div class="flex items-center gap-1.5 mb-0.5 min-w-0">
+                                        <span class="font-bold text-gray-900 block truncate text-xs leading-tight">{{ res.platform_name || res.display_name || res.name }}</span>
+                                        <span
+                                          v-if="isMissingKnowledgeBase(res)"
+                                          class="flex-shrink-0 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold leading-none"
+                                        >失联</span>
+                                    </div>
                                     <span class="text-gray-400 text-[9px] block truncate font-mono">{{ res.description || res.id }}</span>
                                 </div>
                             </label>
@@ -685,6 +698,11 @@ const permissionData = ref<{
     elements: []
 })
 
+const isMissingKnowledgeBase = (res: any) => {
+    if (activeResTab.value !== 'datasets') return false
+    return Boolean(res?.is_missing_in_ragflow || res?.status === 'missing')
+}
+
 const resCardActiveClass = (resId: string) => {
     const type = activeResTab.value
     const selected = (permissionData.value as any)[type]?.includes(resId)
@@ -833,8 +851,12 @@ const currentResources = computed(() => {
     return allResources.value[activeResTab.value] || []
 })
 
+const selectableResources = computed(() =>
+    currentResources.value.filter((r: any) => !isMissingKnowledgeBase(r))
+)
+
 const isAllSelected = computed(() => {
-    const current = currentResources.value
+    const current = selectableResources.value
     if (current.length === 0) return false
     const selected = (permissionData.value as any)[activeResTab.value]
     return current.every((r: any) => selected.includes(r.id))
@@ -965,6 +987,17 @@ const fetchResources = async () => {
          const available = handleResult(results[1])
 
          allResources.value.datasets = ragDatasets
+         // 失联知识库不可再分配：从当前勾选中剔除
+         const missingIds = new Set(
+           (ragDatasets || [])
+             .filter((d: any) => d?.is_missing_in_ragflow || d?.status === 'missing')
+             .map((d: any) => d.id)
+         )
+         if (missingIds.size > 0) {
+           permissionData.value.datasets = (permissionData.value.datasets || []).filter(
+             (id: string) => !missingIds.has(id)
+           )
+         }
          
          if (available) {
              allResources.value.agents = available.agents || []
@@ -983,9 +1016,14 @@ const fetchRolePermissions = async (roleId: number) => {
         const apiKey = localStorage.getItem('api_key')
         const response = await axios.get(`/api/portal/roles/${roleId}/permissions`, { headers: { 'X-API-Key': apiKey } })
         const perms = response.data.permissions
+        const missingIds = new Set(
+            (allResources.value.datasets || [])
+                .filter((d: any) => d?.is_missing_in_ragflow || d?.status === 'missing')
+                .map((d: any) => d.id)
+        )
         permissionData.value = {
             agents: perms.agents || [],
-            datasets: perms.datasets || [],
+            datasets: (perms.datasets || []).filter((id: string) => !missingIds.has(id)),
             metadata: perms.metadata || [],
             apis: perms.apis || [],
             menus: perms.menus || [],
@@ -1002,9 +1040,18 @@ const savePermissions = async () => {
     submittingPerms.value = true
     try {
         const apiKey = localStorage.getItem('api_key')
+        const missingIds = new Set(
+            (allResources.value.datasets || [])
+                .filter((d: any) => d?.is_missing_in_ragflow || d?.status === 'missing')
+                .map((d: any) => d.id)
+        )
+        const payload = {
+            ...permissionData.value,
+            datasets: (permissionData.value.datasets || []).filter((id: string) => !missingIds.has(id)),
+        }
         await axios.put(
             `/api/portal/roles/${currentRole.value.id}/permissions`, 
-            permissionData.value, 
+            payload, 
             { headers: { 'X-API-Key': apiKey } }
         )
         showToast('权限保存成功', 'success')
@@ -1021,7 +1068,7 @@ const toggleSelectAll = () => {
     if (isAllSelected.value) {
         (permissionData.value as any)[type] = []
     } else {
-        (permissionData.value as any)[type] = currentResources.value.map((r: any) => r.id)
+        (permissionData.value as any)[type] = selectableResources.value.map((r: any) => r.id)
     }
 }
 

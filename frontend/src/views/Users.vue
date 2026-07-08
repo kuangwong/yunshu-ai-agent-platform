@@ -794,20 +794,38 @@
                     <label
                       v-for="res in currentResources"
                       :key="res.id"
-                      class="flex items-start p-2 rounded border bg-white hover:bg-gray-50 cursor-pointer transition-colors"
+                      class="flex items-start p-2 rounded border bg-white transition-colors"
+                      :class="
+                        isMissingKnowledgeBase(res)
+                          ? 'opacity-70 cursor-not-allowed border-amber-200 bg-amber-50/40'
+                          : 'hover:bg-gray-50 cursor-pointer'
+                      "
+                      :title="
+                        isMissingKnowledgeBase(res)
+                          ? '该知识库已在 RAGFlow 失联，不可分配权限'
+                          : undefined
+                      "
                     >
                       <input
                         type="checkbox"
                         :value="res.id"
                         v-model="(permissionData as any)[activeResTab]"
-                        class="mt-1 h-4 w-4 rounded text-blue-600 focus:ring-blue-500"
+                        :disabled="isMissingKnowledgeBase(res)"
+                        class="mt-1 h-4 w-4 rounded text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                       />
                       <div class="ml-2 min-w-0">
-                        <p
-                          class="text-xs sm:text-sm font-bold text-gray-900 truncate"
-                        >
-                          {{ res.display_name || res.name }}
-                        </p>
+                        <div class="flex items-center gap-1.5 min-w-0">
+                          <p
+                            class="text-xs sm:text-sm font-bold text-gray-900 truncate"
+                          >
+                            {{ res.platform_name || res.display_name || res.name }}
+                          </p>
+                          <span
+                            v-if="isMissingKnowledgeBase(res)"
+                            class="flex-shrink-0 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold leading-none"
+                            >失联</span
+                          >
+                        </div>
                         <p class="text-[9px] text-gray-400 truncate font-mono">
                           {{ res.description || res.id }}
                         </p>
@@ -1636,10 +1654,20 @@ const isItemSelected = (itemId: string) => {
 const currentResources = computed(
   () => allResources.value[activeResTab.value] || [],
 );
+
+const isMissingKnowledgeBase = (res: any) => {
+  if (activeResTab.value !== "datasets") return false;
+  return Boolean(res?.is_missing_in_ragflow || res?.status === "missing");
+};
+
+const selectableResources = computed(() =>
+  currentResources.value.filter((r: any) => !isMissingKnowledgeBase(r)),
+);
+
 const isAllSelected = computed(
   () =>
-    currentResources.value.length > 0 &&
-    currentResources.value.every((r: any) =>
+    selectableResources.value.length > 0 &&
+    selectableResources.value.every((r: any) =>
       permissionData.value[activeResTab.value].includes(r.id),
     ),
 );
@@ -1708,7 +1736,20 @@ const fetchResources = async () => {
       const r1 = await axios.get("/api/portal/ragflow/datasets", {
         params: { page_size: 100 },
       });
-      allResources.value.datasets = r1.data.data || r1.data || [];
+      const datasets = r1.data.data || r1.data || [];
+      allResources.value.datasets = datasets;
+      const missingIds = new Set(
+        datasets
+          .filter(
+            (d: any) => d?.is_missing_in_ragflow || d?.status === "missing",
+          )
+          .map((d: any) => d.id),
+      );
+      if (missingIds.size > 0) {
+        permissionData.value.datasets = (
+          permissionData.value.datasets || []
+        ).filter((id: string) => !missingIds.has(id));
+      }
     } catch (ragErr) {
       console.warn(
         "RagFlow service unreachable, skipping dataset permissions",
@@ -1729,9 +1770,18 @@ const fetchUserPermissions = async (userId: number) => {
       `/api/portal/management/users/${userId}/permissions`,
     );
     const perms = response.data.permissions;
+    const missingIds = new Set(
+      (allResources.value.datasets || [])
+        .filter(
+          (d: any) => d?.is_missing_in_ragflow || d?.status === "missing",
+        )
+        .map((d: any) => d.id),
+    );
     permissionData.value = {
       agents: perms.agents || [],
-      datasets: perms.datasets || [],
+      datasets: (perms.datasets || []).filter(
+        (id: string) => !missingIds.has(id),
+      ),
       metadata: perms.metadata || [],
       apis: perms.apis || [],
       menus: perms.menus || [],
@@ -1794,11 +1844,26 @@ const saveUser = async () => {
       } catch (syncErr) {
         console.warn('LocalStorage Sync Error:', syncErr);
       }
-      if (formData.value.role === "user")
+      if (formData.value.role === "user") {
+        const missingIds = new Set(
+          (allResources.value.datasets || [])
+            .filter(
+              (d: any) =>
+                d?.is_missing_in_ragflow || d?.status === "missing",
+            )
+            .map((d: any) => d.id),
+        );
+        const payload = {
+          ...permissionData.value,
+          datasets: (permissionData.value.datasets || []).filter(
+            (id: string) => !missingIds.has(id),
+          ),
+        };
         await axios.put(
           `/api/portal/management/users/${editingUserId.value}/permissions`,
-          permissionData.value,
+          payload,
         );
+      }
       showToast("更新成功", "success");
       closeDialogs();
       fetchUsers();
@@ -1953,7 +2018,7 @@ const toggleSelectAll = () => {
   if (isAllSelected.value) {
     (permissionData.value as any)[type] = [];
   } else {
-    (permissionData.value as any)[type] = currentResources.value.map(
+    (permissionData.value as any)[type] = selectableResources.value.map(
       (r: any) => r.id,
     );
   }

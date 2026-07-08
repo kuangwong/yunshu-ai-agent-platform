@@ -54,7 +54,7 @@ type RagFlowConfigSummary = {
 }
 
 const { showToast } = useToast()
-const { hasPermission } = useUser()
+const { hasPermission, isAdmin } = useUser()
 
 const loading = ref(false)
 const syncing = ref(false)
@@ -80,6 +80,8 @@ const searchQuery = ref('')
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
+const aiAnalyzing = ref(false)
+const customQuestions = ref<{ label: string, query: string }[]>([])
 const deletingDataset = ref<KnowledgeBase | null>(null)
 const deletingDocument = ref<KnowledgeDocument | null>(null)
 
@@ -100,6 +102,7 @@ const canDelete = computed(() => hasPermission('element:knowledge:delete'))
 const canUpload = computed(() => hasPermission('element:knowledge:upload_document'))
 const canDeleteDocument = computed(() => hasPermission('element:knowledge:delete_document'))
 const canParse = computed(() => hasPermission('element:knowledge:parse_document'))
+const canManagePermissions = computed(() => isAdmin.value || hasPermission('menu:system:users'))
 const canSync = computed(() => canEdit.value)
 const isKnowledgeEnabled = computed(() => ragflowConfig.value?.knowledge_base_enabled !== false)
 const isEngineReady = computed(() => isKnowledgeEnabled.value && engineStatus.value === 'connected' && !loading.value)
@@ -209,7 +212,39 @@ const openEdit = (dataset: KnowledgeBase) => {
     notes: dataset.notes || '',
     extraConfigText: JSON.stringify(dataset.local_metadata?.extra_config || {}, null, 2)
   }
+  
+  customQuestions.value = []
+  const localExtra = dataset.local_metadata?.extra_config || {}
+  if (localExtra.custom_questions && Array.isArray(localExtra.custom_questions)) {
+    customQuestions.value = localExtra.custom_questions.map(q => ({
+      label: q.label || '',
+      query: q.query || ''
+    }))
+  }
+  
   showEditModal.value = true
+}
+
+const analyzeMetadataByAI = async () => {
+  if (!selectedDataset.value) return
+  const datasetId = selectedDataset.value.ragflow_dataset_id || selectedDataset.value.id
+  if (!datasetId) return
+
+  aiAnalyzing.value = true
+  try {
+    const response = await axios.post(`/api/portal/ragflow/datasets/${datasetId}/ai-analyze`)
+    const resData = apiData(response)
+    if (resData) {
+      if (resData.description) form.value.description = resData.description
+      if (resData.tags) form.value.tagsText = resData.tags
+      if (resData.notes) form.value.notes = resData.notes
+      showToast('AI 智能分析完成，已自动填充元数据', 'success')
+    }
+  } catch (err) {
+    showToast(extractError(err) || 'AI 分析失败，请重试', 'error')
+  } finally {
+    aiAnalyzing.value = false
+  }
 }
 
 // 获取知识库列表
@@ -314,6 +349,102 @@ const fetchDatasetPermissions = async (datasetId: string) => {
     console.error('获取知识库权限分配失败:', err)
   } finally {
     loadingPermissions.value = false
+  }
+}
+
+// 反向分配成员授权的状态与交互
+const showAddPermissionModal = ref(false)
+const assignType = ref<'role' | 'user'>('role')
+const selectedCandidateIds = ref<number[]>([])
+const candidates = ref<{ roles: any[], users: any[] }>({ roles: [], users: [] })
+const savingPerms = ref(false)
+const candidateSearchQuery = ref('')
+
+const availableRoles = computed(() => {
+  const grantedCodes = (datasetPermissions.value.roles || []).map(r => r.code)
+  let filtered = (candidates.value.roles || []).filter(r => !grantedCodes.includes(r.code))
+  if (candidateSearchQuery.value) {
+    const q = candidateSearchQuery.value.toLowerCase()
+    filtered = filtered.filter(r => 
+      (r.name && r.name.toLowerCase().includes(q)) || 
+      (r.code && r.code.toLowerCase().includes(q))
+    )
+  }
+  return filtered
+})
+
+const availableUsers = computed(() => {
+  const grantedNames = (datasetPermissions.value.users || []).map(u => u.user_name)
+  let filtered = (candidates.value.users || []).filter(u => !grantedNames.includes(u.user_name))
+  if (candidateSearchQuery.value) {
+    const q = candidateSearchQuery.value.toLowerCase()
+    filtered = filtered.filter(u => 
+      (u.real_name && u.real_name.toLowerCase().includes(q)) || 
+      (u.user_name && u.user_name.toLowerCase().includes(q))
+    )
+  }
+  return filtered
+})
+
+const openAddPermissionModal = async () => {
+  selectedCandidateIds.value = []
+  showAddPermissionModal.value = true
+  try {
+    const res = await axios.get('/api/portal/metadata/candidates')
+    candidates.value = res.data?.data || { roles: [], users: [] }
+  } catch (err) {
+    console.error('获取候选列表失败:', err)
+  }
+}
+
+const closeAddPermissionModal = () => {
+  showAddPermissionModal.value = false
+  selectedCandidateIds.value = []
+  candidateSearchQuery.value = ''
+}
+
+const toggleCandidateSelection = (id: number) => {
+  const idx = selectedCandidateIds.value.indexOf(id)
+  if (idx > -1) {
+    selectedCandidateIds.value.splice(idx, 1)
+  } else {
+    selectedCandidateIds.value.push(id)
+  }
+}
+
+const submitPermissions = async () => {
+  if (!selectedCandidateIds.value.length || !selectedDatasetId.value) return
+  savingPerms.value = true
+  try {
+    await axios.post(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/permissions`, {
+      target_type: assignType.value,
+      target_ids: selectedCandidateIds.value
+    })
+    showToast('分配授权成功', 'success')
+    closeAddPermissionModal()
+    await fetchDatasetPermissions(selectedDatasetId.value)
+  } catch (err) {
+    showToast('分配授权失败', 'error')
+  } finally {
+    savingPerms.value = false
+  }
+}
+
+const removePermission = async (type: string, id: number) => {
+  if (!selectedDatasetId.value) return
+  const typeText = type === 'role' ? '角色' : '用户'
+  if (!confirm(`确定要移除该${typeText}的知识库访问授权吗？`)) return
+  try {
+    await axios.delete(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/permissions`, {
+      data: {
+        target_type: type,
+        target_id: id
+      }
+    })
+    showToast('取消授权成功', 'success')
+    await fetchDatasetPermissions(selectedDatasetId.value)
+  } catch (err) {
+    showToast('取消授权失败', 'error')
   }
 }
 
@@ -439,6 +570,9 @@ const updateMetadata = async () => {
   }
   if (!selectedDatasetId.value) return
   try {
+    const extraConfig = parseExtraConfig()
+    extraConfig.custom_questions = customQuestions.value.filter(q => q.label.trim() && q.query.trim())
+
     await axios.put(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/metadata`, {
       name: form.value.name,
       description: form.value.description,
@@ -446,7 +580,7 @@ const updateMetadata = async () => {
       visibility: form.value.visibility,
       tags: normalizeTags(form.value.tagsText),
       notes: form.value.notes,
-      extra_config: parseExtraConfig()
+      extra_config: extraConfig
     })
     showToast('知识库元数据已更新', 'success')
     showEditModal.value = false
@@ -455,6 +589,183 @@ const updateMetadata = async () => {
     showToast(extractError(err), 'error')
   }
 }
+
+// ==================== 虚拟文件夹层级管理开始 ====================
+const editingDatasetIdForFolder = ref<string | null>(null)
+const newFolderName = ref('')
+const editingFolderKey = ref<string | null>(null) // 格式: datasetId + '_' + oldFolderName
+const editingFolderNewName = ref('')
+const collapsedFolders = ref<Record<string, boolean>>({}) // key: datasetId + '_' + folderName
+const activeFileMoveMenuDocId = ref<string | null>(null)
+
+// 判定文件夹折叠状态
+const isFolderCollapsed = (datasetId: string, folderName: string) => {
+  return !!collapsedFolders.value[`${datasetId}_${folderName}`]
+}
+
+// 切换文件夹折叠状态
+const toggleFolderCollapse = (datasetId: string, folderName: string) => {
+  const key = `${datasetId}_${folderName}`
+  collapsedFolders.value[key] = !collapsedFolders.value[key]
+}
+
+// 打开新建文件夹输入框
+const startCreateFolder = (dataset: KnowledgeBase) => {
+  const datasetId = dataset.ragflow_dataset_id || dataset.id
+  if (!datasetId) return
+  // 自动展开该知识库节点
+  expandedDatasetIds.value[datasetId] = true
+  editingDatasetIdForFolder.value = datasetId
+  newFolderName.value = ''
+}
+
+// 确认创建文件夹
+const confirmCreateFolder = async (dataset: KnowledgeBase) => {
+  const datasetId = dataset.ragflow_dataset_id || dataset.id
+  if (!datasetId) return
+  const name = newFolderName.value.trim()
+  if (!name) {
+    showToast('文件夹名称不能为空', 'warning')
+    return
+  }
+
+  const localMetadata = dataset.local_metadata || {}
+  const extraConfig = { ...(localMetadata.extra_config || {}) }
+  if (!extraConfig.folder_structure) {
+    extraConfig.folder_structure = {}
+  }
+
+  if (extraConfig.folder_structure[name]) {
+    showToast('该文件夹已存在', 'warning')
+    return
+  }
+
+  extraConfig.folder_structure[name] = []
+  
+  try {
+    await saveDatasetExtraConfig(dataset, extraConfig)
+    showToast('文件夹创建成功', 'success')
+    editingDatasetIdForFolder.value = null
+    newFolderName.value = ''
+  } catch (err) {
+    showToast('文件夹创建失败: ' + extractError(err), 'error')
+  }
+}
+
+// 开始重命名文件夹
+const startRenameFolder = (datasetId: string, folderName: string) => {
+  editingFolderKey.value = `${datasetId}_${folderName}`
+  editingFolderNewName.value = folderName
+}
+
+// 确认重命名文件夹
+const confirmRenameFolder = async (dataset: KnowledgeBase, oldName: string) => {
+  const datasetId = dataset.ragflow_dataset_id || dataset.id
+  if (!datasetId) return
+  const newName = editingFolderNewName.value.trim()
+  if (!newName) {
+    showToast('文件夹名称不能为空', 'warning')
+    return
+  }
+  if (newName === oldName) {
+    editingFolderKey.value = null
+    return
+  }
+
+  const localMetadata = dataset.local_metadata || {}
+  const extraConfig = { ...(localMetadata.extra_config || {}) }
+  const structure = { ...(extraConfig.folder_structure || {}) }
+
+  if (structure[newName]) {
+    showToast('该名称的文件夹已存在', 'warning')
+    return
+  }
+
+  // 替换键名并保持文档列表不变
+  structure[newName] = structure[oldName] || []
+  delete structure[oldName]
+  extraConfig.folder_structure = structure
+
+  try {
+    await saveDatasetExtraConfig(dataset, extraConfig)
+    showToast('文件夹重命名成功', 'success')
+    editingFolderKey.value = null
+  } catch (err) {
+    showToast('重命名失败: ' + extractError(err), 'error')
+  }
+}
+
+// 删除文件夹 (解绑文件，不物理删除文件)
+const removeFolder = async (dataset: KnowledgeBase, folderName: string) => {
+  if (!confirm(`确定要删除文件夹「${folderName}」吗？其中的所有文档将自动移入未分类根目录（不会删除物理文档）。`)) {
+    return
+  }
+
+  const localMetadata = dataset.local_metadata || {}
+  const extraConfig = { ...(localMetadata.extra_config || {}) }
+  const structure = { ...(extraConfig.folder_structure || {}) }
+
+  delete structure[folderName]
+  extraConfig.folder_structure = structure
+
+  try {
+    await saveDatasetExtraConfig(dataset, extraConfig)
+    showToast('文件夹已删除', 'success')
+  } catch (err) {
+    showToast('删除文件夹失败: ' + extractError(err), 'error')
+  }
+}
+
+// 移动文档至文件夹
+const moveDocumentToFolder = async (dataset: KnowledgeBase, docId: string, targetFolderName: string | null) => {
+  const localMetadata = dataset.local_metadata || {}
+  const extraConfig = { ...(localMetadata.extra_config || {}) }
+  const structure = { ...(extraConfig.folder_structure || {}) }
+
+  // 1. 从之前所在的文件夹中移除 docId
+  for (const fName in structure) {
+    if (Array.isArray(structure[fName])) {
+      structure[fName] = structure[fName].filter((id: string) => id !== docId)
+    }
+  }
+
+  // 2. 如果指定了目标文件夹，加入进去
+  if (targetFolderName) {
+    if (!Array.isArray(structure[targetFolderName])) {
+      structure[targetFolderName] = []
+    }
+    if (!structure[targetFolderName].includes(docId)) {
+      structure[targetFolderName].push(docId)
+    }
+  }
+
+  extraConfig.folder_structure = structure
+
+  try {
+    await saveDatasetExtraConfig(dataset, extraConfig)
+    showToast('移动文档成功', 'success')
+    activeFileMoveMenuDocId.value = null
+  } catch (err) {
+    showToast('移动文档失败: ' + extractError(err), 'error')
+  }
+}
+
+// 内部方法：静默保存数据集的本地 extra_config
+const saveDatasetExtraConfig = async (dataset: KnowledgeBase, extraConfig: any) => {
+  const datasetId = dataset.ragflow_dataset_id || dataset.id
+  await axios.put(`/api/portal/ragflow/datasets/${datasetId}/metadata`, {
+    name: dataset.platform_name || dataset.name,
+    description: dataset.platform_description || dataset.description,
+    owner: dataset.owner || '',
+    visibility: dataset.visibility || 'private',
+    tags: dataset.tags || [],
+    notes: dataset.notes || '',
+    extra_config: extraConfig
+  })
+  // 静默更新本地数据集列表以触发界面状态渲染刷新
+  await fetchDatasets()
+}
+// ==================== 虚拟文件夹层级管理结束 ====================
 
 const triggerDeleteDataset = (dataset: KnowledgeBase) => {
   deletingDataset.value = dataset
@@ -1157,6 +1468,16 @@ onMounted(async () => {
                     <button
                       v-if="canEdit && !isReadOnlyDataset(dataset)"
                       class="p-1 rounded hover:bg-gray-200/60 text-gray-500 hover:text-primary transition-all bg-inherit"
+                      title="新建虚拟文件夹"
+                      @click.stop="startCreateFolder(dataset)"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                      </svg>
+                    </button>
+                    <button
+                      v-if="canEdit && !isReadOnlyDataset(dataset)"
+                      class="p-1 rounded hover:bg-gray-200/60 text-gray-500 hover:text-primary transition-all bg-inherit"
                       title="修改元数据"
                       @click.stop="openEdit(dataset)"
                     >
@@ -1193,53 +1514,280 @@ onMounted(async () => {
                   <div v-else-if="!(documentsMap[dataset.ragflow_dataset_id || dataset.id]?.length)" class="py-2 pl-3 text-xs text-gray-400 italic">
                     暂无文档
                   </div>
-                  <!-- Documents loop -->
-                  <div
-                    v-else
-                    v-for="doc in documentsMap[dataset.ragflow_dataset_id || dataset.id]"
-                    :key="doc.id"
-                    class="group/doc relative flex items-center justify-between pl-3 pr-2 py-1.5 rounded-lg cursor-pointer transition-all border border-transparent"
-                    :class="[
-                      selectedType === 'document' && selectedId === doc.id
-                        ? 'bg-blue-50/70 border-blue-100 text-blue-700 font-semibold shadow-sm'
-                        : 'hover:bg-gray-50 text-gray-600'
-                    ]"
-                    @click="selectDocumentNode(doc, dataset)"
-                  >
-                    <div class="flex items-center gap-2 min-w-0 flex-1">
-                      <!-- File format icon -->
-                      <svg class="w-3.5 h-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                  <!-- Documents loop with virtual folders support -->
+                  <div v-else class="space-y-1 w-full">
+                    <!-- 新建文件夹 Inline 输入框 -->
+                    <div 
+                      v-if="editingDatasetIdForFolder === (dataset.ragflow_dataset_id || dataset.id)"
+                      class="flex items-center gap-1.5 pl-3 pr-2 py-1 bg-gray-50 rounded-lg border border-dashed border-gray-300"
+                    >
+                      <svg class="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                       </svg>
-                      <!-- File name -->
-                      <span class="truncate text-xs">{{ doc.name || doc.id }}</span>
+                      <input 
+                        v-model="newFolderName"
+                        type="text" 
+                        class="flex-1 min-w-0 bg-transparent text-xs outline-none border-b border-primary/50 text-gray-700 py-0.5" 
+                        placeholder="文件夹名称..." 
+                        @keyup.enter="confirmCreateFolder(dataset)"
+                        @keyup.esc="editingDatasetIdForFolder = null"
+                      />
+                      <button 
+                        class="text-[10px] text-primary font-bold hover:text-primary-hover px-1 cursor-pointer"
+                        @click="confirmCreateFolder(dataset)"
+                      >
+                        确定
+                      </button>
+                      <button 
+                        class="text-[10px] text-gray-400 hover:text-gray-600 px-1 cursor-pointer"
+                        @click="editingDatasetIdForFolder = null"
+                      >
+                        取消
+                      </button>
                     </div>
 
-                    <!-- File status dot or delete action -->
-                    <div class="flex items-center gap-2 shrink-0 min-w-[12px] justify-end">
-                      <!-- Status indicators -->
-                      <span
-                        class="w-1.5 h-1.5 rounded-full shrink-0 transition-all group-hover/doc:hidden"
-                        :class="{
-                          'bg-emerald-500 shadow-[0_0_4px_#10b981]': getDocStatus(doc) === 'parsed',
-                          'bg-amber-500 animate-pulse shadow-[0_0_4px_#f59e0b]': getDocStatus(doc) === 'parsing',
-                          'bg-red-500 shadow-[0_0_4px_#ef4444]': getDocStatus(doc) === 'failed',
-                          'bg-gray-300': !getDocStatus(doc) || getDocStatus(doc) === 'unparsed'
-                        }"
-                      ></span>
-
-                      <!-- Hover Action Buttons -->
-                      <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 absolute right-2 top-1/2 -translate-y-1/2">
-                        <button
-                          v-if="canDeleteDocument && !isReadOnlyDataset(dataset)"
-                          class="p-0.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all bg-inherit"
-                          title="删除文档"
-                          @click.stop="deletingDocument = doc"
+                    <!-- 文件夹层级渲染 -->
+                    <template v-if="dataset.local_metadata?.extra_config?.folder_structure && Object.keys(dataset.local_metadata.extra_config.folder_structure).length">
+                      <div 
+                        v-for="fName in Object.keys(dataset.local_metadata.extra_config.folder_structure)"
+                        :key="fName"
+                        class="space-y-0.5"
+                      >
+                        <!-- 文件夹行 -->
+                        <div 
+                          class="group/folder relative flex items-center justify-between pl-2 pr-2 py-1.5 rounded-lg cursor-pointer hover:bg-gray-50/70 transition-all text-gray-700 select-none"
+                          @click="toggleFolderCollapse(dataset.ragflow_dataset_id || dataset.id, fName)"
                         >
-                          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
+                          <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                            <!-- 折叠展开小尖角 -->
+                            <svg 
+                              class="w-3 h-3 text-gray-400 transition-transform shrink-0" 
+                              :class="{ '-rotate-90': isFolderCollapsed(dataset.ragflow_dataset_id || dataset.id, fName) }"
+                              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                            >
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                            </svg>
+                            <!-- 文件夹图标 -->
+                            <svg class="w-3.5 h-3.5 text-amber-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                              <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                            </svg>
+                            
+                            <!-- 重命名输入框 -->
+                            <div 
+                              v-if="editingFolderKey === `${dataset.ragflow_dataset_id || dataset.id}_${fName}`"
+                              class="flex items-center gap-1 min-w-0 flex-1"
+                              @click.stop
+                            >
+                              <input 
+                                v-model="editingFolderNewName"
+                                type="text" 
+                                class="w-full bg-white text-xs border border-primary px-1 rounded outline-none" 
+                                @keyup.enter="confirmRenameFolder(dataset, fName)"
+                                @keyup.esc="editingFolderKey = null"
+                              />
+                            </div>
+                            <!-- 普通文件夹名称 -->
+                            <span v-else class="truncate text-xs font-semibold text-gray-700">{{ fName }}</span>
+                          </div>
+
+                          <!-- 文件夹重命名/删除按钮 -->
+                          <div 
+                            v-if="!isReadOnlyDataset(dataset)"
+                            class="hidden group-hover/folder:flex items-center gap-1 bg-inherit pl-2 absolute right-2 top-1/2 -translate-y-1/2"
+                            @click.stop
+                          >
+                            <button 
+                              class="p-0.5 rounded hover:bg-gray-100 text-gray-400 hover:text-primary transition-all bg-inherit" 
+                              title="重命名文件夹"
+                              @click="startRenameFolder(dataset.ragflow_dataset_id || dataset.id, fName)"
+                            >
+                              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button 
+                              class="p-0.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all bg-inherit" 
+                              title="删除文件夹"
+                              @click="removeFolder(dataset, fName)"
+                            >
+                              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+
+                        <!-- 文件夹内部的文件子节点 -->
+                        <transition name="slide-down">
+                          <div 
+                            v-show="!isFolderCollapsed(dataset.ragflow_dataset_id || dataset.id, fName)"
+                            class="pl-4 ml-4.5 border-l border-gray-100/80 space-y-0.5"
+                          >
+                            <div 
+                              v-for="doc in (documentsMap[dataset.ragflow_dataset_id || dataset.id] || []).filter(d => dataset.local_metadata?.extra_config?.folder_structure?.[fName]?.includes(d.id))"
+                              :key="doc.id"
+                              class="group/doc relative flex items-center justify-between pl-3 pr-2 py-1.5 rounded-lg cursor-pointer transition-all border border-transparent text-gray-500 hover:bg-gray-50"
+                              :class="[
+                                selectedType === 'document' && selectedId === doc.id
+                                  ? 'bg-blue-50/70 border-blue-100 text-blue-700 font-semibold shadow-sm'
+                                  : 'text-gray-500'
+                              ]"
+                              @click="selectDocumentNode(doc, dataset)"
+                            >
+                              <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                                <svg class="w-3.5 h-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                </svg>
+                                <span class="truncate text-xs">{{ doc.name || doc.id }}</span>
+                              </div>
+                              
+                              <!-- 状态指示灯与悬浮移动/删除操作 -->
+                              <div class="flex items-center gap-1 shrink-0 justify-end relative" @click.stop>
+                                <span
+                                  class="w-1.5 h-1.5 rounded-full shrink-0 group-hover/doc:hidden"
+                                  :class="{
+                                    'bg-emerald-500 shadow-[0_0_4px_#10b981]': getDocStatus(doc) === 'parsed',
+                                    'bg-amber-500 animate-pulse shadow-[0_0_4px_#f59e0b]': getDocStatus(doc) === 'parsing',
+                                    'bg-red-500 shadow-[0_0_4px_#ef4444]': getDocStatus(doc) === 'failed',
+                                    'bg-gray-300': !getDocStatus(doc) || getDocStatus(doc) === 'unparsed'
+                                  }"
+                                ></span>
+                                
+                                <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 absolute right-0 top-1/2 -translate-y-1/2 gap-1 z-30">
+                                  <!-- 移动到文件夹按钮 -->
+                                  <div class="relative">
+                                    <button 
+                                      class="p-0.5 rounded hover:bg-gray-100 text-gray-400 hover:text-primary transition-all bg-inherit cursor-pointer"
+                                      title="移动到文件夹"
+                                      @click="activeFileMoveMenuDocId = (activeFileMoveMenuDocId === doc.id ? null : doc.id)"
+                                    >
+                                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                                      </svg>
+                                    </button>
+                                    
+                                    <!-- 下拉定位菜单 -->
+                                    <div 
+                                      v-if="activeFileMoveMenuDocId === doc.id"
+                                      class="absolute right-0 mt-1 w-36 bg-white border border-gray-150 rounded-lg shadow-lg z-50 py-1 divide-y divide-gray-50 text-xs"
+                                    >
+                                      <div class="px-2 py-1 text-[10px] text-gray-400 font-semibold select-none">移动至文件夹:</div>
+                                      <button 
+                                        v-for="targetFolder in Object.keys(dataset.local_metadata?.extra_config?.folder_structure || {}).filter(f => f !== fName)"
+                                        :key="targetFolder"
+                                        class="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700 truncate cursor-pointer"
+                                        @click="moveDocumentToFolder(dataset, doc.id, targetFolder)"
+                                      >
+                                        📁 {{ targetFolder }}
+                                      </button>
+                                      <button 
+                                        class="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-red-500 font-medium cursor-pointer"
+                                        @click="moveDocumentToFolder(dataset, doc.id, null)"
+                                      >
+                                        移出该文件夹
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    v-if="canDeleteDocument && !isReadOnlyDataset(dataset)"
+                                    class="p-0.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all bg-inherit"
+                                    title="删除文档"
+                                    @click="deletingDocument = doc"
+                                  >
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div 
+                              v-if="!dataset.local_metadata?.extra_config?.folder_structure?.[fName]?.length"
+                              class="py-1 pl-6 text-[10px] text-gray-400 italic select-none"
+                            >
+                              (空文件夹)
+                            </div>
+                          </div>
+                        </transition>
+                      </div>
+                    </template>
+
+                    <!-- 未分类文档列表渲染 (根目录下平铺) -->
+                    <div 
+                      v-for="doc in (documentsMap[dataset.ragflow_dataset_id || dataset.id] || []).filter(d => !dataset.local_metadata?.extra_config?.folder_structure || !Object.values(dataset.local_metadata.extra_config.folder_structure).some(ids => Array.isArray(ids) && ids.includes(d.id)))"
+                      :key="doc.id"
+                      class="group/doc relative flex items-center justify-between pl-3 pr-2 py-1.5 rounded-lg cursor-pointer transition-all border border-transparent"
+                      :class="[
+                        selectedType === 'document' && selectedId === doc.id
+                          ? 'bg-blue-50/70 border-blue-100 text-blue-700 font-semibold shadow-sm'
+                          : 'hover:bg-gray-50 text-gray-600'
+                      ]"
+                      @click="selectDocumentNode(doc, dataset)"
+                    >
+                      <div class="flex items-center gap-2 min-w-0 flex-1">
+                        <svg class="w-3.5 h-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                        </svg>
+                        <span class="truncate text-xs">{{ doc.name || doc.id }}</span>
+                      </div>
+
+                      <div class="flex items-center gap-1 shrink-0 justify-end relative" @click.stop>
+                        <span
+                          class="w-1.5 h-1.5 rounded-full shrink-0 transition-all group-hover/doc:hidden"
+                          :class="{
+                            'bg-emerald-500 shadow-[0_0_4px_#10b981]': getDocStatus(doc) === 'parsed',
+                            'bg-amber-500 animate-pulse shadow-[0_0_4px_#f59e0b]': getDocStatus(doc) === 'parsing',
+                            'bg-red-500 shadow-[0_0_4px_#ef4444]': getDocStatus(doc) === 'failed',
+                            'bg-gray-300': !getDocStatus(doc) || getDocStatus(doc) === 'unparsed'
+                          }"
+                        ></span>
+
+                        <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 absolute right-0 top-1/2 -translate-y-1/2 gap-1 z-30">
+                          <!-- 移动至文件夹按钮 -->
+                          <div 
+                            v-if="dataset.local_metadata?.extra_config?.folder_structure && Object.keys(dataset.local_metadata.extra_config.folder_structure).length"
+                            class="relative"
+                          >
+                            <button 
+                              class="p-0.5 rounded hover:bg-gray-100 text-gray-400 hover:text-primary transition-all bg-inherit cursor-pointer"
+                              title="移动到文件夹"
+                              @click="activeFileMoveMenuDocId = (activeFileMoveMenuDocId === doc.id ? null : doc.id)"
+                            >
+                              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                              </svg>
+                            </button>
+                            
+                            <!-- 下拉定位菜单 -->
+                            <div 
+                              v-if="activeFileMoveMenuDocId === doc.id"
+                              class="absolute right-0 mt-1 w-36 bg-white border border-gray-150 rounded-lg shadow-lg z-50 py-1 divide-y divide-gray-50 text-xs"
+                            >
+                              <div class="px-2 py-1 text-[10px] text-gray-400 font-semibold select-none">移动至文件夹:</div>
+                              <button 
+                                v-for="targetFolder in Object.keys(dataset.local_metadata.extra_config.folder_structure)"
+                                :key="targetFolder"
+                                class="w-full text-left px-3 py-1.5 hover:bg-gray-50 text-gray-700 truncate cursor-pointer"
+                                @click="moveDocumentToFolder(dataset, doc.id, targetFolder)"
+                              >
+                                📁 {{ targetFolder }}
+                              </button>
+                            </div>
+                          </div>
+
+                          <button
+                            v-if="canDeleteDocument && !isReadOnlyDataset(dataset)"
+                            class="p-0.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all bg-inherit"
+                            title="删除文档"
+                            @click="deletingDocument = doc"
+                          >
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1262,7 +1810,12 @@ onMounted(async () => {
                 <h2 class="text-xl font-bold text-gray-900">{{ selectedDataset.platform_name || selectedDataset.name }}</h2>
                 <span v-if="selectedDataset.is_missing_in_ragflow" class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-semibold">RAGFlow 侧已失联</span>
               </div>
-              <p class="text-sm text-gray-500 mt-1.5">{{ selectedDataset.platform_description || selectedDataset.description || '暂无对该知识库的描述' }}</p>
+              <div v-if="selectedDataset.platform_description || selectedDataset.description" class="mt-3 pl-3.5 border-l-3 border-primary bg-gray-50/80 py-2.5 pr-4 rounded-r-xl max-w-3xl">
+                <p class="text-sm text-gray-600 leading-relaxed italic">
+                  "{{ selectedDataset.platform_description || selectedDataset.description }}"
+                </p>
+              </div>
+              <p v-else class="text-xs text-gray-400 italic mt-2.5 select-none">暂无对该知识库的描述说明</p>
             </div>
             <div class="flex items-center gap-2 shrink-0">
               <button
@@ -1291,7 +1844,7 @@ onMounted(async () => {
                 <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                 </svg>
-                编辑元数据
+                编辑
               </button>
             </div>
           </div>
@@ -1328,24 +1881,34 @@ onMounted(async () => {
           </div>
 
           <!-- Tags & Notes -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="space-y-2">
-              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">分类标签</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+            <div class="space-y-2.5">
+              <div class="flex items-center gap-1.5 text-gray-400">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M6 20h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <h3 class="text-xs font-semibold uppercase tracking-wider">分类标签</h3>
+              </div>
               <div v-if="selectedDataset.tags?.length" class="flex flex-wrap gap-1.5">
                 <span
                   v-for="tag in selectedDataset.tags"
                   :key="tag"
-                  class="px-2.5 py-1 text-xs rounded-full bg-blue-50 text-blue-700 border border-blue-100 font-medium"
+                  class="px-2.5 py-1 text-xs rounded-lg bg-blue-50/60 text-blue-700 border border-blue-100/60 font-medium transition-all hover:bg-blue-100/50 select-none cursor-default"
                 >
                   {{ tag }}
                 </span>
               </div>
-              <span v-else class="text-sm text-gray-400 italic">暂无标签</span>
+              <span v-else class="text-sm text-gray-400 italic select-none block pt-1">暂无分类标签</span>
             </div>
 
-            <div class="space-y-2">
-              <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">平台备注</h3>
-              <p class="text-sm text-gray-600 bg-gray-50/50 p-3 rounded-xl border border-gray-150 leading-relaxed">
+            <div class="space-y-2.5">
+              <div class="flex items-center gap-1.5 text-gray-400">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+                <h3 class="text-xs font-semibold uppercase tracking-wider">平台备注说明</h3>
+              </div>
+              <p class="text-sm text-gray-600 bg-amber-50/20 p-3.5 rounded-xl border border-amber-100/50 leading-relaxed">
                 {{ selectedDataset.notes || '暂无备注说明。' }}
               </p>
             </div>
@@ -1355,10 +1918,23 @@ onMounted(async () => {
           <div class="space-y-2 bg-gray-50/20 p-4 rounded-xl border border-gray-150">
             <div class="flex items-center justify-between">
               <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider select-none">系统授权分配详情</h3>
-              <span v-if="loadingPermissions" class="text-xs text-gray-400 animate-pulse flex items-center gap-1 select-none">
-                <span class="w-2.5 h-2.5 rounded-full border border-gray-300 border-t-transparent animate-spin"></span>
-                正在读取权限分配...
-              </span>
+              <div class="flex items-center gap-2">
+                <span v-if="loadingPermissions" class="text-xs text-gray-400 animate-pulse flex items-center gap-1 select-none">
+                  <span class="w-2.5 h-2.5 rounded-full border border-gray-300 border-t-transparent animate-spin"></span>
+                  正在读取权限分配...
+                </span>
+                <button
+                  v-if="canManagePermissions && !loadingPermissions"
+                  type="button"
+                  class="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-xs transition-all flex items-center gap-0.5 cursor-pointer"
+                  @click="openAddPermissionModal"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                  </svg>
+                  分配授权成员
+                </button>
+              </div>
             </div>
             
             <div class="text-xs space-y-3 mt-1.5">
@@ -1379,12 +1955,21 @@ onMounted(async () => {
                     <span 
                       v-for="r in datasetPermissions.roles" 
                       :key="r.code"
-                      class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100/50 flex items-center gap-1 select-none"
+                      class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100/50 flex items-center gap-1 select-none group/tag"
                     >
                       <svg class="w-3 h-3 text-blue-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.257l4-1.714a1 1 0 11.788 1.838L7.667 9.088l1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.838l-7-3zM3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762zM9.3 16.573A9.026 9.026 0 007 14.935v-3.957l1.818.78a3 3 0 002.364 0l5.508-2.361a11.026 11.026 0 01.25 3.762 1 1 0 01-.89.89 8.968 8.968 0 00-5.35 2.524 1 1 0 01-1.4 0z" />
                       </svg>
                       {{ r.name }} ({{ r.code }})
+                      <button
+                        v-if="canManagePermissions"
+                        type="button"
+                        class="text-blue-400 hover:text-red-500 font-bold ml-1.5 focus:outline-none cursor-pointer text-xs"
+                        title="取消授权"
+                        @click.stop="removePermission('role', r.id)"
+                      >
+                        ×
+                      </button>
                     </span>
                   </div>
                 </div>
@@ -1395,12 +1980,21 @@ onMounted(async () => {
                     <span 
                       v-for="u in datasetPermissions.users" 
                       :key="u.user_name"
-                      class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold border border-emerald-100/50 flex items-center gap-1 select-none"
+                      class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold border border-emerald-100/50 flex items-center gap-1 select-none group/tag"
                     >
                       <svg class="w-3 h-3 text-emerald-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
                       </svg>
                       {{ u.real_name || u.user_name }} ({{ u.user_name }})
+                      <button
+                        v-if="canManagePermissions"
+                        type="button"
+                        class="text-emerald-400 hover:text-red-500 font-bold ml-1.5 focus:outline-none cursor-pointer text-xs"
+                        title="取消授权"
+                        @click.stop="removePermission('user', u.id)"
+                      >
+                        ×
+                      </button>
                     </span>
                   </div>
                 </div>
@@ -1826,8 +2420,23 @@ onMounted(async () => {
           <input v-model="form.name" class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" placeholder="展示名称" />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-gray-400 mb-1.5">描述说明</label>
-          <textarea v-model="form.description" class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" rows="2" placeholder="描述"></textarea>
+          <div class="flex justify-between items-center mb-1.5">
+            <label class="block text-xs font-semibold text-gray-400">描述说明</label>
+            <button
+              v-if="selectedDataset && (selectedDataset.doc_count ?? selectedDataset.document_count ?? 0) > 0"
+              class="flex items-center gap-1 text-xs text-primary hover:text-primary-hover font-semibold transition-colors disabled:opacity-50"
+              :disabled="aiAnalyzing"
+              @click="analyzeMetadataByAI"
+            >
+              <svg v-if="aiAnalyzing" class="animate-spin h-3.5 w-3.5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span v-else>✨</span>
+              <span>{{ aiAnalyzing ? 'AI 分析中...' : 'AI 智能分析元数据' }}</span>
+            </button>
+          </div>
+          <textarea v-model="form.description" class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" rows="2" placeholder="由 AI 自动分析生成或手动输入"></textarea>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -1851,6 +2460,59 @@ onMounted(async () => {
           <label class="block text-xs font-semibold text-gray-400 mb-1.5">备注信息</label>
           <textarea v-model="form.notes" class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" rows="2" placeholder="备注"></textarea>
         </div>
+        
+        <!-- 自定义提问置顶配置 -->
+        <div class="border border-gray-100 bg-gray-50/30 p-3 rounded-xl space-y-2">
+          <div class="flex justify-between items-center">
+            <label class="block text-xs font-semibold text-gray-400 select-none">门户快捷提问置顶 (最多 3 个)</label>
+            <button 
+              v-if="customQuestions.length < 3"
+              type="button"
+              class="text-xs text-primary hover:text-primary-hover font-semibold transition-colors flex items-center gap-0.5 cursor-pointer"
+              @click="customQuestions.push({ label: '', query: '' })"
+            >
+              ＋ 添加提问
+            </button>
+          </div>
+          
+          <div v-if="customQuestions.length === 0" class="text-xs text-gray-400 italic py-2 text-center select-none">
+            暂无置顶提问（当前由大模型智能推荐）
+          </div>
+          
+          <div v-else class="space-y-2">
+            <div 
+              v-for="(q, idx) in customQuestions" 
+              :key="idx"
+              class="bg-white p-2 rounded-lg border border-gray-200/60 shadow-sm relative group flex flex-col gap-2"
+            >
+              <button 
+                type="button" 
+                class="absolute top-1 right-2.5 text-gray-300 hover:text-red-500 font-bold focus:outline-none transition-colors cursor-pointer text-sm" 
+                @click="customQuestions.splice(idx, 1)"
+              >
+                ×
+              </button>
+              <div class="grid grid-cols-3 gap-2 pr-4 pt-1">
+                <div class="col-span-1">
+                  <input 
+                    v-model="q.label" 
+                    class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" 
+                    placeholder="按钮简称" 
+                    maxlength="15" 
+                  />
+                </div>
+                <div class="col-span-2">
+                  <input 
+                    v-model="q.query" 
+                    class="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" 
+                    placeholder="给 AI 的提问问题..." 
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div>
           <label class="block text-xs font-semibold text-gray-400 mb-1.5">额外扩展配置 JSON</label>
           <textarea v-model="form.extraConfigText" class="w-full border border-gray-200 rounded-xl px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary bg-gray-50/50" rows="3" placeholder="扩展配置 JSON"></textarea>
@@ -1931,6 +2593,116 @@ onMounted(async () => {
 
         <div class="flex justify-end pt-2 border-t">
           <button class="px-4 py-2 rounded-xl bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold transition-all" @click="closeChunksModal">关闭</button>
+        </div>
+      </div>
+    </Modal>
+
+    <!-- Add Permission Modal -->
+    <Modal :show="showAddPermissionModal" title="分配知识库授权成员" size="max-w-md" @close="closeAddPermissionModal">
+      <div class="space-y-4">
+        <!-- 切换类型 -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-400 mb-1.5 select-none">成员授权类型</label>
+          <div class="grid grid-cols-2 gap-2 bg-gray-50 p-1 rounded-xl border border-gray-150">
+            <button 
+              type="button"
+              @click="assignType = 'role'; selectedCandidateIds = []"
+              class="py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer font-bold"
+              :class="assignType === 'role' ? 'bg-white shadow text-primary' : 'text-gray-500 hover:text-gray-800'"
+            >
+              按角色授权 (Role)
+            </button>
+            <button 
+              type="button"
+              @click="assignType = 'user'; selectedCandidateIds = []"
+              class="py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer font-bold"
+              :class="assignType === 'user' ? 'bg-white shadow text-primary' : 'text-gray-500 hover:text-gray-800'"
+            >
+              按个人授权 (User)
+            </button>
+          </div>
+        </div>
+
+        <!-- 搜索输入框 -->
+        <div class="relative">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+             <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+             </svg>
+          </span>
+          <input 
+            v-model="candidateSearchQuery"
+            type="text"
+            class="block w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl leading-5 bg-gray-50 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary sm:text-xs transition-all focus:bg-white"
+            :placeholder="assignType === 'role' ? '搜索角色名称或代码...' : '搜索用户姓名或账号...'"
+          />
+        </div>
+
+        <!-- 候选人列表勾选 -->
+        <div class="space-y-2">
+          <label class="block text-xs font-semibold text-gray-400 select-none">
+            选择要添加的{{ assignType === 'role' ? '角色' : '用户' }} (可多选)
+          </label>
+          <div class="border border-gray-150 rounded-xl max-h-[30vh] overflow-y-auto divide-y divide-gray-100 bg-white">
+            <!-- 候选角色 -->
+            <template v-if="assignType === 'role'">
+              <div 
+                v-for="r in availableRoles" 
+                :key="r.id"
+                class="flex items-center gap-3 p-3 hover:bg-gray-50 transition-all select-none cursor-pointer"
+                @click="toggleCandidateSelection(r.id)"
+              >
+                <input 
+                  type="checkbox" 
+                  :checked="selectedCandidateIds.includes(r.id)"
+                  class="rounded text-indigo-600 border-gray-300 focus:ring-indigo-500" 
+                  @click.stop="toggleCandidateSelection(r.id)"
+                />
+                <div class="flex flex-col">
+                  <span class="text-sm font-semibold text-gray-800">{{ r.name }}</span>
+                  <span class="text-[10px] text-gray-400 font-mono mt-0.5">{{ r.code }}</span>
+                </div>
+              </div>
+              <div v-if="!availableRoles.length" class="text-xs text-gray-400 text-center py-8 select-none">
+                所有角色已完成分配授权。
+              </div>
+            </template>
+
+            <!-- 候选用户 -->
+            <template v-if="assignType === 'user'">
+              <div 
+                v-for="u in availableUsers" 
+                :key="u.id"
+                class="flex items-center gap-3 p-3 hover:bg-gray-50 transition-all select-none cursor-pointer"
+                @click="toggleCandidateSelection(u.id)"
+              >
+                <input 
+                  type="checkbox" 
+                  :checked="selectedCandidateIds.includes(u.id)"
+                  class="rounded text-emerald-600 border-gray-300 focus:ring-emerald-500" 
+                  @click.stop="toggleCandidateSelection(u.id)"
+                />
+                <div class="flex flex-col">
+                  <span class="text-sm font-semibold text-gray-800">{{ u.real_name || u.user_name }}</span>
+                  <span class="text-[10px] text-gray-400 font-mono mt-0.5">{{ u.user_name }}</span>
+                </div>
+              </div>
+              <div v-if="!availableUsers.length" class="text-xs text-gray-400 text-center py-8 select-none">
+                所有活跃用户已完成分配授权。
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-3 pt-2">
+          <button class="px-4 py-2 rounded-xl border text-sm font-semibold hover:bg-gray-50 transition-all" @click="closeAddPermissionModal">取消</button>
+          <button 
+            class="px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all shadow-md disabled:opacity-50 bg-primary hover:bg-primary-hover"
+            :disabled="!selectedCandidateIds.length || savingPerms"
+            @click="submitPermissions"
+          >
+            确认分配
+          </button>
         </div>
       </div>
     </Modal>

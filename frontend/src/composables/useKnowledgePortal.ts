@@ -137,10 +137,14 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
 
   const fetchRecommendations = async (datasetId: string, refresh: boolean = false) => {
     if (!datasetId) return;
-    if (!refresh && (datasetRecommendations.value[datasetId]?.questions || []).length > 0) return;
+    const currentRec = datasetRecommendations.value[datasetId];
+    if (!refresh && (
+      (currentRec?.questions || []).length > 0 ||
+      (currentRec?.custom_questions || []).length > 0
+    )) return;
 
     if (!datasetRecommendations.value[datasetId]) {
-      datasetRecommendations.value[datasetId] = { questions: [], loading: true };
+      datasetRecommendations.value[datasetId] = { questions: [], custom_questions: [], loading: true };
     } else {
       datasetRecommendations.value[datasetId].loading = true;
     }
@@ -156,6 +160,7 @@ export function useKnowledgePortal(options: UseKnowledgePortalOptions) {
       if (response.data && response.data.code === 0) {
         datasetRecommendations.value[datasetId] = {
           questions: response.data.data.questions || [],
+          custom_questions: response.data.data.custom_questions || [],
           loading: false
         };
       } else {

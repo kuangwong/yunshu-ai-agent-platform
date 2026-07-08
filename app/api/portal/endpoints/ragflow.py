@@ -8,7 +8,7 @@ from typing import List, Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.orm import get_db_session
 from app.services.config_service import ConfigService
-from app.core.dependencies import require_admin, get_current_user
+from app.core.dependencies import require_admin, get_current_user, require_permission
 from app.services.permission_service import PermissionService
 from app.services.ai.ragflow_client import RagFlowClient
 from app.services.knowledge_base_service import KnowledgeBaseMetadataService
@@ -800,6 +800,32 @@ async def get_dataset_portal_recommendations(
     """
     await require_dataset_access(user, db, [dataset_id])
     client = RagFlowClient(config_prefix="knowledge_ragflow")
+    
+    # 0. 尝试加载本地自定义问题配置
+    from app.models.knowledge import KnowledgeBaseMetadata
+    from sqlalchemy import select
+    
+    custom_questions = []
+    try:
+        stmt = select(KnowledgeBaseMetadata).where(
+            KnowledgeBaseMetadata.ragflow_dataset_id == dataset_id,
+            KnowledgeBaseMetadata.status != "deleted"
+        )
+        res = await db.execute(stmt)
+        local_kb = res.scalar_one_or_none()
+        if local_kb and local_kb.extra_config:
+            raw_cust = local_kb.extra_config.get("custom_questions")
+            if isinstance(raw_cust, list):
+                for item in raw_cust:
+                    if isinstance(item, dict) and item.get("label") and item.get("query"):
+                        custom_questions.append({
+                            "label": str(item["label"]).strip(),
+                            "query": str(item["query"]).strip()
+                        })
+    except Exception:
+        # 本地没有找到或加载失败时，退避到空，不影响大模型生成
+        pass
+
     try:
         # 1. 尝试获取数据集基本信息与文档列表（获取较多文件以支持换一批抽样）
         docs = await client.list_documents(dataset_id, page_size=100)
@@ -831,24 +857,30 @@ async def get_dataset_portal_recommendations(
                 if llm:
                     chat_client = chat_client_from_handle(llm)
                     doc_names_str = ", ".join(sampled_names)
-                    exclude_instructions = ""
+                    
+                    # 合并外部排除与内置自定义排除问题列表
+                    exclude_queries = []
                     if exclude:
-                        exclude_list = [q.strip() for q in exclude.split(",") if q.strip()]
-                        if exclude_list:
-                            exclude_instructions = f"\n请不要生成与以下已存在问题相近或重复的问题：{json.dumps(exclude_list, ensure_ascii=False)}。"
+                        exclude_queries.extend([q.strip() for q in exclude.split(",") if q.strip()])
+                    if custom_questions:
+                        exclude_queries.extend([q["query"] for q in custom_questions])
+
+                    exclude_instructions = ""
+                    if exclude_queries:
+                        exclude_instructions = f"\n请不要生成与以下已存在问题相近或重复的问题：{json.dumps(exclude_queries, ensure_ascii=False)}。"
                             
                     prompt = (
                         f"你是一个专业的知识库导航助手。当前知识库包含以下文档列表：[{doc_names_str}]。\n"
                         f"请根据这些文件的名字所反映的业务内容，生成 3 个用户最有可能向 AI 提问的高频、专业且具体的问题。\n"
                         f"要求：\n"
                         f"1. 每个问题必须是一句完整、具体的提问，不要宽泛（如“介绍下XX项目的设计架构”而不是“关于架构的设计”）；\n"
-                        f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题一内容\", \"问题二内容\", \"问题三内容\"]\n"
+                        f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题内容1\", \"问题内容2\", \"问题内容3\"]\n"
                         f"3. 只输出 JSON 数组本身，严禁任何 Markdown 标记包围或多余解释。{exclude_instructions}"
                     )
                     messages = [
                         RuntimeMessage(
                             role="system",
-                            content=[RuntimeContentBlock(type="text", text="你是一个严谨 of JSON 问答生成器。")]
+                            content=[RuntimeContentBlock(type="text", text="你是一个严谨的 JSON 问答生成器。")]
                         ),
                         RuntimeMessage(
                             role="user",
@@ -871,14 +903,20 @@ async def get_dataset_portal_recommendations(
                                     "label": label,
                                     "query": q_str
                                 })
-                            return {"code": 0, "data": {"questions": dynamic_questions}}
+                            return {"code": 0, "data": {
+                                "custom_questions": custom_questions,
+                                "questions": dynamic_questions
+                            }}
             except Exception as llm_err:
                 # LLM 生成失败时，安静退避到默认问题，不影响 API 的正常可用
                 import logging
                 logging.exception("Failed to generate dynamic questions via LLM in knowledge portal")
                 pass
                 
-        return {"code": 0, "data": {"questions": default_questions}}
+        return {"code": 0, "data": {
+            "custom_questions": custom_questions,
+            "questions": default_questions
+        }}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate dataset portal info: {str(e)}")
 
@@ -1000,3 +1038,215 @@ async def get_document_portal_recommendations(
         import logging
         logging.exception(f"Failed to fetch document recommendations: {str(e)}")
         return {"code": 0, "data": {"questions": default_questions}}
+
+
+@router.post("/datasets/{dataset_id}/ai-analyze")
+async def analyze_dataset_metadata(
+    dataset_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    基于知识库里的文档文件名，调用大模型生成描述说明、标签和备注信息。
+    """
+    await require_dataset_write_access(user, db, [dataset_id])
+
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
+    try:
+        docs = await client.list_documents(dataset_id, page=1, page_size=100)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch documents from RAGFlow: {str(e)}"
+        )
+
+    doc_names = [doc.get("name") for doc in docs if doc.get("name")]
+    if not doc_names:
+        raise HTTPException(
+            status_code=400,
+            detail="该知识库暂无文档，无法进行 AI 分析。"
+        )
+
+    from app.core.llm.client import get_llm_async
+    from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+    from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+    import json
+    import re
+
+    llm = await get_llm_async(streaming=False, temperature=0.7)
+    if not llm:
+        raise HTTPException(
+            status_code=500,
+            detail="无法初始化大模型，请检查 LLM 相关系统设置。"
+        )
+
+    chat_client = chat_client_from_handle(llm)
+    doc_names_str = ", ".join(doc_names[:50])
+
+    prompt = (
+        f"你是一个专业的知识库分析助手。当前知识库包含了以下文档列表：\n"
+        f"[{doc_names_str}]\n\n"
+        f"请根据这些文件的名字所反映的业务内容、行业特征及知识领域，为该知识库推断并生成以下元数据信息：\n"
+        f"1. 描述说明（description）：一句简明扼要地介绍该知识库包含哪些内容以及其主要用途的话，中文，不超过 100 字。\n"
+        f"2. 标签（tags）：3 到 5 个能够体现知识库核心主题的关键词或标签，可以是中文或英文，多个标签之间请用英文逗号 (,) 分隔。例如：\"ERP,系统说明,使用指南\"。\n"
+        f"3. 备注信息（notes）：对该知识库使用场景、目标读者或注意事项的简要补充说明，中文，不超过 100 字。\n\n"
+        f"请严格输出为以下格式的 JSON 对象，不要包含任何 Markdown 代码块标记（如 ```json）或多余的解释：\n"
+        f"{{\n"
+        f"  \"description\": \"...\",\n"
+        f"  \"tags\": \"...\",\n"
+        f"  \"notes\": \"...\"\n"
+        f"}}"
+    )
+
+    messages = [
+        RuntimeMessage(
+            role="system",
+            content=[RuntimeContentBlock(type="text", text="你是一个严谨的 JSON 格式输出器，只输出合法的 JSON，没有任何其他解释文本。")]
+        ),
+        RuntimeMessage(
+            role="user",
+            content=[RuntimeContentBlock(type="text", text=prompt)]
+        )
+    ]
+
+    try:
+        raw_text = await chat_client.generate_text(messages)
+        raw_text = str(raw_text or "").strip()
+        match = re.search(r"\{[\s\S]*\}", raw_text)
+        if match:
+            parsed_data = json.loads(match.group())
+            return {
+                "code": 0,
+                "data": {
+                    "description": parsed_data.get("description", "").strip(),
+                    "tags": parsed_data.get("tags", "").strip(),
+                    "notes": parsed_data.get("notes", "").strip()
+                }
+            }
+        else:
+            raise ValueError(f"No JSON block found in LLM response: {raw_text}")
+    except Exception as llm_err:
+        import logging
+        logging.exception("Failed to run AI metadata analysis via LLM")
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI 分析失败: {str(llm_err)}"
+        )
+
+
+class AddDatasetPermissionsRequest(BaseModel):
+    target_type: str  # "user" 或 "role"
+    target_ids: List[int]
+
+class DeleteDatasetPermissionRequest(BaseModel):
+    target_type: str  # "user" 或 "role"
+    target_id: int
+
+
+@router.post("/datasets/{dataset_id}/permissions", dependencies=[Depends(require_permission("menu", "menu:system:users"))])
+async def add_dataset_permissions(
+    dataset_id: str,
+    payload: AddDatasetPermissionsRequest,
+    db: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """
+    添加知识库的反向授权角色或用户 (仅有用户管理权限的用户可用)
+    """
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select
+
+    await require_dataset_write_access(user, db, [dataset_id])
+    
+    perm_service = PermissionService(db)
+    affected_user_ids = set()
+
+    for tid in payload.target_ids:
+        # 查询是否已经有对应记录了
+        stmt = select(ResourcePermission).where(
+            ResourcePermission.resource_type == "dataset",
+            ResourcePermission.resource_id == dataset_id
+        )
+        if payload.target_type == "user":
+            stmt = stmt.where(ResourcePermission.user_id == tid)
+            affected_user_ids.add(tid)
+        else:
+            stmt = stmt.where(ResourcePermission.role_id == tid)
+            # 获取该角色下的所有关联用户
+            r_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id == tid)
+            r_users_res = await db.execute(r_users_stmt)
+            for uid in r_users_res.scalars().all():
+                affected_user_ids.add(uid)
+
+        result = await db.execute(stmt)
+        record = result.scalar_one_or_none()
+
+        if record:
+            record.enabled = True
+        else:
+            new_perm = ResourcePermission(
+                resource_type="dataset",
+                resource_id=dataset_id,
+                enabled=True
+            )
+            if payload.target_type == "user":
+                new_perm.user_id = tid
+            else:
+                new_perm.role_id = tid
+            db.add(new_perm)
+
+    await db.flush()
+
+    # 清理受影响用户的缓存，使其变更即刻生效
+    if affected_user_ids:
+        await perm_service.invalidate_cached_permissions_for_users(affected_user_ids)
+
+    return {"code": 0, "message": "权限配置已成功添加"}
+
+
+@router.delete("/datasets/{dataset_id}/permissions", dependencies=[Depends(require_permission("menu", "menu:system:users"))])
+async def delete_dataset_permission(
+    dataset_id: str,
+    payload: DeleteDatasetPermissionRequest,
+    db: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """
+    移除知识库关联的某个角色或用户授权 (仅有用户管理权限的用户可用)
+    """
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select, delete
+
+    await require_dataset_write_access(user, db, [dataset_id])
+
+    perm_service = PermissionService(db)
+    affected_user_ids = set()
+
+    # 查出受影响的用户列表以作缓存清理
+    if payload.target_type == "user":
+        affected_user_ids.add(payload.target_id)
+    else:
+        r_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id == payload.target_id)
+        r_users_res = await db.execute(r_users_stmt)
+        for uid in r_users_res.scalars().all():
+            affected_user_ids.add(uid)
+
+    # 物理清除
+    stmt = delete(ResourcePermission).where(
+        ResourcePermission.resource_type == "dataset",
+        ResourcePermission.resource_id == dataset_id
+    )
+    if payload.target_type == "user":
+        stmt = stmt.where(ResourcePermission.user_id == payload.target_id)
+    else:
+        stmt = stmt.where(ResourcePermission.role_id == payload.target_id)
+
+    await db.execute(stmt)
+    await db.flush()
+
+    # 清理 Redis 缓存
+    if affected_user_ids:
+        await perm_service.invalidate_cached_permissions_for_users(affected_user_ids)
+
+    return {"code": 0, "message": "授权已成功取消"}
+

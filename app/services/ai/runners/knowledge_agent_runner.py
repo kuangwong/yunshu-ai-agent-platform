@@ -302,6 +302,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             yield observation["citation"]
         yield {
             "__knowledge_output__": observation.get("final_tool_message_content") or output,
+            "__citations_raw__": observation.get("citation", {}).get("data") if observation.get("citation") else None,
             "__knowledge_service_unavailable__": service_unavailable,
         }
 
@@ -415,6 +416,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
         prefetch_dataset_ids = format_dataset_ids_for_tool(resolved_dataset_ids)
         prefetched_knowledge_output: str | None = None
+        prefetched_citations_raw: list | None = None
         knowledge_service_unavailable = False
         prefetch_had_citations = False
         async for chunk in self._auto_invoke_search_knowledge_base(
@@ -426,6 +428,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                 knowledge_service_unavailable = True
             if chunk.get("__knowledge_output__") is not None:
                 prefetched_knowledge_output = str(chunk["__knowledge_output__"])
+                prefetched_citations_raw = chunk.get("__citations_raw__")
                 prefetch_had_citations = knowledge_prefetch_had_citations(prefetched_knowledge_output)
                 continue
             yield chunk
@@ -589,48 +592,36 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
         if passed_guard:
             # 异步记录 Redis 引用行为数据埋点 (特性 4)
-            if prefetched_knowledge_output:
+            if prefetched_citations_raw:
                 try:
-                    import json
                     import re
                     from app.core.redis import get_redis
                     redis = await get_redis()
                     if redis:
-                        stripped = prefetched_knowledge_output.strip()
-                        if not stripped.startswith("{"):
-                            # 非 JSON 格式（如纯文本错误信息），跳过埋点，不记错误
-                            logger.debug(
-                                "[KnowledgeAgentRunner] Knowledge output is not JSON, skipping metrics."
-                            )
-                        else:
-                            parsed = json.loads(stripped)
-                            citations = parsed.get("citations", [])
-                            citation_ids = set(re.findall(r"\[ID:\s*(\d+)\]", full_text))
-                            
-                            current_date = time.strftime("%Y-%m-%d")
-                            key_prefix = f"kb:citation:stats:{current_date}"
-                            
-                            for idx, c in enumerate(citations, 1):
-                                ref_id = str(idx)
-                                source_type = c.get("source_type", "knowledge")
-                                is_cited = ref_id in citation_ids
-                                
-                                # 1. 统计知识库维度
-                                if source_type == "knowledge":
-                                    ds_id = c.get("dataset_id") or "default"
-                                    await redis.hincrby(f"{key_prefix}:dataset:search", ds_id, 1)
+                        citation_ids = set(re.findall(r"\[ID:\s*(\d+)\]", full_text))
+                        current_date = time.strftime("%Y-%m-%d")
+                        key_prefix = f"kb:citation:stats:{current_date}"
+
+                        for idx, c in enumerate(prefetched_citations_raw, 1):
+                            ref_id = str(idx)
+                            source_type = c.get("source_type", "knowledge")
+                            is_cited = ref_id in citation_ids
+
+                            # 1. 统计知识库维度
+                            if source_type == "knowledge":
+                                ds_id = c.get("dataset_id") or "default"
+                                await redis.hincrby(f"{key_prefix}:dataset:search", ds_id, 1)
+                                if is_cited:
+                                    await redis.hincrby(f"{key_prefix}:dataset:citation", ds_id, 1)
+
+                                # 2. 统计文档维度
+                                doc_id = c.get("doc_id")
+                                doc_name = c.get("doc_name") or "Unknown Document"
+                                if doc_id:
+                                    await redis.hset("kb:citation:doc_names", doc_id, doc_name)
+                                    await redis.hincrby(f"{key_prefix}:document:search", doc_id, 1)
                                     if is_cited:
-                                        await redis.hincrby(f"{key_prefix}:dataset:citation", ds_id, 1)
-                                        
-                                    # 2. 统计文档维度
-                                    doc_id = c.get("doc_id")
-                                    doc_name = c.get("doc_name") or "Unknown Document"
-                                    if doc_id:
-                                        # 缓存 doc_id 到 doc_name 映射供同步归并落库使用
-                                        await redis.hset("kb:citation:doc_names", doc_id, doc_name)
-                                        await redis.hincrby(f"{key_prefix}:document:search", doc_id, 1)
-                                        if is_cited:
-                                            await redis.hincrby(f"{key_prefix}:document:citation", doc_id, 1)
+                                        await redis.hincrby(f"{key_prefix}:document:citation", doc_id, 1)
                 except Exception as metric_err:
                     logger.warning(f"[KnowledgeAgentRunner] Redis metrics recording failed: {metric_err}")
 

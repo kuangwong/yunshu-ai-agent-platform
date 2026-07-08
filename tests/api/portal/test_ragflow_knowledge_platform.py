@@ -390,3 +390,105 @@ async def test_record_knowledge_audit_masks_api_key(monkeypatch):
     assert captured["endpoint"] == "/api/portal/ragflow/retrieval-test"
     request_params = json.loads(captured["request_params"])
     assert request_params == {"dataset_ids": ["ds-1"]}
+
+
+@pytest.mark.asyncio
+async def test_add_dataset_permissions_success(monkeypatch):
+    calls = {}
+    
+    async def fake_require_write(user, db, ids):
+        calls["require_write_ids"] = ids
+        
+    class FakePermissionService:
+        def __init__(self, db):
+            pass
+        async def invalidate_cached_permissions_for_users(self, user_ids):
+            calls["invalidated_user_ids"] = user_ids
+
+    class FakeSession:
+        def __init__(self):
+            self.added = []
+            
+        def add(self, model):
+            self.added.append(model)
+            
+        async def execute(self, stmt):
+            class FakeResult:
+                def scalar_one_or_none(self):
+                    return None
+            return FakeResult()
+            
+        async def flush(self):
+            calls["flushed"] = True
+
+    monkeypatch.setattr(ragflow, "require_dataset_write_access", fake_require_write)
+    monkeypatch.setattr(ragflow, "PermissionService", FakePermissionService)
+
+    payload = ragflow.AddDatasetPermissionsRequest(target_type="user", target_ids=[123])
+    db_session = FakeSession()
+
+    res = await ragflow.add_dataset_permissions(
+        dataset_id="ds-1",
+        payload=payload,
+        db=db_session,
+        user={"user_id": 1, "role": "admin"}
+    )
+    
+    assert res["code"] == 0
+    assert calls["require_write_ids"] == ["ds-1"]
+    assert calls["flushed"] is True
+    assert calls["invalidated_user_ids"] == {123}
+    assert len(db_session.added) == 1
+    assert db_session.added[0].user_id == 123
+    assert db_session.added[0].resource_type == "dataset"
+    assert db_session.added[0].resource_id == "ds-1"
+
+
+@pytest.mark.asyncio
+async def test_delete_dataset_permission_success(monkeypatch):
+    calls = {}
+    
+    async def fake_require_write(user, db, ids):
+        calls["require_write_ids"] = ids
+        
+    class FakePermissionService:
+        def __init__(self, db):
+            pass
+        async def invalidate_cached_permissions_for_users(self, user_ids):
+            calls["invalidated_user_ids"] = user_ids
+
+    class FakeSession:
+        def __init__(self):
+            self.executed = []
+            
+        async def execute(self, stmt):
+            self.executed.append(stmt)
+            class FakeResult:
+                def scalars(self):
+                    class FakeScalars:
+                        def all(self):
+                            return []
+                    return FakeScalars()
+            return FakeResult()
+            
+        async def flush(self):
+            calls["flushed"] = True
+
+    monkeypatch.setattr(ragflow, "require_dataset_write_access", fake_require_write)
+    monkeypatch.setattr(ragflow, "PermissionService", FakePermissionService)
+
+    payload = ragflow.DeleteDatasetPermissionRequest(target_type="user", target_id=123)
+    db_session = FakeSession()
+
+    res = await ragflow.delete_dataset_permission(
+        dataset_id="ds-1",
+        payload=payload,
+        db=db_session,
+        user={"user_id": 1, "role": "admin"}
+    )
+    
+    assert res["code"] == 0
+    assert calls["require_write_ids"] == ["ds-1"]
+    assert calls["flushed"] is True
+    assert calls["invalidated_user_ids"] == {123}
+    assert len(db_session.executed) == 1

@@ -54,7 +54,7 @@ type RagFlowConfigSummary = {
 }
 
 const { showToast } = useToast()
-const { hasPermission } = useUser()
+const { hasPermission, isAdmin } = useUser()
 
 const loading = ref(false)
 const syncing = ref(false)
@@ -101,6 +101,7 @@ const canDelete = computed(() => hasPermission('element:knowledge:delete'))
 const canUpload = computed(() => hasPermission('element:knowledge:upload_document'))
 const canDeleteDocument = computed(() => hasPermission('element:knowledge:delete_document'))
 const canParse = computed(() => hasPermission('element:knowledge:parse_document'))
+const canManagePermissions = computed(() => isAdmin.value || hasPermission('menu:system:users'))
 const canSync = computed(() => canEdit.value)
 const isKnowledgeEnabled = computed(() => ragflowConfig.value?.knowledge_base_enabled !== false)
 const isEngineReady = computed(() => isKnowledgeEnabled.value && engineStatus.value === 'connected' && !loading.value)
@@ -337,6 +338,102 @@ const fetchDatasetPermissions = async (datasetId: string) => {
     console.error('获取知识库权限分配失败:', err)
   } finally {
     loadingPermissions.value = false
+  }
+}
+
+// 反向分配成员授权的状态与交互
+const showAddPermissionModal = ref(false)
+const assignType = ref<'role' | 'user'>('role')
+const selectedCandidateIds = ref<number[]>([])
+const candidates = ref<{ roles: any[], users: any[] }>({ roles: [], users: [] })
+const savingPerms = ref(false)
+const candidateSearchQuery = ref('')
+
+const availableRoles = computed(() => {
+  const grantedCodes = (datasetPermissions.value.roles || []).map(r => r.code)
+  let filtered = (candidates.value.roles || []).filter(r => !grantedCodes.includes(r.code))
+  if (candidateSearchQuery.value) {
+    const q = candidateSearchQuery.value.toLowerCase()
+    filtered = filtered.filter(r => 
+      (r.name && r.name.toLowerCase().includes(q)) || 
+      (r.code && r.code.toLowerCase().includes(q))
+    )
+  }
+  return filtered
+})
+
+const availableUsers = computed(() => {
+  const grantedNames = (datasetPermissions.value.users || []).map(u => u.user_name)
+  let filtered = (candidates.value.users || []).filter(u => !grantedNames.includes(u.user_name))
+  if (candidateSearchQuery.value) {
+    const q = candidateSearchQuery.value.toLowerCase()
+    filtered = filtered.filter(u => 
+      (u.real_name && u.real_name.toLowerCase().includes(q)) || 
+      (u.user_name && u.user_name.toLowerCase().includes(q))
+    )
+  }
+  return filtered
+})
+
+const openAddPermissionModal = async () => {
+  selectedCandidateIds.value = []
+  showAddPermissionModal.value = true
+  try {
+    const res = await axios.get('/api/portal/metadata/candidates')
+    candidates.value = res.data?.data || { roles: [], users: [] }
+  } catch (err) {
+    console.error('获取候选列表失败:', err)
+  }
+}
+
+const closeAddPermissionModal = () => {
+  showAddPermissionModal.value = false
+  selectedCandidateIds.value = []
+  candidateSearchQuery.value = ''
+}
+
+const toggleCandidateSelection = (id: number) => {
+  const idx = selectedCandidateIds.value.indexOf(id)
+  if (idx > -1) {
+    selectedCandidateIds.value.splice(idx, 1)
+  } else {
+    selectedCandidateIds.value.push(id)
+  }
+}
+
+const submitPermissions = async () => {
+  if (!selectedCandidateIds.value.length || !selectedDatasetId.value) return
+  savingPerms.value = true
+  try {
+    await axios.post(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/permissions`, {
+      target_type: assignType.value,
+      target_ids: selectedCandidateIds.value
+    })
+    showToast('分配授权成功', 'success')
+    closeAddPermissionModal()
+    await fetchDatasetPermissions(selectedDatasetId.value)
+  } catch (err) {
+    showToast('分配授权失败', 'error')
+  } finally {
+    savingPerms.value = false
+  }
+}
+
+const removePermission = async (type: string, id: number) => {
+  if (!selectedDatasetId.value) return
+  const typeText = type === 'role' ? '角色' : '用户'
+  if (!confirm(`确定要移除该${typeText}的知识库访问授权吗？`)) return
+  try {
+    await axios.delete(`/api/portal/ragflow/datasets/${selectedDatasetId.value}/permissions`, {
+      data: {
+        target_type: type,
+        target_id: id
+      }
+    })
+    showToast('取消授权成功', 'success')
+    await fetchDatasetPermissions(selectedDatasetId.value)
+  } catch (err) {
+    showToast('取消授权失败', 'error')
   }
 }
 
@@ -1393,10 +1490,23 @@ onMounted(async () => {
           <div class="space-y-2 bg-gray-50/20 p-4 rounded-xl border border-gray-150">
             <div class="flex items-center justify-between">
               <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider select-none">系统授权分配详情</h3>
-              <span v-if="loadingPermissions" class="text-xs text-gray-400 animate-pulse flex items-center gap-1 select-none">
-                <span class="w-2.5 h-2.5 rounded-full border border-gray-300 border-t-transparent animate-spin"></span>
-                正在读取权限分配...
-              </span>
+              <div class="flex items-center gap-2">
+                <span v-if="loadingPermissions" class="text-xs text-gray-400 animate-pulse flex items-center gap-1 select-none">
+                  <span class="w-2.5 h-2.5 rounded-full border border-gray-300 border-t-transparent animate-spin"></span>
+                  正在读取权限分配...
+                </span>
+                <button
+                  v-if="canManagePermissions && !loadingPermissions"
+                  type="button"
+                  class="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-xs transition-all flex items-center gap-0.5 cursor-pointer"
+                  @click="openAddPermissionModal"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                  </svg>
+                  分配授权成员
+                </button>
+              </div>
             </div>
             
             <div class="text-xs space-y-3 mt-1.5">
@@ -1417,12 +1527,21 @@ onMounted(async () => {
                     <span 
                       v-for="r in datasetPermissions.roles" 
                       :key="r.code"
-                      class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100/50 flex items-center gap-1 select-none"
+                      class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100/50 flex items-center gap-1 select-none group/tag"
                     >
                       <svg class="w-3 h-3 text-blue-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.257l4-1.714a1 1 0 11.788 1.838L7.667 9.088l1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.838l-7-3zM3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762zM9.3 16.573A9.026 9.026 0 007 14.935v-3.957l1.818.78a3 3 0 002.364 0l5.508-2.361a11.026 11.026 0 01.25 3.762 1 1 0 01-.89.89 8.968 8.968 0 00-5.35 2.524 1 1 0 01-1.4 0z" />
                       </svg>
                       {{ r.name }} ({{ r.code }})
+                      <button
+                        v-if="canManagePermissions"
+                        type="button"
+                        class="text-blue-400 hover:text-red-500 font-bold ml-1.5 focus:outline-none cursor-pointer text-xs"
+                        title="取消授权"
+                        @click.stop="removePermission('role', r.id)"
+                      >
+                        ×
+                      </button>
                     </span>
                   </div>
                 </div>
@@ -1433,12 +1552,21 @@ onMounted(async () => {
                     <span 
                       v-for="u in datasetPermissions.users" 
                       :key="u.user_name"
-                      class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold border border-emerald-100/50 flex items-center gap-1 select-none"
+                      class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold border border-emerald-100/50 flex items-center gap-1 select-none group/tag"
                     >
                       <svg class="w-3 h-3 text-emerald-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
                       </svg>
                       {{ u.real_name || u.user_name }} ({{ u.user_name }})
+                      <button
+                        v-if="canManagePermissions"
+                        type="button"
+                        class="text-emerald-400 hover:text-red-500 font-bold ml-1.5 focus:outline-none cursor-pointer text-xs"
+                        title="取消授权"
+                        @click.stop="removePermission('user', u.id)"
+                      >
+                        ×
+                      </button>
                     </span>
                   </div>
                 </div>
@@ -1984,6 +2112,116 @@ onMounted(async () => {
 
         <div class="flex justify-end pt-2 border-t">
           <button class="px-4 py-2 rounded-xl bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold transition-all" @click="closeChunksModal">关闭</button>
+        </div>
+      </div>
+    </Modal>
+
+    <!-- Add Permission Modal -->
+    <Modal :show="showAddPermissionModal" title="分配知识库授权成员" size="max-w-md" @close="closeAddPermissionModal">
+      <div class="space-y-4">
+        <!-- 切换类型 -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-400 mb-1.5 select-none">成员授权类型</label>
+          <div class="grid grid-cols-2 gap-2 bg-gray-50 p-1 rounded-xl border border-gray-150">
+            <button 
+              type="button"
+              @click="assignType = 'role'; selectedCandidateIds = []"
+              class="py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer font-bold"
+              :class="assignType === 'role' ? 'bg-white shadow text-primary' : 'text-gray-500 hover:text-gray-800'"
+            >
+              按角色授权 (Role)
+            </button>
+            <button 
+              type="button"
+              @click="assignType = 'user'; selectedCandidateIds = []"
+              class="py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer font-bold"
+              :class="assignType === 'user' ? 'bg-white shadow text-primary' : 'text-gray-500 hover:text-gray-800'"
+            >
+              按个人授权 (User)
+            </button>
+          </div>
+        </div>
+
+        <!-- 搜索输入框 -->
+        <div class="relative">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+             <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+             </svg>
+          </span>
+          <input 
+            v-model="candidateSearchQuery"
+            type="text"
+            class="block w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl leading-5 bg-gray-50 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary sm:text-xs transition-all focus:bg-white"
+            :placeholder="assignType === 'role' ? '搜索角色名称或代码...' : '搜索用户姓名或账号...'"
+          />
+        </div>
+
+        <!-- 候选人列表勾选 -->
+        <div class="space-y-2">
+          <label class="block text-xs font-semibold text-gray-400 select-none">
+            选择要添加的{{ assignType === 'role' ? '角色' : '用户' }} (可多选)
+          </label>
+          <div class="border border-gray-150 rounded-xl max-h-[30vh] overflow-y-auto divide-y divide-gray-100 bg-white">
+            <!-- 候选角色 -->
+            <template v-if="assignType === 'role'">
+              <div 
+                v-for="r in availableRoles" 
+                :key="r.id"
+                class="flex items-center gap-3 p-3 hover:bg-gray-50 transition-all select-none cursor-pointer"
+                @click="toggleCandidateSelection(r.id)"
+              >
+                <input 
+                  type="checkbox" 
+                  :checked="selectedCandidateIds.includes(r.id)"
+                  class="rounded text-indigo-600 border-gray-300 focus:ring-indigo-500" 
+                  @click.stop="toggleCandidateSelection(r.id)"
+                />
+                <div class="flex flex-col">
+                  <span class="text-sm font-semibold text-gray-800">{{ r.name }}</span>
+                  <span class="text-[10px] text-gray-400 font-mono mt-0.5">{{ r.code }}</span>
+                </div>
+              </div>
+              <div v-if="!availableRoles.length" class="text-xs text-gray-400 text-center py-8 select-none">
+                所有角色已完成分配授权。
+              </div>
+            </template>
+
+            <!-- 候选用户 -->
+            <template v-if="assignType === 'user'">
+              <div 
+                v-for="u in availableUsers" 
+                :key="u.id"
+                class="flex items-center gap-3 p-3 hover:bg-gray-50 transition-all select-none cursor-pointer"
+                @click="toggleCandidateSelection(u.id)"
+              >
+                <input 
+                  type="checkbox" 
+                  :checked="selectedCandidateIds.includes(u.id)"
+                  class="rounded text-emerald-600 border-gray-300 focus:ring-emerald-500" 
+                  @click.stop="toggleCandidateSelection(u.id)"
+                />
+                <div class="flex flex-col">
+                  <span class="text-sm font-semibold text-gray-800">{{ u.real_name || u.user_name }}</span>
+                  <span class="text-[10px] text-gray-400 font-mono mt-0.5">{{ u.user_name }}</span>
+                </div>
+              </div>
+              <div v-if="!availableUsers.length" class="text-xs text-gray-400 text-center py-8 select-none">
+                所有活跃用户已完成分配授权。
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-3 pt-2">
+          <button class="px-4 py-2 rounded-xl border text-sm font-semibold hover:bg-gray-50 transition-all" @click="closeAddPermissionModal">取消</button>
+          <button 
+            class="px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all shadow-md disabled:opacity-50 bg-primary hover:bg-primary-hover"
+            :disabled="!selectedCandidateIds.length || savingPerms"
+            @click="submitPermissions"
+          >
+            确认分配
+          </button>
         </div>
       </div>
     </Modal>

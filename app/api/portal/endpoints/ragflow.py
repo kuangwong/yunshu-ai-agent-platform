@@ -8,7 +8,7 @@ from typing import List, Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.orm import get_db_session
 from app.services.config_service import ConfigService
-from app.core.dependencies import require_admin, get_current_user
+from app.core.dependencies import require_admin, get_current_user, require_permission
 from app.services.permission_service import PermissionService
 from app.services.ai.ragflow_client import RagFlowClient
 from app.services.knowledge_base_service import KnowledgeBaseMetadataService
@@ -1094,4 +1094,121 @@ async def analyze_dataset_metadata(
             status_code=500,
             detail=f"AI 分析失败: {str(llm_err)}"
         )
+
+
+class AddDatasetPermissionsRequest(BaseModel):
+    target_type: str  # "user" 或 "role"
+    target_ids: List[int]
+
+class DeleteDatasetPermissionRequest(BaseModel):
+    target_type: str  # "user" 或 "role"
+    target_id: int
+
+
+@router.post("/datasets/{dataset_id}/permissions", dependencies=[Depends(require_permission("menu", "menu:system:users"))])
+async def add_dataset_permissions(
+    dataset_id: str,
+    payload: AddDatasetPermissionsRequest,
+    db: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """
+    添加知识库的反向授权角色或用户 (仅有用户管理权限的用户可用)
+    """
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select
+
+    await require_dataset_write_access(user, db, [dataset_id])
+    
+    perm_service = PermissionService(db)
+    affected_user_ids = set()
+
+    for tid in payload.target_ids:
+        # 查询是否已经有对应记录了
+        stmt = select(ResourcePermission).where(
+            ResourcePermission.resource_type == "dataset",
+            ResourcePermission.resource_id == dataset_id
+        )
+        if payload.target_type == "user":
+            stmt = stmt.where(ResourcePermission.user_id == tid)
+            affected_user_ids.add(tid)
+        else:
+            stmt = stmt.where(ResourcePermission.role_id == tid)
+            # 获取该角色下的所有关联用户
+            r_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id == tid)
+            r_users_res = await db.execute(r_users_stmt)
+            for uid in r_users_res.scalars().all():
+                affected_user_ids.add(uid)
+
+        result = await db.execute(stmt)
+        record = result.scalar_one_or_none()
+
+        if record:
+            record.enabled = True
+        else:
+            new_perm = ResourcePermission(
+                resource_type="dataset",
+                resource_id=dataset_id,
+                enabled=True
+            )
+            if payload.target_type == "user":
+                new_perm.user_id = tid
+            else:
+                new_perm.role_id = tid
+            db.add(new_perm)
+
+    await db.flush()
+
+    # 清理受影响用户的缓存，使其变更即刻生效
+    if affected_user_ids:
+        await perm_service.invalidate_cached_permissions_for_users(affected_user_ids)
+
+    return {"code": 0, "message": "权限配置已成功添加"}
+
+
+@router.delete("/datasets/{dataset_id}/permissions", dependencies=[Depends(require_permission("menu", "menu:system:users"))])
+async def delete_dataset_permission(
+    dataset_id: str,
+    payload: DeleteDatasetPermissionRequest,
+    db: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(get_current_user)
+):
+    """
+    移除知识库关联的某个角色或用户授权 (仅有用户管理权限的用户可用)
+    """
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select, delete
+
+    await require_dataset_write_access(user, db, [dataset_id])
+
+    perm_service = PermissionService(db)
+    affected_user_ids = set()
+
+    # 查出受影响的用户列表以作缓存清理
+    if payload.target_type == "user":
+        affected_user_ids.add(payload.target_id)
+    else:
+        r_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id == payload.target_id)
+        r_users_res = await db.execute(r_users_stmt)
+        for uid in r_users_res.scalars().all():
+            affected_user_ids.add(uid)
+
+    # 物理清除
+    stmt = delete(ResourcePermission).where(
+        ResourcePermission.resource_type == "dataset",
+        ResourcePermission.resource_id == dataset_id
+    )
+    if payload.target_type == "user":
+        stmt = stmt.where(ResourcePermission.user_id == payload.target_id)
+    else:
+        stmt = stmt.where(ResourcePermission.role_id == payload.target_id)
+
+    await db.execute(stmt)
+    await db.flush()
+
+    # 清理 Redis 缓存
+    if affected_user_ids:
+        await perm_service.invalidate_cached_permissions_for_users(affected_user_ids)
+
+    return {"code": 0, "message": "授权已成功取消"}
 

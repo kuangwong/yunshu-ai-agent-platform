@@ -208,6 +208,8 @@
 | 单文件专属提问推荐与缓存策略 (Single Document Recommended Questions) | `ragflow.py`, `KnowledgePortalDrawer.vue`, `useKnowledgePortal.ts` | **单文档手风琴专属提问生成与懒加载**：验证在“相关文档”列表点击单文件展开/收起；验证懒加载发起大模型专属提问推断；验证 Redis 缓存（7天）读取命中；验证双功能按钮（直接发送/编辑提问）及联动自动激活绑定知识库。 | ✅ 已验证 | 2026-07-08 |
 | 知识库 AI 元数据分析 (AI Metadata Analysis) | `app/api/portal/endpoints/ragflow.py`, `KnowledgeBaseManagement.vue` | **AI 元数据分析生成与回填**：验证获取知识库写权限与文档列表；验证调用 LLM 基于前 100 个文件名分析生成中英文标签、描述与备注信息，并在前端编辑弹窗一键智能分析后自动回填。 | ✅ 已完成 | 2026-07-08 |
 | 知识库中心侧边抽屉搜索过滤 (Knowledge Portal Search & Filter) | `KnowledgePortalDrawer.vue`, `useKnowledgePortal.ts` | **搜索与分类标签过滤**：验证侧边栏抽屉顶部集成搜索折叠切换按钮；验证基于分类标签的提取，动态生成标签选项胶囊并实现点击过滤；验证文本输入框多维模糊过滤及置顶排序逻辑。 | ✅ 已完成 | 2026-07-08 |
+| 知识库反向授权分配 (Resource Reverse Permissions) | `app/api/portal/endpoints/ragflow.py`, `KnowledgeBaseManagement.vue`, `test_ragflow_knowledge_platform.py` | **系统反向成员分配与移除**：验证在系统授权分配详情头部，拥有用户管理菜单访问权限的用户（或超级管理员）可点击“分配授权成员”按钮；验证打开授权 Modal，支持切换按角色或个人多选批量提交分配关系；验证在已授权 Tag 块旁显示移除叉号，二次确认后触发 DELETE 关系解绑及 Redis 缓存清除。 | ✅ 通过 | 2026-07-08 |
+| 知识库虚拟文件夹、卡片折叠与双栏置顶提问 (Virtual Folders, Collapse & Dual-Section Q&A) | `app/api/portal/endpoints/ragflow.py`, `KnowledgeBaseManagement.vue`, `KnowledgePortalDrawer.vue`, `useKnowledgePortal.ts`, `test_ragflow_knowledge_platform.py` | **目录分类、高级配置配色重构、卡片折叠与双栏置顶**：验证在侧栏树操作中提供“新建虚拟文件夹”；验证虚拟目录树状渲染与静默文件移动落库；验证编辑元数据时支持 1~3 个人工置顶问题；验证 `/portal` 接口以独立双栏格式返回置顶问题与 LLM 问题并在抽屉卡片上独立排版呈现；验证“自己创建”的知识库卡片自动浮现淡绿“自建”徽章；验证抽屉卡片支持点击头部一键折叠/展开；验证高级配置容器配色重构为素雅中性灰/绿调。 | ✅ 通过 | 2026-07-08 |
 
 
 

@@ -800,6 +800,32 @@ async def get_dataset_portal_recommendations(
     """
     await require_dataset_access(user, db, [dataset_id])
     client = RagFlowClient(config_prefix="knowledge_ragflow")
+    
+    # 0. 尝试加载本地自定义问题配置
+    from app.models.knowledge import KnowledgeBaseMetadata
+    from sqlalchemy import select
+    
+    custom_questions = []
+    try:
+        stmt = select(KnowledgeBaseMetadata).where(
+            KnowledgeBaseMetadata.ragflow_dataset_id == dataset_id,
+            KnowledgeBaseMetadata.status != "deleted"
+        )
+        res = await db.execute(stmt)
+        local_kb = res.scalar_one_or_none()
+        if local_kb and local_kb.extra_config:
+            raw_cust = local_kb.extra_config.get("custom_questions")
+            if isinstance(raw_cust, list):
+                for item in raw_cust:
+                    if isinstance(item, dict) and item.get("label") and item.get("query"):
+                        custom_questions.append({
+                            "label": str(item["label"]).strip(),
+                            "query": str(item["query"]).strip()
+                        })
+    except Exception:
+        # 本地没有找到或加载失败时，退避到空，不影响大模型生成
+        pass
+
     try:
         # 1. 尝试获取数据集基本信息与文档列表（获取较多文件以支持换一批抽样）
         docs = await client.list_documents(dataset_id, page_size=100)
@@ -831,24 +857,30 @@ async def get_dataset_portal_recommendations(
                 if llm:
                     chat_client = chat_client_from_handle(llm)
                     doc_names_str = ", ".join(sampled_names)
-                    exclude_instructions = ""
+                    
+                    # 合并外部排除与内置自定义排除问题列表
+                    exclude_queries = []
                     if exclude:
-                        exclude_list = [q.strip() for q in exclude.split(",") if q.strip()]
-                        if exclude_list:
-                            exclude_instructions = f"\n请不要生成与以下已存在问题相近或重复的问题：{json.dumps(exclude_list, ensure_ascii=False)}。"
+                        exclude_queries.extend([q.strip() for q in exclude.split(",") if q.strip()])
+                    if custom_questions:
+                        exclude_queries.extend([q["query"] for q in custom_questions])
+
+                    exclude_instructions = ""
+                    if exclude_queries:
+                        exclude_instructions = f"\n请不要生成与以下已存在问题相近或重复的问题：{json.dumps(exclude_queries, ensure_ascii=False)}。"
                             
                     prompt = (
                         f"你是一个专业的知识库导航助手。当前知识库包含以下文档列表：[{doc_names_str}]。\n"
                         f"请根据这些文件的名字所反映的业务内容，生成 3 个用户最有可能向 AI 提问的高频、专业且具体的问题。\n"
                         f"要求：\n"
                         f"1. 每个问题必须是一句完整、具体的提问，不要宽泛（如“介绍下XX项目的设计架构”而不是“关于架构的设计”）；\n"
-                        f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题一内容\", \"问题二内容\", \"问题三内容\"]\n"
+                        f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题内容1\", \"问题内容2\", \"问题内容3\"]\n"
                         f"3. 只输出 JSON 数组本身，严禁任何 Markdown 标记包围或多余解释。{exclude_instructions}"
                     )
                     messages = [
                         RuntimeMessage(
                             role="system",
-                            content=[RuntimeContentBlock(type="text", text="你是一个严谨 of JSON 问答生成器。")]
+                            content=[RuntimeContentBlock(type="text", text="你是一个严谨的 JSON 问答生成器。")]
                         ),
                         RuntimeMessage(
                             role="user",
@@ -871,14 +903,20 @@ async def get_dataset_portal_recommendations(
                                     "label": label,
                                     "query": q_str
                                 })
-                            return {"code": 0, "data": {"questions": dynamic_questions}}
+                            return {"code": 0, "data": {
+                                "custom_questions": custom_questions,
+                                "questions": dynamic_questions
+                            }}
             except Exception as llm_err:
                 # LLM 生成失败时，安静退避到默认问题，不影响 API 的正常可用
                 import logging
                 logging.exception("Failed to generate dynamic questions via LLM in knowledge portal")
                 pass
                 
-        return {"code": 0, "data": {"questions": default_questions}}
+        return {"code": 0, "data": {
+            "custom_questions": custom_questions,
+            "questions": default_questions
+        }}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate dataset portal info: {str(e)}")
 

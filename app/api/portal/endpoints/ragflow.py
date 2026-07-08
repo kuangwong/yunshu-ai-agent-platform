@@ -729,9 +729,12 @@ async def get_ragflow_metrics_summary(
     user: dict = Depends(get_current_user)
 ):
     """
-    获取指定日期范围内知识库与文档的统计指标汇总
+    获取指定日期范围内知识库与文档的统计指标汇总。
+    查询前先触发一次 Redis → DB 归并同步，确保当日实时数据已落库；
+    同步操作由分钟级 Redis 锁保护，重复调用不会造成数据重复写入。
     """
     from app.services.knowledge_metrics_service import KnowledgeMetricsService
+    await KnowledgeMetricsService.sync_redis_metrics_to_db()
     data = await KnowledgeMetricsService.get_metrics_summary(start_date, end_date)
     return {"code": 0, "data": data}
 

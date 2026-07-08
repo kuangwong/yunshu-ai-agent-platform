@@ -143,22 +143,102 @@
                   </div>
                 </div>
                 
-                <button
-                  type="button"
-                  class="w-7 h-7 flex items-center justify-center rounded-lg border border-transparent bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-750 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-750 dark:hover:text-gray-200 transition-all cursor-pointer active:scale-90 flex-shrink-0"
-                  title="刷新知识库列表"
-                  :disabled="loading"
-                  @click="emit('refresh')"
-                >
-                  <svg 
-                    class="w-3.5 h-3.5"
-                    :class="{ 'animate-spin': loading }"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                <div class="flex items-center gap-1.5 flex-shrink-0">
+                  <!-- 🔍 搜索折叠切换按钮 -->
+                  <button
+                    type="button"
+                    class="w-7 h-7 flex items-center justify-center rounded-lg border border-transparent transition-all cursor-pointer active:scale-90"
+                    :class="showSearchBar
+                      ? 'bg-green-50 text-green-600 dark:bg-green-955/40 dark:text-green-400 font-bold'
+                      : 'bg-gray-50 text-gray-500 dark:bg-gray-800 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-750'"
+                    title="展开/折叠搜索与标签过滤"
+                    @click="showSearchBar = !showSearchBar"
                   >
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                  </svg>
-                </button>
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="w-7 h-7 flex items-center justify-center rounded-lg border border-transparent bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-750 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-750 dark:hover:text-gray-200 transition-all cursor-pointer active:scale-90"
+                    title="刷新知识库列表"
+                    :disabled="loading"
+                    @click="emit('refresh')"
+                  >
+                    <svg 
+                      class="w-3.5 h-3.5"
+                      :class="{ 'animate-spin': loading }"
+                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
+
+              <!-- Search and Filter Bar -->
+              <transition
+                enter-active-class="transition-all duration-300 ease-out"
+                enter-from-class="transform opacity-0 -translate-y-2 max-h-0 overflow-hidden"
+                enter-to-class="transform opacity-100 translate-y-0 max-h-[120px] overflow-hidden"
+                leave-active-class="transition-all duration-200 ease-in"
+                leave-from-class="transform opacity-100 translate-y-0 max-h-[120px] overflow-hidden"
+                leave-to-class="transform opacity-0 -translate-y-2 max-h-0 overflow-hidden"
+              >
+                <div v-show="showSearchBar" class="space-y-2">
+                  <div class="relative">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400 dark:text-gray-500">
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </span>
+                    <input
+                      v-model="searchQuery"
+                      type="text"
+                      placeholder="搜索分类标签、名称或描述..."
+                      class="w-full pl-9 pr-8 py-1.5 text-[11px] rounded-xl border border-gray-150 dark:border-gray-800 bg-white dark:bg-gray-900/30 text-gray-850 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-all shadow-xs"
+                    />
+                    <button
+                      v-if="searchQuery"
+                      type="button"
+                      class="absolute inset-y-0 right-0 flex items-center pr-2.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                      @click="searchQuery = ''"
+                    >
+                      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div v-if="allTags.length" class="relative">
+                    <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 -mx-0.5 scroll-smooth">
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 text-[9px] font-bold rounded-lg border transition-all whitespace-nowrap cursor-pointer active:scale-95 select-none"
+                        :class="selectedTag === 'All'
+                          ? 'bg-green-600 border-transparent text-white shadow-xs'
+                          : 'bg-gray-50 dark:bg-gray-800/40 border-gray-150 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+                        @click="selectedTag = 'All'"
+                      >
+                        全部
+                      </button>
+                      <button
+                        v-for="tag in allTags"
+                        :key="tag"
+                        type="button"
+                        class="px-2.5 py-1 text-[9px] font-bold rounded-lg border transition-all whitespace-nowrap cursor-pointer active:scale-95 select-none"
+                        :class="selectedTag === tag
+                          ? 'bg-green-600 border-transparent text-white shadow-xs'
+                          : 'bg-gray-50 dark:bg-gray-800/40 border-gray-150 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'"
+                        @click="selectedTag = tag"
+                      >
+                        {{ tag }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </transition>
 
               <!-- ⚙️ 高级选项 (Collapsible) -->
               <div class="rounded-xl border border-blue-150/70 dark:border-blue-900/40 bg-blue-50/10 dark:bg-blue-950/5 p-3 space-y-2.5">
@@ -770,12 +850,48 @@ const expandedDocRecsId = ref<string | null>(null);
 const showAdvancedConfig = ref(false);
 const activeTooltip = ref<string | null>(null);
 
+const showSearchBar = ref(false);
+const searchQuery = ref("");
+const selectedTag = ref("All");
+
 const isMobile = computed(() => {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
 });
 
+const allTags = computed(() => {
+  const tagsSet = new Set<string>();
+  props.datasets.forEach(ds => {
+    if (ds.tags && Array.isArray(ds.tags)) {
+      ds.tags.forEach(tag => {
+        if (tag && tag.trim()) {
+          tagsSet.add(tag.trim());
+        }
+      });
+    }
+  });
+  return Array.from(tagsSet).sort();
+});
+
 const sortedDatasets = computed(() => {
-  return [...props.datasets].sort((a, b) => {
+  let filtered = [...props.datasets];
+  
+  if (selectedTag.value !== "All") {
+    filtered = filtered.filter(ds => 
+      ds.tags && Array.isArray(ds.tags) && ds.tags.map(t => t.trim()).includes(selectedTag.value)
+    );
+  }
+  
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase();
+    filtered = filtered.filter(ds => {
+      const name = (ds.platform_name || ds.name || "").toLowerCase();
+      const desc = (ds.platform_description || ds.description || "").toLowerCase();
+      const tags = (ds.tags || []).join(",").toLowerCase();
+      return name.includes(q) || desc.includes(q) || tags.includes(q);
+    });
+  }
+
+  return filtered.sort((a, b) => {
     const aPinned = props.pinnedDatasetIds.includes(a.id);
     const bPinned = props.pinnedDatasetIds.includes(b.id);
     if (aPinned && !bPinned) return -1;

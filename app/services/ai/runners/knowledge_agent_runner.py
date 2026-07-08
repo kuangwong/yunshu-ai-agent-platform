@@ -602,6 +602,15 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                         current_date = time.strftime("%Y-%m-%d")
                         key_prefix = f"kb:citation:stats:{current_date}"
 
+                        dataset_ids = list({
+                            c.get("dataset_id")
+                            for c in prefetched_citations_raw
+                            if c.get("source_type", "knowledge") == "knowledge" and c.get("dataset_id")
+                        })
+                        if dataset_ids:
+                            from app.services.knowledge_metrics_service import KnowledgeMetricsService
+                            await KnowledgeMetricsService.resolve_dataset_names(dataset_ids)
+
                         for idx, c in enumerate(prefetched_citations_raw, 1):
                             ref_id = str(idx)
                             source_type = c.get("source_type", "knowledge")

@@ -1,12 +1,15 @@
 import datetime
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from sqlalchemy import text
 from app.core.orm import AsyncSessionLocal
 from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
+
+DATASET_NAMES_REDIS_KEY = "kb:citation:dataset_names"
+DOC_NAMES_REDIS_KEY = "kb:citation:doc_names"
 
 
 class KnowledgeMetricsService:
@@ -32,6 +35,78 @@ class KnowledgeMetricsService:
             current += datetime.timedelta(days=1)
         return filled
 
+    @staticmethod
+    def _decode_redis_hash(raw_map) -> Dict[str, str]:
+        if not raw_map:
+            return {}
+        return {
+            (k.decode("utf-8") if isinstance(k, bytes) else str(k)): (
+                v.decode("utf-8") if isinstance(v, bytes) else str(v)
+            )
+            for k, v in raw_map.items()
+        }
+
+    @staticmethod
+    def _fallback_dataset_name(dataset_id: str) -> str:
+        return f"知识库: {dataset_id[:8]}"
+
+    @classmethod
+    async def resolve_dataset_names(cls, dataset_ids: List[str]) -> Dict[str, str]:
+        """解析知识库中文名：Redis 缓存 → 本地元数据表 → RAGFlow 列表。"""
+        ids = list({
+            str(ds_id).strip()
+            for ds_id in dataset_ids
+            if ds_id and str(ds_id).strip() not in {"", "default"}
+        })
+        if not ids:
+            return {}
+
+        resolved: Dict[str, str] = {}
+        redis = await get_redis()
+        if redis:
+            cached = cls._decode_redis_hash(await redis.hgetall(DATASET_NAMES_REDIS_KEY))
+            for ds_id in ids:
+                name = (cached.get(ds_id) or "").strip()
+                if name:
+                    resolved[ds_id] = name
+
+        missing = [ds_id for ds_id in ids if ds_id not in resolved]
+        if missing:
+            async with AsyncSessionLocal() as session:
+                placeholders = ", ".join(f":id{i}" for i in range(len(missing)))
+                params = {f"id{i}": ds_id for i, ds_id in enumerate(missing)}
+                sql = (
+                    "SELECT ragflow_dataset_id, name FROM knowledge_base_metadata "
+                    f"WHERE ragflow_dataset_id IN ({placeholders})"
+                )
+                res = await session.execute(text(sql), params)
+                for row in res.fetchall():
+                    name = (row[1] or "").strip()
+                    if name:
+                        resolved[row[0]] = name
+
+        missing = [ds_id for ds_id in ids if ds_id not in resolved]
+        if missing:
+            try:
+                from app.services.ai.ragflow_client import RagFlowClient
+
+                client = RagFlowClient(config_prefix="knowledge_ragflow")
+                ragflow_datasets = await client.list_datasets(page_size=500)
+                missing_set = set(missing)
+                for ds in ragflow_datasets:
+                    ds_id = str(ds.get("id") or "").strip()
+                    name = str(ds.get("name") or "").strip()
+                    if ds_id in missing_set and name:
+                        resolved[ds_id] = name
+            except Exception as e:
+                logger.warning(f"[KnowledgeMetricsService] RAGFlow dataset name lookup failed: {e}")
+
+        if redis:
+            for ds_id, name in resolved.items():
+                await redis.hset(DATASET_NAMES_REDIS_KEY, ds_id, name)
+
+        return resolved
+
     @classmethod
     async def sync_redis_metrics_to_db(cls):
         """
@@ -50,12 +125,9 @@ class KnowledgeMetricsService:
 
         metrics_map = {}
         
-        # Get cached doc_id -> doc_name map
-        doc_names_map = await redis.hgetall("kb:citation:doc_names") or {}
-        doc_names = {
-            k.decode("utf-8") if isinstance(k, bytes) else k: v.decode("utf-8") if isinstance(v, bytes) else v 
-            for k, v in doc_names_map.items()
-        }
+        # Get cached doc/dataset name maps
+        doc_names = cls._decode_redis_hash(await redis.hgetall(DOC_NAMES_REDIS_KEY))
+        dataset_names = cls._decode_redis_hash(await redis.hgetall(DATASET_NAMES_REDIS_KEY))
 
         for key_bytes in keys:
             key = key_bytes.decode("utf-8") if isinstance(key_bytes, bytes) else key_bytes
@@ -86,14 +158,25 @@ class KnowledgeMetricsService:
                     
                 metrics_map[date_str][target_type][t_id][action] = val
 
-        # Fetch active dataset names snapshot from local DB metadata
-        dataset_names = {}
+        dataset_ids_to_resolve = sorted({
+            target_id
+            for type_map in metrics_map.values()
+            for target_type, id_map in type_map.items()
+            if target_type == "dataset"
+            for target_id in id_map
+        })
+        if dataset_ids_to_resolve:
+            resolved_names = await cls.resolve_dataset_names(dataset_ids_to_resolve)
+            dataset_names.update(resolved_names)
+
+        # 本地元数据表优先级最高
         async with AsyncSessionLocal() as session:
             try:
                 res = await session.execute(text("SELECT ragflow_dataset_id, name FROM knowledge_base_metadata"))
                 rows = res.fetchall()
                 for r in rows:
-                    dataset_names[r[0]] = r[1]
+                    if r[1]:
+                        dataset_names[r[0]] = r[1]
             except Exception as e:
                 logger.warning(f"[KnowledgeMetricsService] Failed to prefetch dataset names: {e}")
 
@@ -113,7 +196,7 @@ class KnowledgeMetricsService:
                             
                             target_name = None
                             if target_type == "dataset":
-                                target_name = dataset_names.get(target_id) or f"知识库: {target_id[:8]}"
+                                target_name = dataset_names.get(target_id) or cls._fallback_dataset_name(target_id)
                             else:
                                 target_name = doc_names.get(target_id) or f"文档: {target_id[:8]}"
 
@@ -157,10 +240,10 @@ class KnowledgeMetricsService:
         async with AsyncSessionLocal() as session:
             # 1. Dataset citations Top-10
             dataset_sql = """
-                SELECT target_id, target_name, SUM(search_count) as total_search, SUM(citation_count) as total_citation
+                SELECT target_id, SUM(search_count) as total_search, SUM(citation_count) as total_citation
                 FROM knowledge_base_metrics
                 WHERE target_type = 'dataset' AND metric_date BETWEEN :start_date AND :end_date
-                GROUP BY target_id, target_name
+                GROUP BY target_id
                 ORDER BY total_citation DESC, total_search DESC
                 LIMIT 10
             """
@@ -195,9 +278,14 @@ class KnowledgeMetricsService:
             
             try:
                 res_ds = await session.execute(text(dataset_sql), {"start_date": start_date, "end_date": end_date})
+                dataset_rows = res_ds.fetchall()
+                dataset_name_map = await cls.resolve_dataset_names([r[0] for r in dataset_rows])
                 datasets = [{
-                    "id": r[0], "name": r[1], "search_count": int(r[2]), "citation_count": int(r[3])
-                } for r in res_ds.fetchall()]
+                    "id": r[0],
+                    "name": dataset_name_map.get(r[0]) or cls._fallback_dataset_name(r[0]),
+                    "search_count": int(r[1]),
+                    "citation_count": int(r[2]),
+                } for r in dataset_rows]
                 
                 res_doc = await session.execute(text(document_sql), {"start_date": start_date, "end_date": end_date})
                 documents = [{

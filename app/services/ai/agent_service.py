@@ -47,6 +47,8 @@ def _trace_has_tool_call(trace_buffer: Optional[List[AgentExecutionStep]]) -> bo
 
 
 class AgentService:
+    USING_SUPERPOWERS_SKILL_ID = "using-superpowers"
+
     """
     Unified Orchestrator for AI Agent interactions.
     Now refactored to delegate execution to specialized Executors.
@@ -80,6 +82,168 @@ class AgentService:
             role=role,
         )
         return {"role": "system", "content": content}
+
+    @staticmethod
+    def _parse_bool_config(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _parse_int_config(value: Any, default: int, *, min_value: int, max_value: int | None = None) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        parsed = max(min_value, parsed)
+        if max_value is not None:
+            parsed = min(max_value, parsed)
+        return parsed
+
+    @staticmethod
+    def _parse_float_config(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    async def _resolve_skill_full_load_policy(self) -> Dict[str, Any]:
+        from app.services.config_service import ConfigService
+
+        enabled_raw = await ConfigService.get("skill_auto_full_load_enabled", "true")
+        min_score_raw = await ConfigService.get("skill_auto_full_load_min_score", "0.75")
+        max_count_raw = await ConfigService.get("skill_auto_full_load_max_count", "1")
+        max_bytes_raw = await ConfigService.get("skill_auto_full_load_max_bytes", "65536")
+        return {
+            "enabled": self._parse_bool_config(enabled_raw, True),
+            "min_score": self._parse_float_config(min_score_raw, 0.75),
+            "max_count": self._parse_int_config(max_count_raw, 1, min_value=0, max_value=3),
+            "max_bytes": self._parse_int_config(max_bytes_raw, 65536, min_value=1024, max_value=262144),
+        }
+
+    @staticmethod
+    def _should_preload_skill_full_instruction(
+        *,
+        match_source: str,
+        match_score: Any = None,
+        policy: Dict[str, Any],
+        loaded_count: int,
+    ) -> bool:
+        if not policy.get("enabled"):
+            return False
+        if loaded_count >= int(policy.get("max_count") or 0):
+            return False
+        if match_source in {"mounted", "mention"}:
+            return True
+        if match_source == "scan":
+            try:
+                return float(match_score) >= float(policy.get("min_score") or 0.75)
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    @staticmethod
+    def _is_new_session_first_user_turn(messages: Optional[List[Dict[str, Any]]]) -> bool:
+        """Whether the current context only contains the first user turn."""
+        if not messages:
+            return False
+        conversation_roles = [
+            str(m.get("role") or "").strip().lower()
+            for m in messages
+            if str(m.get("role") or "").strip().lower() in {"user", "assistant", "agent"}
+        ]
+        return conversation_roles == ["user"]
+
+    @classmethod
+    def _should_force_preload_scanned_skill(
+        cls,
+        *,
+        skill_id: str,
+        messages: Optional[List[Dict[str, Any]]],
+    ) -> bool:
+        return (
+            skill_id == cls.USING_SUPERPOWERS_SKILL_ID
+            and cls._is_new_session_first_user_turn(messages)
+        )
+
+    @classmethod
+    def _ensure_first_turn_superpowers_candidate(
+        cls,
+        *,
+        scanned_skills: List[Dict[str, Any]],
+        available_skills: List[Dict[str, Any]],
+        messages: Optional[List[Dict[str, Any]]],
+        exclude_ids: Optional[set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Ensure using-superpowers is considered on the first Main-agent turn."""
+        if not cls._is_new_session_first_user_turn(messages):
+            return scanned_skills
+        excluded = exclude_ids or set()
+        if cls.USING_SUPERPOWERS_SKILL_ID in excluded:
+            return scanned_skills
+        if any(skill.get("id") == cls.USING_SUPERPOWERS_SKILL_ID for skill in scanned_skills):
+            return scanned_skills
+
+        for skill in available_skills:
+            if skill.get("id") != cls.USING_SUPERPOWERS_SKILL_ID:
+                continue
+            item = dict(skill)
+            item["match_score"] = 1.0
+            item["match_source"] = "scan"
+            item["force_first_turn"] = True
+            return [item] + scanned_skills
+        return scanned_skills
+
+    @staticmethod
+    def _build_skill_injection(
+        *,
+        skill_name: str,
+        skill_id: str,
+        description: str,
+        full_instruction: Optional[str] = None,
+    ) -> str:
+        if full_instruction:
+            return AgentServicePrompts.skill_full_instruction_block(
+                skill_name,
+                skill_id,
+                description,
+                full_instruction,
+            )
+        return AgentServicePrompts.skill_summary_injection_block(
+            skill_name,
+            skill_id,
+            description,
+        )
+
+    @staticmethod
+    def _build_skill_log_chunk(skill_id: str, skill_name: str, details_msg: str) -> Dict[str, Any]:
+        details = details_msg or (
+            f"已识别候选流程「{skill_name}」(ID: {skill_id})。"
+            "当前仅加载流程摘要；若本轮确需执行，系统会读取完整流程说明后再处理。"
+        )
+        is_full_enabled = "已预载完整" in details or "可直接按该流程执行" in details
+        if is_full_enabled:
+            return {
+                "type": "log",
+                "id": f"skill_enabled_{skill_id}",
+                "title": f"已启用流程: {skill_name}",
+                "details": details,
+                "status": "success",
+            }
+
+        user_facing_details = details
+        if "read_skill_instruction" in user_facing_details:
+            user_facing_details = (
+                f"已识别候选流程「{skill_name}」(ID: {skill_id})。"
+                "当前仅加载流程摘要；若本轮确需执行，系统会读取完整流程说明后再处理。"
+            )
+        return {
+            "type": "log",
+            "id": f"skill_candidate_{skill_id}",
+            "title": f"已识别候选流程: {skill_name}",
+            "details": user_facing_details,
+            "status": "success",
+        }
 
     @staticmethod
     def _authorized_attachment_paths(messages: List[Dict[str, Any]]) -> List[str]:
@@ -151,6 +315,10 @@ class AgentService:
                 conversation_id=conversation_id,
                 trace_id=trace_id,
             ):
+                from app.services.ai.executors.common import sanitize_client_messages_for_identity
+
+                messages = sanitize_client_messages_for_identity(messages)
+
                 # --- Memory Integration ---
                 # If conversation_id is provided, we use server-side history
                 if conversation_id:
@@ -188,10 +356,6 @@ class AgentService:
                             max_context = 20
                         window = server_history[-max_context:] if server_history else []
                         messages = await self._maybe_compact_overflow(server_history, window)
-
-                from app.services.ai.executors.common import sanitize_client_messages_for_identity
-
-                messages = sanitize_client_messages_for_identity(messages)
 
                 from app.utils.skill_metadata import enrich_messages_with_skill_meta
 
@@ -400,10 +564,13 @@ class AgentService:
 
         mounted_skill_ids = {s.get("url") for s in active_skills if s.get("url")}
         skills_injection = []
+        full_load_policy = await self._resolve_skill_full_load_policy()
+        full_loaded_count = 0
 
         if active_skills:
             import os
             from app.core.config import settings
+            from app.services.ai.skill_resolver import load_skill_md_content
             from app.utils.skill_metadata import parse_skill_frontmatter
 
             for skill_obj in active_skills:
@@ -424,16 +591,39 @@ class AgentService:
                     description = ""
                     logger.warning("[Skills] Skill markdown not found at %s", skill_md_path)
 
+                full_instruction = None
+                if self._should_preload_skill_full_instruction(
+                    match_source="mounted",
+                    policy=full_load_policy,
+                    loaded_count=full_loaded_count,
+                ):
+                    full_instruction = load_skill_md_content(
+                        skill_id,
+                        max_bytes=int(full_load_policy["max_bytes"]),
+                    )
+                    if full_instruction:
+                        full_loaded_count += 1
+
                 skills_injection.append(
-                    AgentServicePrompts.skill_summary_injection_block(
-                        skill_name, skill_id, description
+                    self._build_skill_injection(
+                        skill_name=skill_name,
+                        skill_id=skill_id,
+                        description=description,
+                        full_instruction=full_instruction,
                     )
                 )
-                logger.info("[Skills] Matched mounted skill %s (summary only).", skill_id)
+                logger.info(
+                    "[Skills] Matched mounted skill %s (%s).",
+                    skill_id,
+                    "full instruction preloaded" if full_instruction else "summary only",
+                )
 
         if user_query:
             try:
-                from app.services.ai.skill_resolver import resolve_skills_from_query
+                from app.services.ai.skill_resolver import (
+                    load_skill_md_content,
+                    resolve_skills_from_query,
+                )
 
                 for skill_meta in resolve_skills_from_query(user_query):
                     skill_id = skill_meta.get("id")
@@ -441,15 +631,41 @@ class AgentService:
                         continue
                     skill_name = skill_meta.get("name") or skill_id
                     description = skill_meta.get("description") or ""
+                    full_instruction = None
+                    if self._should_preload_skill_full_instruction(
+                        match_source=str(skill_meta.get("match_source") or "mention"),
+                        match_score=skill_meta.get("match_score"),
+                        policy=full_load_policy,
+                        loaded_count=full_loaded_count,
+                    ):
+                        full_instruction = load_skill_md_content(
+                            skill_id,
+                            max_bytes=int(full_load_policy["max_bytes"]),
+                        )
+                        if full_instruction:
+                            full_loaded_count += 1
                     skills_injection.append(
-                        AgentServicePrompts.skill_summary_injection_block(
-                            skill_name, skill_id, description
+                        self._build_skill_injection(
+                            skill_name=skill_name,
+                            skill_id=skill_id,
+                            description=description,
+                            full_instruction=full_instruction,
                         )
                     )
                     mounted_skill_ids.add(skill_id)
-                    logger.info("[Skills] Auto-resolved skill %s from query (summary only).", skill_id)
+                    logger.info(
+                        "[Skills] Auto-resolved skill %s from query (%s).",
+                        skill_id,
+                        "full instruction preloaded" if full_instruction else "summary only",
+                    )
                     if skills_log_callback:
-                        skills_log_callback(skill_id, skill_name, "")
+                        details_msg = ""
+                        if full_instruction:
+                            details_msg = (
+                                f"已从本轮问题匹配「{skill_name}」(ID: {skill_id})。"
+                                "已预载完整 SKILL.md 指令，本轮可直接按该流程执行。"
+                            )
+                        skills_log_callback(skill_id, skill_name, details_msg)
             except Exception as resolve_err:
                 logger.warning("[Skills] Failed to auto-resolve skills from query: %s", resolve_err)
 
@@ -457,6 +673,8 @@ class AgentService:
             try:
                 from app.services.ai.skill_resolver import (
                     is_main_general_agent,
+                    list_skill_metas,
+                    load_skill_md_content,
                     scan_relevant_skills,
                     should_scan_skills_for_query,
                 )
@@ -467,7 +685,7 @@ class AgentService:
                     scan_enabled = str(scan_enabled_raw or "true").strip().lower() in {
                         "1", "true", "yes", "on",
                     }
-                    if scan_enabled and should_scan_skills_for_query(user_query):
+                    if scan_enabled:
                         min_score_raw = await ConfigService.get("skill_auto_scan_min_score", "0.45")
                         try:
                             min_score = float(min_score_raw) if min_score_raw is not None else 0.45
@@ -480,35 +698,75 @@ class AgentService:
                             max_scan_results = 1
                         max_scan_results = max(1, min(max_scan_results, 3))
 
-                        for skill_meta in scan_relevant_skills(
-                            user_query,
+                        scanned_skills = []
+                        if should_scan_skills_for_query(user_query):
+                            scanned_skills = scan_relevant_skills(
+                                user_query,
+                                exclude_ids=mounted_skill_ids,
+                                max_results=max_scan_results,
+                                min_score=min_score,
+                            )
+                        available_skills = list_skill_metas()
+                        scanned_skills = self._ensure_first_turn_superpowers_candidate(
+                            scanned_skills=scanned_skills,
+                            available_skills=available_skills,
+                            messages=messages,
                             exclude_ids=mounted_skill_ids,
-                            max_results=max_scan_results,
-                            min_score=min_score,
-                        ):
+                        )
+                        scanned_skills = scanned_skills[:max_scan_results]
+
+                        for skill_meta in scanned_skills:
                             skill_id = skill_meta.get("id")
                             if not skill_id or skill_id in mounted_skill_ids:
                                 continue
                             skill_name = skill_meta.get("name") or skill_id
                             description = skill_meta.get("description") or ""
                             match_score = skill_meta.get("match_score")
+                            full_instruction = None
+                            force_full_instruction = self._should_force_preload_scanned_skill(
+                                skill_id=skill_id,
+                                messages=messages,
+                            )
+                            if force_full_instruction or self._should_preload_skill_full_instruction(
+                                match_source=str(skill_meta.get("match_source") or "scan"),
+                                match_score=match_score,
+                                policy=full_load_policy,
+                                loaded_count=full_loaded_count,
+                            ):
+                                full_instruction = load_skill_md_content(
+                                    skill_id,
+                                    max_bytes=int(full_load_policy["max_bytes"]),
+                                )
+                                if full_instruction:
+                                    full_loaded_count += 1
                             skills_injection.append(
-                                AgentServicePrompts.skill_summary_injection_block(
-                                    skill_name, skill_id, description
+                                self._build_skill_injection(
+                                    skill_name=skill_name,
+                                    skill_id=skill_id,
+                                    description=description,
+                                    full_instruction=full_instruction,
                                 )
                             )
                             mounted_skill_ids.add(skill_id)
                             logger.info(
-                                "[Skills] Scanned skill %s from query (score=%s, summary only).",
+                                "[Skills] Scanned skill %s from query (score=%s, %s).",
                                 skill_id,
                                 match_score,
+                                "full instruction preloaded" if full_instruction else "summary only",
                             )
                             if skills_log_callback:
                                 score_hint = f"（相关度 {match_score}）" if match_score is not None else ""
-                                details_msg = (
-                                    f"已根据本轮问题扫描技能库并匹配「{skill_name}」(ID: {skill_id}){score_hint}。"
-                                    f"已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。"
-                                )
+                                if full_instruction:
+                                    force_hint = "新会话首轮门禁已强制启用；" if force_full_instruction else ""
+                                    details_msg = (
+                                        f"已根据本轮问题扫描技能库并匹配「{skill_name}」(ID: {skill_id}){score_hint}。"
+                                        f"{force_hint}已预载完整 SKILL.md 指令，本轮可直接按该流程执行。"
+                                    )
+                                else:
+                                    details_msg = (
+                                        f"已根据本轮问题扫描技能库并匹配「{skill_name}」(ID: {skill_id}){score_hint}。"
+                                        f"已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。"
+                                    )
                                 skills_log_callback(skill_id, skill_name, details_msg)
             except Exception as scan_err:
                 logger.warning("[Skills] Failed to scan skills from query: %s", scan_err)
@@ -780,13 +1038,7 @@ class AgentService:
             )
 
             for skill_id, skill_name, details_msg in matched_skills_to_log:
-                yield {
-                    "type": "log",
-                    "id": f"skill_load_{skill_id}" if not details_msg else f"skill_scan_{skill_id}",
-                    "title": f"已匹配技能: {skill_name}" if not details_msg else f"已扫描匹配技能: {skill_name}",
-                    "details": details_msg or f"已从技能库匹配「{skill_name}」(ID: {skill_id})。已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。",
-                    "status": "success",
-                }
+                yield self._build_skill_log_chunk(skill_id, skill_name, details_msg)
 
             from app.services.ai.turn_classifier import (
                 TurnType,
@@ -804,9 +1056,25 @@ class AgentService:
             can_do_data = "data_query" in (agent_config.capabilities or [])
             agent_engine_config = agent_config.engine_config or {}
             agent_bound_dataset_ids = agent_engine_config.get("dataset_ids") or []
+            
+            agent_has_knowledge_tool = False
+            if getattr(agent_config, "tools", None):
+                for t in agent_config.tools:
+                    name = ""
+                    if isinstance(t, str):
+                        name = t
+                    elif hasattr(t, "name"):
+                        name = getattr(t, "name")
+                    elif isinstance(t, dict) and "name" in t:
+                        name = t["name"]
+                    if name == "search_knowledge_base":
+                        agent_has_knowledge_tool = True
+                        break
+            
             agent_has_knowledge_binding = (
                 "knowledge_base" in (agent_config.capabilities or [])
                 and bool(agent_bound_dataset_ids)
+                and agent_has_knowledge_tool
             )
             turn_kwargs = {
                 "user_query": user_query,

@@ -34,6 +34,32 @@ async def _noop_lane_hold(*args, **kwargs):
     yield False
 
 
+async def _skill_config_get(key, default=None):
+    values = {
+        "skill_auto_full_load_enabled": "true",
+        "skill_auto_full_load_min_score": "0.75",
+        "skill_auto_full_load_max_count": "1",
+        "skill_auto_full_load_max_bytes": "65536",
+        "skill_auto_scan_enabled": "true",
+        "skill_auto_scan_min_score": "0.45",
+        "skill_auto_scan_max_results": "1",
+    }
+    return values.get(key, default)
+
+
+async def _skill_config_get_strict_full_load(key, default=None):
+    values = {
+        "skill_auto_full_load_enabled": "true",
+        "skill_auto_full_load_min_score": "0.95",
+        "skill_auto_full_load_max_count": "1",
+        "skill_auto_full_load_max_bytes": "65536",
+        "skill_auto_scan_enabled": "true",
+        "skill_auto_scan_min_score": "0.45",
+        "skill_auto_scan_max_results": "1",
+    }
+    return values.get(key, default)
+
+
 @pytest.fixture(autouse=True)
 def _disable_quota_block_message():
     with patch(
@@ -41,6 +67,353 @@ def _disable_quota_block_message():
         AsyncMock(return_value=None),
     ):
         yield
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_preloads_full_instruction_for_mounted_skill(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "weekly-report"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: 周报生成流程\n"
+        "description: 根据材料生成工作周报\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "先提取本周完成事项，再整理风险与下周计划。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="agent-1",
+        agent_name="helper",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get),
+    ):
+        injections = await service._inject_skills(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "帮我写周报",
+                    "files": [{"type": "skill", "url": "weekly-report", "filename": "周报生成流程 (技能)"}],
+                }
+            ],
+            user_query="帮我写周报",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "先提取本周完成事项" in joined
+    assert "未预载；执行前必须调用 read_skill_instruction" not in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_preloads_full_instruction_for_high_confidence_scan(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "weekly-report"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: 周报生成流程\n"
+        "description: 周报生成流程\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "输出本周进展、问题风险、下周计划。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="assistant",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "周报生成流程"}],
+            user_query="周报生成流程",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "输出本周进展、问题风险、下周计划" in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_preloads_full_instruction_for_mentioned_skill(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "meeting-minutes"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: 会议纪要整理\n"
+        "description: 把会议记录整理成结论和待办\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "先提炼会议结论，再按负责人拆分待办。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="agent-1",
+        agent_name="helper",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "使用会议纪要整理技能处理这段记录"}],
+            user_query="使用会议纪要整理技能处理这段记录",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "先提炼会议结论，再按负责人拆分待办" in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_keeps_summary_for_lower_confidence_scan(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "weekly-report"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: 周报生成流程\n"
+        "description: 周报生成 汇总 风险 计划\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "这段完整指令不应在低置信扫描时预载。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="assistant",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "周报 预算"}],
+            user_query="周报 预算",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "未预载；执行前必须调用 read_skill_instruction" in joined
+    assert "这段完整指令不应在低置信扫描时预载" not in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_forces_using_superpowers_on_first_turn_scan(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "using-superpowers"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: using-superpowers\n"
+        "description: superpowers 流程规范\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "会话开始时先检查并使用相关技能。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="assistant",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get_strict_full_load),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "superpowers"}],
+            user_query="superpowers",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "会话开始时先检查并使用相关技能" in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_forces_using_superpowers_on_first_turn_even_without_lexical_match(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "using-superpowers"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: using-superpowers\n"
+        "description: Use when starting any conversation\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "首轮普通中文问题也应该启用该流程。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="assistant",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get_strict_full_load),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "帮我看看这个问题"}],
+            user_query="帮我看看这个问题",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "首轮普通中文问题也应该启用该流程" in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_forces_using_superpowers_on_first_turn_greeting(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "using-superpowers"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: using-superpowers\n"
+        "description: Use when starting any conversation\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "问候首轮也应该启用该流程。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="assistant",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get_strict_full_load),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "你好"}],
+            user_query="你好",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "问候首轮也应该启用该流程" in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_inject_skills_does_not_force_using_superpowers_after_first_turn(tmp_path):
+    service = AgentService()
+    skill_dir = tmp_path / "using-superpowers"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: using-superpowers\n"
+        "description: superpowers 流程规范\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "非首轮不应因为特殊门禁被强制预载。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="assistant",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get_strict_full_load),
+    ):
+        injections = await service._inject_skills(
+            messages=[
+                {"role": "user", "content": "你好"},
+                {"role": "agent", "content": "您好"},
+                {"role": "user", "content": "superpowers"},
+            ],
+            user_query="superpowers",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "未预载；执行前必须调用 read_skill_instruction" in joined
+    assert "非首轮不应因为特殊门禁被强制预载" not in joined
+
+
+def test_skill_log_chunk_titles_distinguish_enabled_and_candidate_flow():
+    enabled = AgentService._build_skill_log_chunk(
+        "weekly-report",
+        "周报生成流程",
+        "已预载完整 SKILL.md 指令，本轮可直接按该流程执行。",
+    )
+    assert enabled["id"] == "skill_enabled_weekly-report"
+    assert enabled["title"] == "已启用流程: 周报生成流程"
+    assert "技能" not in enabled["title"]
+
+    candidate = AgentService._build_skill_log_chunk(
+        "weekly-report",
+        "周报生成流程",
+        "已注入摘要；模型须调用 read_skill_instruction 读取 SKILL.md 全文后再执行。",
+    )
+    assert candidate["id"] == "skill_candidate_weekly-report"
+    assert candidate["title"] == "已识别候选流程: 周报生成流程"
+
+    fallback = AgentService._build_skill_log_chunk("weekly-report", "周报生成流程", "")
+    assert fallback["id"] == "skill_candidate_weekly-report"
+    assert fallback["title"] == "已识别候选流程: 周报生成流程"
+    assert "已识别候选流程" in fallback["details"]
 
 
 @pytest.mark.asyncio

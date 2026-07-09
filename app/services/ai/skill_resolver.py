@@ -294,12 +294,15 @@ def resolve_skills_from_query(user_query: str, max_results: int = 2) -> List[Dic
     scored.sort(key=lambda item: item[0], reverse=True)
     seen_ids: set[str] = set()
     results: List[Dict[str, Any]] = []
-    for _, meta in scored:
+    for score, meta in scored:
         skill_id = meta["id"]
         if skill_id in seen_ids:
             continue
         seen_ids.add(skill_id)
-        results.append(dict(meta))
+        item = dict(meta)
+        item["match_source"] = "mention"
+        item["match_score"] = round(score, 3)
+        results.append(item)
         if len(results) >= max_results:
             break
     return results

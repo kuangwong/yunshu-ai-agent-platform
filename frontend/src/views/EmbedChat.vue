@@ -634,6 +634,9 @@
                           · 已折叠 {{ getHiddenLogCount(msg) }}
                         </template>
                       </span>
+                      <span v-if="getSkillFlowBadgesForMessage(msg, messages).length > 0" class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400 font-semibold border border-purple-100 dark:border-purple-900/30 flex items-center gap-0.5">
+                        ⚡ {{ summarizeSkillFlowBadges(getSkillFlowBadgesForMessage(msg, messages)) }}
+                      </span>
                     </div>
                     <span class="text-[10px] text-gray-400 font-mono ml-2 flex-shrink-0">
                       {{ msg.thoughtDuration ? `${msg.thoughtDuration}s` : '' }}
@@ -661,6 +664,24 @@
                     v-show="msg.isThoughtExpanded"
                     class="overflow-hidden"
                   >
+                    <!-- Ecosystem Skills Notice -->
+                    <div v-if="getSkillFlowBadgesForMessage(msg, messages).length > 0" class="mt-2 ml-2 pl-4 flex flex-col gap-1.5">
+                      <div class="flex items-center space-x-1.5 text-xs text-purple-700 dark:text-purple-400 font-semibold bg-purple-50/50 dark:bg-purple-950/10 border border-purple-100/60 dark:border-purple-900/20 rounded-lg px-3 py-2">
+                        <span class="text-[14px]">⚡</span>
+                        <span>{{ skillFlowNoticeLabel(getSkillFlowBadgesForMessage(msg, messages)) }}</span>
+                        <div class="flex flex-wrap gap-1">
+                          <span
+                            v-for="skill in getSkillFlowBadgesForMessage(msg, messages)"
+                            :key="skill.key"
+                            class="px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-[10px] font-bold border border-purple-200/50 dark:border-purple-800/30"
+                            :title="skill.description"
+                          >
+                            {{ skill.label }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
                     <div class="relative ml-2 pl-4 py-2 space-y-1.5 border-l border-gray-200 dark:border-gray-700/50">
                       <div
                         v-for="(log, idx) in getDisplayLogs(msg)"
@@ -1330,6 +1351,7 @@
       :dataset-documents="datasetDocuments"
       :document-recommendations="documentRecommendations"
       :loading="loadingKnowledgeDatasets"
+      :load-error="knowledgeLoadError"
       @toggle-active="(id) => toggleDatasetActive(id, chatInputRef)"
       @load-recommendations="fetchRecommendations"
       @quick-question="handleQuickQuestion"
@@ -2435,6 +2457,12 @@ import {
   type TurnType,
 } from "@/utils/turnLogDisplay";
 import {
+  buildSkillFlowBadges,
+  skillFlowNoticeLabel,
+  summarizeSkillFlowBadges,
+  type SkillFlowBadge,
+} from "@/utils/skillFlowBadges";
+import {
   splitSqlToolLogDetails,
   isSqlLikeToolLogDetails,
   sqlToolLogBodyLabel,
@@ -2632,6 +2660,21 @@ function getThoughtPanelTitle(msg: Message) {
 
 function getHiddenLogCount(msg: Message) {
   return countHiddenLogs(msg.logs, getDisplayLogs(msg));
+}
+
+function getSkillFlowBadgesForMessage(msg: Message, allMessages: Message[]): SkillFlowBadge[] {
+  if (msg.role !== 'agent') return [];
+  const idx = allMessages.findIndex(m => m.id === msg.id);
+  if (idx <= 0) return [];
+  let files: ChatFile[] = [];
+  for (let i = idx - 1; i >= 0; i--) {
+    const prev = allMessages[i];
+    if (prev.role === 'user') {
+      files = prev.files || [];
+      break;
+    }
+  }
+  return buildSkillFlowBadges(files, msg.logs || []);
 }
 
 const formatDurationMs = (durationMs?: number | null): string => {
@@ -3352,6 +3395,7 @@ const SYSTEM_SLASH_COMMANDS = [
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ];
 const showCommandMenu = ref(false);
+const isKnowledgeEnabled = ref(true);
 const slashCommands = ref<any[]>([...SYSTEM_SLASH_COMMANDS]);
 // History Sidebar State
 const showHistorySidebar = ref(false);
@@ -4869,21 +4913,57 @@ const fetchSlashCommands = async () => {
       headers["Authorization"] = `Bearer ${config.token}`;
       headers["X-API-Key"] = config.token;
     }
-    const res = await axios.get("/api/portal/slash-commands/", { headers });
+    // 并行获取 RAGFlow 配置和快捷指令
+    const [configRes, res] = await Promise.all([
+      axios.get("/api/portal/ragflow/config", { headers }).catch(e => {
+        console.warn("Failed to fetch ragflow config", e);
+        return null;
+      }),
+      axios.get("/api/portal/slash-commands/", { headers }).catch(e => {
+        console.warn("Failed to fetch user slash-commands", e);
+        return { data: null };
+      })
+    ]);
+
+    if (configRes && configRes.data?.data) {
+      isKnowledgeEnabled.value = configRes.data.data.knowledge_base_enabled !== false;
+    } else {
+      isKnowledgeEnabled.value = true;
+    }
+
+    const sysCommands = SYSTEM_SLASH_COMMANDS.map(cmd => {
+      if (cmd.id === KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID) {
+        return {
+          ...cmd,
+          disabled: !isKnowledgeEnabled.value
+        };
+      }
+      return cmd;
+    });
+
     if (res.data) {
       // 获取用户命令
       const userCommands = Array.isArray(res.data) ? res.data : [];
       // 合并系统命令和用户命令，并按 sort_order 排序
       slashCommands.value = [
-        ...SYSTEM_SLASH_COMMANDS,
+        ...sysCommands,
         ...userCommands
       ].sort((a, b) => (a.sort_order || 999) - (b.sort_order || 999));
     } else {
-      slashCommands.value = [...SYSTEM_SLASH_COMMANDS];
+      slashCommands.value = [...sysCommands];
     }
   } catch (e) {
     console.warn("Slash commands fetch failed", e);
-    slashCommands.value = [...SYSTEM_SLASH_COMMANDS];
+    const sysCommands = SYSTEM_SLASH_COMMANDS.map(cmd => {
+      if (cmd.id === KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID) {
+        return {
+          ...cmd,
+          disabled: !isKnowledgeEnabled.value
+        };
+      }
+      return cmd;
+    });
+    slashCommands.value = [...sysCommands];
   }
 };
 const fetchModels = async () => {
@@ -5604,6 +5684,7 @@ const {
   knowledgeGeneratedAt,
   datasets: knowledgeDatasets,
   loadingDatasets: loadingKnowledgeDatasets,
+  datasetLoadError: knowledgeLoadError,
   activeDatasetIds,
   datasetRecommendations,
   pinnedDatasetIds,

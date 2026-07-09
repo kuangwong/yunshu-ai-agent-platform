@@ -430,6 +430,24 @@
                 </div>
               </div>
 
+              <!-- Error State -->
+              <div v-else-if="loadError" class="flex flex-col items-center justify-center py-20 text-gray-400 dark:text-gray-500 text-center px-6">
+                <svg class="w-12 h-12 text-red-500 dark:text-red-600 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+                <h4 class="text-xs font-bold text-gray-700 dark:text-gray-300">知识库服务不可用</h4>
+                <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-2 max-w-[18rem] leading-relaxed">
+                  连接知识库引擎失败，服务可能正在维护或已离线。请稍后重试或联系管理员排查。
+                </p>
+                <button
+                  type="button"
+                  @click="emit('refresh')"
+                  class="mt-4 px-3 py-1.5 text-[10px] font-medium bg-green-500 hover:bg-green-600 text-white rounded transition-colors active:scale-95 cursor-pointer"
+                >
+                  重新加载
+                </button>
+              </div>
+
               <!-- Empty State -->
               <div v-else-if="datasets.length === 0" class="flex flex-col items-center justify-center py-20 text-gray-400 dark:text-gray-500 text-center px-6">
                 <svg class="w-12 h-12 text-gray-300 dark:text-gray-700 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -883,16 +901,16 @@
                       </div>
                     </div>
 
-                    <div v-else class="flex justify-center py-1">
+                    <div v-else class="w-full py-1">
                       <button
                         type="button"
-                        class="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-3 py-1.5 text-[11px] font-bold text-gray-500 dark:text-gray-400 hover:border-green-500/40 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50/30 dark:hover:bg-green-950/10 transition-all active:scale-95"
+                        class="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-gray-200 dark:border-gray-800 bg-gray-50/20 dark:bg-gray-900/10 hover:bg-green-50/10 dark:hover:bg-green-950/10 hover:border-green-500/35 hover:text-green-600 dark:hover:text-green-400 px-4 py-3.5 text-xs font-bold text-gray-500 dark:text-gray-400 transition-all active:scale-[0.99] cursor-pointer"
                         @click.stop="emit('load-recommendations', ds.id, false)"
                       >
-                        <svg class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                        <svg class="w-4 h-4 text-green-500/95" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 21l-1.81-5.096L2.096 14.1 7.19 13.287 8 8.1l1.81 5.187 5.096.91-5.093.907zM19.5 4.5l-.81 2.274L16.417 7.58l2.273.81.81 2.274.81-2.274 2.274-.81-2.274-.806L19.5 4.5z" />
                         </svg>
-                        <span>生成推荐</span>
+                        <span>智能生成提问推荐</span>
                       </button>
                     </div>
                   </div>
@@ -988,6 +1006,7 @@ const props = defineProps<{
   datasetDocuments: Record<string, { docs: any[]; loading?: boolean }>;
   documentRecommendations: Record<string, { questions: any[]; loading?: boolean }>;
   loading?: boolean;
+  loadError?: boolean;
   generatedAt?: string;
 }>();
 

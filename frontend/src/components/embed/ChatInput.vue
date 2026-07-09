@@ -278,6 +278,7 @@ const handleKeydown = (e: KeyboardEvent) => {
 
 const selectCommand = (cmd: any) => {
   if (props.isProcessing || !cmd) return;
+  if (cmd.disabled) return;
   if (String(cmd.id).startsWith('sys_')) {
     emit('system-command', cmd.command);
     emit('update:modelValue', '');
@@ -307,6 +308,7 @@ const handleMentionSelect = (agent: any) => {
 
 const handleShortcutClick = (cmd: any) => {
     if (props.isProcessing || !cmd) return;
+    if (cmd.disabled) return;
     if (String(cmd.id).startsWith('sys_')) {
         emit('system-command', cmd.command);
         emit('update:modelValue', '');
@@ -327,6 +329,10 @@ import axios from "@/utils/axios";
 
 // 附件上传状态
 const uploadedFiles = ref<any[]>([]);
+
+const isKnowledgePortalDisabled = computed(() => {
+  return !!props.slashCommands?.find(c => c.id === 'sys_knowledge_portal')?.disabled;
+});
 
 const canSend = computed(
   () => !!props.modelValue.trim() || uploadedFiles.value.filter(f => f.type !== 'knowledge_settings').length > 0,
@@ -718,7 +724,7 @@ defineExpose({
                             <div class="relative flex-1 min-w-0 overflow-hidden">
                                 <div class="flex items-center gap-2 min-w-0">
                                     <template v-for="cmd in visibleRowSystemCommands" :key="'row-sys-'+cmd.id">
-                                        <button @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-full whitespace-nowrap hover:bg-gray-200 transition-colors flex-shrink-0">{{ cmd.label }}</button>
+                                        <button :disabled="cmd.disabled" @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-full whitespace-nowrap hover:bg-gray-200 transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-100">{{ cmd.label }}</button>
                                     </template>
                                     <div v-if="showShortcutDivider" class="w-px h-3 bg-gray-200 dark:bg-gray-700 flex-shrink-0"></div>
                                     <template v-for="cmd in visibleRowUserCommands" :key="'row-user-'+cmd.id">
@@ -769,7 +775,7 @@ defineExpose({
                                     <div>
                                         <div class="text-[10px] font-black text-gray-400 mb-3 px-1 flex items-center uppercase tracking-tighter">System · 系统功能</div>
                                         <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                                            <button v-for="cmd in filteredSystemCommands" :key="'grid-sys-'+cmd.id" @click="handleShortcutClick(cmd); closeCommandDrawer();" class="w-full text-left p-3.5 rounded-2xl bg-gray-50/50 dark:bg-gray-900/30 border border-transparent hover:bg-gray-100 dark:hover:bg-gray-800 transition-all">
+                                            <button :disabled="cmd.disabled" v-for="cmd in filteredSystemCommands" :key="'grid-sys-'+cmd.id" @click="handleShortcutClick(cmd); closeCommandDrawer();" class="w-full text-left p-3.5 rounded-2xl bg-gray-50/50 dark:bg-gray-900/30 border border-transparent hover:bg-gray-100 dark:hover:bg-gray-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-50/50">
                                                 <div class="text-xs font-bold text-gray-600 dark:text-gray-400 mb-1 truncate">{{ cmd.label }}</div>
                                                 <div class="text-[9px] text-gray-400/60 truncate font-mono">{{ cmd.command }}</div>
                                             </button>
@@ -883,15 +889,19 @@ defineExpose({
                 <div
                   v-for="(cmd, index) in filteredCommands"
                   :key="cmd.id"
-                  @click="selectCommand(cmd)"
+                  @click="cmd.disabled ? null : selectCommand(cmd)"
                   class="flex cursor-pointer items-center space-x-3 rounded-lg px-3 py-2 transition-all"
-                  :class="index === activeCommandIndex ? 'bg-primary/10 ring-1 ring-primary/20 dark:bg-primary/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700'"
+                  :class="[
+                    cmd.disabled ? 'opacity-40 cursor-not-allowed' : '',
+                    index === activeCommandIndex ? 'bg-primary/10 ring-1 ring-primary/20 dark:bg-primary/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+                  ]"
                 >
                   <div class="min-w-0 flex-1">
                     <div class="flex items-center space-x-2">
-                      <span class="truncate text-sm font-bold text-gray-900 dark:text-gray-100" :class="index === activeCommandIndex ? 'text-primary' : ''">
+                      <span class="truncate text-sm font-bold text-gray-900 dark:text-gray-100" :class="[index === activeCommandIndex && !cmd.disabled ? 'text-primary' : '', cmd.disabled ? 'text-gray-400 dark:text-gray-500' : '']">
                         {{ cmd.label }}
                       </span>
+                      <span v-if="cmd.disabled" class="rounded border border-yellow-200 bg-yellow-50 px-1 py-0.5 text-[8px] font-bold text-yellow-600 dark:border-yellow-900/30 dark:bg-yellow-950/20">功能未启用</span>
                       <span v-if="String(cmd.id).startsWith('sys_')" class="rounded border border-gray-200 bg-gray-100 px-1 py-0.5 text-[8px] font-black uppercase tracking-tighter text-gray-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-400">SYS</span>
                     </div>
                     <div class="truncate font-mono text-[10px] text-gray-400 opacity-70">
@@ -936,7 +946,7 @@ defineExpose({
                             </button>
 
                             <!-- Knowledge Base -->
-                            <button @click="showPlusMenu = false; emit('select-knowledge-base');" class="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                            <button :disabled="isKnowledgePortalDisabled" @click="isKnowledgePortalDisabled ? null : (showPlusMenu = false, emit('select-knowledge-base'));" class="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
                                 <div class="flex items-center space-x-3">
                                     <span class="text-lg">📚</span>
                                     <span class="font-medium text-left">打开知识库中心</span>
@@ -1191,7 +1201,7 @@ defineExpose({
               <div>
                 <div class="text-[10px] font-black text-gray-400 mb-3 px-1 flex items-center uppercase tracking-tighter">System · 系统功能</div>
                 <div class="grid grid-cols-2 gap-3">
-                  <button v-for="cmd in filteredSystemCommands" :key="'mobile-sys-'+cmd.id" @click="handleShortcutClick(cmd); closeCommandDrawer();" class="w-full text-left p-3.5 rounded-2xl bg-gray-50/50 dark:bg-gray-900/30 border border-transparent hover:bg-gray-100 dark:hover:bg-gray-800 transition-all">
+                  <button :disabled="cmd.disabled" v-for="cmd in filteredSystemCommands" :key="'mobile-sys-'+cmd.id" @click="cmd.disabled ? null : (handleShortcutClick(cmd), closeCommandDrawer());" class="w-full text-left p-3.5 rounded-2xl bg-gray-50/50 dark:bg-gray-900/30 border border-transparent hover:bg-gray-100 dark:hover:bg-gray-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-50/50">
                     <div class="text-xs font-bold text-gray-600 dark:text-gray-400 mb-1 truncate">{{ cmd.label }}</div>
                     <div class="text-[9px] text-gray-400/60 truncate font-mono">{{ cmd.command }}</div>
                   </button>

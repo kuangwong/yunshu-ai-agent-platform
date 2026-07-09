@@ -63,7 +63,7 @@ class AgentServicePrompts:
 | 「我的偏好/记住的设定」 | 先看上文 **[Memory Profile]**（若已注入）；不足再 **fetch_user_long_term_memory** |
 | 用户要求「记住…」 | **update_user_preference**（勿虚构已写入） |
 | 制度/SOP/操作指引、已选知识库 | **search_knowledge_base**（未绑定则不得编造文档内容） |
-| 已匹配技能（**[Active Skills Loaded]** 摘要） | 必须先 **read_skill_instruction(skill_id)** 读全文再执行 |
+| 已匹配技能（**[Active Skills Loaded]**） | 若技能块已预载完整指令，直接按该指令执行；若仅有摘要，必须先 **read_skill_instruction(skill_id)** 读全文再执行 |
 | 可能需要技能但未匹配 | **list_available_skills** → **read_skill_instruction** |
 
 - 不要把「当前会话 messages 为空」等同于「用户从未对话」；跨会话摘要可能在其他 conversation_id 中。
@@ -88,8 +88,9 @@ class AgentServicePrompts:
 - 已有专用工具时，优先使用专用工具，不要让用户手动执行等价命令。"""
 
     _PLATFORM_SKILLS_USAGE_SECTION = """## 技能使用
-- 先扫描已注入的技能摘要或 list_available_skills 结果；**仅当某个技能明显适用**时再 read_skill_instruction。
-- 多个技能可能匹配时，选**最具体、最贴近用户问题**的一个再 read；**禁止未选定前连续 read 多个技能全文**。
+- 先查看 [Active Skills Loaded]：若技能块已预载完整指令，直接以该 SKILL.md 为准执行；若仅有摘要，执行前必须 read_skill_instruction。
+- 未匹配但可能需要技能时，先看 list_available_skills；**仅当某个技能明显适用**时再 read_skill_instruction。
+- 多个技能可能匹配时，选**最具体、最贴近用户问题**的一个执行；**禁止未选定前连续 read 多个技能全文**。
 - 技能涉及外部 API 批量写入时，优先合并请求，避免 tight loop；遇 429/限流应降速重试。"""
 
     _PLATFORM_TOOL_APPROVAL_SECTION = """## 工具确认
@@ -234,9 +235,6 @@ class AgentServicePrompts:
                     tool_names.update(t.name for t in system_tools)
             except Exception:
                 pass
-            # 知识库工具（如果在 data_query/knowledge 模式下可能动态引入）
-            if getattr(agent_config, "capabilities", None) and "knowledge_base" in agent_config.capabilities:
-                tool_names.add("search_knowledge_base")
             # 主助手运行时隐式挂载 sub_agent_call，与 AssistantAgentRunner 门控对齐
             try:
                 from app.services.ai.skill_resolver import is_main_general_agent
@@ -351,7 +349,7 @@ class AgentServicePrompts:
             table_rows.append("| 制度/SOP/操作指引、已选知识库 | **search_knowledge_base**（未绑定则不得编造文档内容） |")
             
         if "read_skill_instruction" in tool_names:
-            table_rows.append("| 已匹配技能（**[Active Skills Loaded]** 摘要） | 必须先 **read_skill_instruction(skill_id)** 读全文再执行 |")
+            table_rows.append("| 已匹配技能（**[Active Skills Loaded]**） | 若技能块已预载完整指令，直接按该指令执行；若仅有摘要，必须先 **read_skill_instruction(skill_id)** 读全文再执行 |")
             
         if "list_available_skills" in tool_names and "read_skill_instruction" in tool_names:
             table_rows.append("| 可能需要技能但未匹配 | **list_available_skills** → **read_skill_instruction** |")
@@ -457,14 +455,35 @@ class AgentServicePrompts:
         )
 
     @staticmethod
+    def skill_full_instruction_block(
+        skill_name: str,
+        skill_id: str,
+        description: str = "",
+        instruction: str = "",
+    ) -> str:
+        """单个已启用技能的完整指令块。"""
+        desc_line = f"- **Description**: {description.strip()}\n" if (description or "").strip() else ""
+        return (
+            f"=== 已启用技能: {skill_name} (ID: {skill_id}) ===\n"
+            f"- **skill_id**: `{skill_id}`\n"
+            f"{desc_line}"
+            f"- **完整指令**: 已预载完整指令；本轮可直接按以下 SKILL.md 执行，无需再次调用 read_skill_instruction，除非需要刷新或核对技能文件。\n"
+            f"--- BEGIN SKILL.md ---\n"
+            f"{(instruction or '').strip()}\n"
+            f"--- END SKILL.md ---\n"
+            f"=================================================="
+        )
+
+    @staticmethod
     def skills_profile(skills_injection: List[str]) -> str:
-        """已匹配技能集合的 System Prompt 头部（仅摘要，强制按需读取全文）。"""
+        """已匹配技能集合的 System Prompt 头部。"""
         return (
             f"[Active Skills Loaded]\n"
-            f"用户已挂载或点名以下技能（**仅 Frontmatter 摘要，不含 SKILL.md 全文**）。\n"
-            f"在对任一技能执行 workflow 之前，必须先对该技能的 skill_id 调用 **read_skill_instruction**，"
-            f"并以工具返回的完整指令为准；在未获得 read_skill_instruction 返回前，禁止凭摘要编造步骤或跳过读技能直接查数/作答。\n"
-            f"多个技能可能匹配时，选**最具体、最贴近用户问题**的一个再 read；禁止未选定前连续 read 多个技能全文。\n\n"
+            f"用户已挂载、点名或被系统匹配到以下技能。技能块可能是**完整 SKILL.md 指令**，也可能只是 Frontmatter 摘要。\n"
+            f"若某个技能块标记“已预载完整指令”，本轮可直接以该块中的完整 SKILL.md 为准执行；"
+            f"若某个技能块标记“未预载”，在执行该技能 workflow 前必须先对该 skill_id 调用 **read_skill_instruction**，"
+            f"禁止凭摘要编造步骤或跳过读技能直接查数/作答。\n"
+            f"多个技能可能匹配时，选**最具体、最贴近用户问题**的一个执行；禁止未选定前连续 read 多个技能全文。\n\n"
             + "\n\n".join(skills_injection)
         )
 

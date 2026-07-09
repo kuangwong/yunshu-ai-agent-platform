@@ -33,6 +33,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    nodejs \
+    npm \
+    telnet \
+    net-tools \
+    iputils-ping \
+    dnsutils \
+    procps \
+    git \
+    jq \
+    unzip \
+    netcat-openbsd \
     && (apt-get install -y --no-install-recommends libaio1 \
         || apt-get install -y --no-install-recommends libaio1t64) \
     && ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 2>/dev/null || true \

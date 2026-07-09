@@ -186,8 +186,6 @@ class AgentContextManager:
                         )
                         break
 
-        if "search_knowledge_base" not in tools:
-            tools.append("search_knowledge_base")
 
         if dataset_ids:
             engine_config["dataset_ids"] = dataset_ids

@@ -36,6 +36,11 @@ class AgentContext(BaseModel):
     api_key: Optional[str] = None
     user_dimensions: Dict[str, Any] = Field(default_factory=dict)
     authorized_attachment_paths: List[str] = Field(default_factory=list)
+    current_turn_attachment_paths: List[str] = Field(default_factory=list)
+    grounding_evidence_ledger: Optional[Any] = Field(
+        default=None,
+        description="本轮事实取证账本；委派子智能体共享同一实例",
+    )
     
     # Execution details for tracing (displayed in frontend)
     trace_logs: List[str] = Field(default_factory=list)

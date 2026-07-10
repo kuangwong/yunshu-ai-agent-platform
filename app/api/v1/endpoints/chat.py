@@ -75,6 +75,10 @@ class ChatCompletionRequest(BaseModel):
     )
     debug_options: Optional[Dict[str, Any]] = None
     permission_options: Optional[Dict[str, Any]] = None
+    grounding_action: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="事实取证卡片触发的结构化动作，仅影响当前轮",
+    )
 
 class ChatCompletionResponse(BaseModel):
     content: str
@@ -528,8 +532,13 @@ async def create_chat_completion(
     Supports both standard JSON response and SSE Streaming.
     """
     # Initialize Request Context for Debugging
-    if completion_request.debug_options:
-        set_debug_context(completion_request.debug_options)
+    effective_debug_options = dict(completion_request.debug_options or {})
+    if completion_request.grounding_action:
+        effective_debug_options["grounding_action"] = dict(
+            completion_request.grounding_action
+        )
+    if effective_debug_options:
+        set_debug_context(effective_debug_options)
     else:
         set_debug_context({}) # Clear/Default
 
@@ -579,7 +588,7 @@ async def create_chat_completion(
                     user_info=user_info,
                     api_key=api_key_str,
                     enable_multi_agent=completion_request.enable_multi_agent,
-                    debug_options=completion_request.debug_options,
+                    debug_options=effective_debug_options,
                     permission_options=completion_request.permission_options,
                     knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
                 ):
@@ -615,6 +624,7 @@ async def create_chat_completion(
             user_info=user_info,
             api_key=api_key_str,
             enable_multi_agent=completion_request.enable_multi_agent,
+            debug_options=effective_debug_options,
             permission_options=completion_request.permission_options,
             knowledge_dataset_ids=completion_request.knowledge_dataset_ids,
         )
@@ -1101,4 +1111,3 @@ async def set_active_conversation(
     user_id = user_info.get("user_id")
     await memory_service.set_active_conversation(user_id, body.conversation_id)
     return StandardResponse(data={"status": "success"})
-

@@ -349,7 +349,18 @@ async def sub_agent_call(agent_name: str, query: str) -> str:
         trace_buffer=main_ctx.trace_buffer,  # 共用 trace 收集物理步骤
         event_queue=main_ctx.event_queue,  # 传递 event_queue 用于流式穿透
         permission_options=sub_permission_options,
+        # 共享主 runner 的事实取证账本，使子智能体工具调用产生的取证凭证回流到主链路。
+        # 依赖顺序：主 runner._execute_raw 在调用本工具前必须已完成 ctx.grounding_evidence_ledger 初始化。
+        grounding_evidence_ledger=main_ctx.grounding_evidence_ledger,
     )
+    if main_ctx.grounding_evidence_ledger is None:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "[sub_agent_call] grounding_evidence_ledger is None when delegating to sub-agent '%s'. "
+            "Evidence receipts from the sub-agent will NOT be recorded in the main runner's ledger. "
+            "Ensure the main runner has completed _execute_raw initialization before delegation.",
+            agent_name,
+        )
 
     # [CR Fix] 从 main_ctx 还原 user_info 并传给 dispatch，避免 session lock 和维度缺失
     user_info = {

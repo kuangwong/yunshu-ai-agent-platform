@@ -258,6 +258,26 @@ class AgentService:
         return sorted(path for path in paths if path)
 
     @staticmethod
+    def _current_turn_attachment_paths(messages: List[Dict[str, Any]]) -> List[str]:
+        """Return attachment paths carried by the latest user turn only."""
+        latest_user_message = next(
+            (
+                message
+                for message in reversed(messages or [])
+                if message.get("role") == "user"
+            ),
+            None,
+        )
+        if not latest_user_message:
+            return []
+        paths = {
+            _attachment_abs_path(file_obj)
+            for file_obj in latest_user_message.get("files") or []
+            if file_obj.get("url")
+        }
+        return sorted(path for path in paths if path)
+
+    @staticmethod
     async def _quota_block_message(user_info: Optional[Dict[str, Any]]) -> Optional[str]:
         if not user_info:
             return None
@@ -1045,6 +1065,7 @@ class AgentService:
                 conversation_id=conversation_id,
                 knowledge_dataset_ids=request_knowledge_dataset_ids,
                 authorized_attachment_paths=self._authorized_attachment_paths(messages),
+                current_turn_attachment_paths=self._current_turn_attachment_paths(messages),
                 trace_buffer=trace_buffer,
             )
 
@@ -1151,6 +1172,7 @@ class AgentService:
                     conversation_id=conversation_id,
                     knowledge_dataset_ids=request_knowledge_dataset_ids,
                     authorized_attachment_paths=self._authorized_attachment_paths(messages),
+                    current_turn_attachment_paths=self._current_turn_attachment_paths(messages),
                     require_explicit_dataset=True,
                     trace_buffer=trace_buffer,
                 )
@@ -1492,6 +1514,7 @@ class AgentService:
         user_info: Optional[Dict[str, Any]] = None,
         api_key: Optional[str] = None,
         enable_multi_agent: bool = True,
+        debug_options: Optional[Dict[str, Any]] = None,
         permission_options: Optional[Dict[str, Any]] = None,
         knowledge_dataset_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
@@ -1513,6 +1536,7 @@ class AgentService:
             user_info=user_info,
             api_key=api_key,
             enable_multi_agent=enable_multi_agent,
+            debug_options=debug_options,
             permission_options=permission_options,
             knowledge_dataset_ids=knowledge_dataset_ids,
         ):

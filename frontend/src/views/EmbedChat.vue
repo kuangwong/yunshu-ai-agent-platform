@@ -930,8 +930,15 @@
                   </div>
                 </div>
               </div>
+              <GroundingBlockedCard
+                v-if="msg.groundingBlocked"
+                class="mt-2"
+                :payload="msg.groundingBlocked"
+                :disabled="isProcessing"
+                @action="(action) => handleGroundingAction(msg.groundingBlocked, action)"
+              />
               <!-- Main Content -->
-              <div v-if="msg.content" class="relative group/content mt-2">
+              <div v-if="msg.content && !msg.groundingBlocked" class="relative group/content mt-2">
                 <!-- Floating Copy Button (Moved here to avoid overlap) -->
                 <button
                   v-if="!msg.datasetNavigation?.groups?.length"
@@ -951,7 +958,7 @@
                                                                   <span>{{ msg.permissionNotice.message || '已按你的数据权限自动过滤结果' }}</span>
                                                                 </div>
                                                                 <MessageRenderer
-                                                                  v-if="!msg.datasetNavigation?.groups?.length"
+                                                                  v-if="!msg.groundingBlocked && !msg.datasetNavigation?.groups?.length"
                                                                   :content="msg.content"
                                                                   @quick-question="handleQuickQuestion"
                                                                   @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
@@ -2424,6 +2431,7 @@ const {
 } = useTokenQuota();
 const showToast = toast.showToast;
 import MessageRenderer from "@/components/MessageRenderer.vue";
+import GroundingBlockedCard from "@/components/GroundingBlockedCard.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
 import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
 import KnowledgePortalDrawer from "@/components/knowledge/KnowledgePortalDrawer.vue";
@@ -2490,6 +2498,8 @@ import {
   resumeExternalExecutionStream,
   type PendingExternalExecution,
   type PendingToolPermission,
+  type GroundingBlockedAction,
+  type GroundingBlockedPayload,
 } from "@/utils/agentscopeSseHandlers";
 // --- Types ---
 interface LogEntry {
@@ -2605,6 +2615,7 @@ interface Message {
   toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
   datasetNavigation?: DatasetNavigationPayload;
   permissionNotice?: PermissionNotice;
+  groundingBlocked?: GroundingBlockedPayload;
   _hasSilentlyRefreshed?: boolean;
 }
 // Helper: Check Role
@@ -5615,6 +5626,38 @@ const handleQuickQuestion = async (content: string, action: "send" | "fill" = "s
   }
 };
 
+const pendingGroundingAction = ref<Record<string, unknown> | null>(null);
+
+const handleGroundingAction = async (
+  payload: GroundingBlockedPayload | undefined,
+  action: GroundingBlockedAction,
+) => {
+  if (!payload || isProcessing.value) return;
+  if (action.kind === "grounding_retry") {
+    pendingGroundingAction.value = {
+      ...(action.payload || {}),
+      type: "retry",
+    };
+    userInput.value = payload.retry_query;
+    await sendMessage();
+    pendingGroundingAction.value = null;
+    return;
+  }
+  if (action.kind === "grounding_method") {
+    pendingGroundingAction.value = {
+      ...(action.payload || {}),
+      type: "method",
+    };
+    userInput.value = String(action.payload?.message || "");
+    await sendMessage();
+    pendingGroundingAction.value = null;
+    return;
+  }
+  if (action.kind === "send_message") {
+    await handleQuickQuestion(String(action.payload?.message || ""));
+  }
+};
+
 const portalLoadingTips = [
   "正在为数据集唤醒大模型并进行资源初始化... 🧠",
   "AI 正在深度解析物理表的业务语义与指标口径... 📊",
@@ -6256,6 +6299,10 @@ const sendMessage = async () => {
     };
     if (knowledgeDatasetIds.length > 0) {
       body.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
+    if (pendingGroundingAction.value) {
+      body.grounding_action = pendingGroundingAction.value;
+      pendingGroundingAction.value = null;
     }
     const headers: any = {
       "Content-Type": "application/json",

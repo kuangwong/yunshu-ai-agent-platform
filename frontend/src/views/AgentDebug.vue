@@ -6,6 +6,7 @@ import TraceLogViewer from "@/components/TraceLogViewer.vue";
 import DebugConfigPanel from "@/components/DebugConfigPanel.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import MessageRenderer from "@/components/MessageRenderer.vue";
+import GroundingBlockedCard from "@/components/GroundingBlockedCard.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
 import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
 import KnowledgePortalDrawer from "@/components/knowledge/KnowledgePortalDrawer.vue";
@@ -40,6 +41,8 @@ import {
   resumeExternalExecutionStream,
   type PendingExternalExecution,
   type PendingToolPermission,
+  type GroundingBlockedAction,
+  type GroundingBlockedPayload,
 } from "@/utils/agentscopeSseHandlers";
 import { useToast } from "../composables/useToast";
 import { useTokenQuota } from "@/composables/useTokenQuota";
@@ -1394,6 +1397,7 @@ interface Message {
   toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
   datasetNavigation?: DatasetNavigationPayload;
   permissionNotice?: PermissionNotice;
+  groundingBlocked?: GroundingBlockedPayload;
   prompt_tokens?: number;
   completion_tokens?: number;
 }
@@ -2362,6 +2366,38 @@ const handleQuickQuestion = async (question: string, action: "send" | "fill" = "
   }
 };
 
+const pendingGroundingAction = ref<Record<string, unknown> | null>(null);
+
+const handleGroundingAction = async (
+  payload: GroundingBlockedPayload | undefined,
+  action: GroundingBlockedAction,
+) => {
+  if (!payload || isProcessing.value) return;
+  if (action.kind === "grounding_retry") {
+    pendingGroundingAction.value = {
+      ...(action.payload || {}),
+      type: "retry",
+    };
+    userInput.value = payload.retry_query;
+    await sendMessage();
+    pendingGroundingAction.value = null;
+    return;
+  }
+  if (action.kind === "grounding_method") {
+    pendingGroundingAction.value = {
+      ...(action.payload || {}),
+      type: "method",
+    };
+    userInput.value = String(action.payload?.message || "");
+    await sendMessage();
+    pendingGroundingAction.value = null;
+    return;
+  }
+  if (action.kind === "send_message") {
+    await handleQuickQuestion(String(action.payload?.message || ""));
+  }
+};
+
 const {
   showPortalDrawer,
   portalNavigationPayload,
@@ -2976,6 +3012,10 @@ const sendMessage = async () => {
     };
     if (knowledgeDatasetIds.length > 0) {
       requestBody.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
+    if (pendingGroundingAction.value) {
+      requestBody.grounding_action = pendingGroundingAction.value;
+      pendingGroundingAction.value = null;
     }
 
     const response = await fetch("/api/v1/chat/completions", {
@@ -4566,9 +4606,17 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <GroundingBlockedCard
+                v-if="msg.groundingBlocked"
+                class="mt-2"
+                :payload="msg.groundingBlocked"
+                :disabled="isProcessing"
+                @action="(action) => handleGroundingAction(msg.groundingBlocked, action)"
+              />
+
               <!-- Main Content -->
               <div
-                v-if="msg.content"
+                v-if="msg.content && !msg.groundingBlocked"
                 class="relative group/content mt-2 text-gray-800 leading-relaxed markdown-body"
               >
                 <!-- Floating Copy Button -->
@@ -4602,7 +4650,7 @@ onUnmounted(() => {
                   <span>{{ msg.permissionNotice.message || '已按你的数据权限自动过滤结果' }}</span>
                 </div>
                 <MessageRenderer
-                  v-if="!msg.datasetNavigation?.groups?.length"
+                  v-if="!msg.groundingBlocked && !msg.datasetNavigation?.groups?.length"
                   :content="msg.content"
                   @quick-question="handleQuickQuestion"
                   @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"

@@ -41,6 +41,24 @@ export interface ToolResultDataBlock {
   url?: string | null;
 }
 
+export interface GroundingBlockedAction {
+  id: string;
+  label: string;
+  style: "primary" | "secondary";
+  kind: "grounding_retry" | "grounding_method" | "send_message" | "switch_agent" | "upload_file";
+  payload?: Record<string, unknown>;
+}
+
+export interface GroundingBlockedPayload {
+  title: string;
+  message: string;
+  details?: string;
+  required_evidence_types: string[];
+  retry_query: string;
+  actions: GroundingBlockedAction[];
+  fallback_content?: string;
+}
+
 export interface AgentStreamLog {
   id: string | number;
   title: string;
@@ -69,6 +87,7 @@ export interface AgentStreamMessage {
   pendingPermission?: PendingToolPermission;
   pendingExternalExecution?: PendingExternalExecution;
   toolResultData?: Record<string, ToolResultDataBlock[]>;
+  groundingBlocked?: GroundingBlockedPayload;
 }
 
 export type AddStreamLogFn<T extends AgentStreamMessage = AgentStreamMessage> = (
@@ -450,6 +469,24 @@ export function dispatchAgentscopeStreamEvent<T extends AgentStreamMessage>(
       return true;
     case "context_update":
       handleContextUpdate(msg, data, addLog);
+      return true;
+    case "grounding_blocked":
+      msg.groundingBlocked = {
+        title: String(data.title || "暂时无法验证事实"),
+        message: String(data.message || "本次回答缺少可验证的事实来源。"),
+        details: data.details ? String(data.details) : undefined,
+        required_evidence_types: Array.isArray(data.required_evidence_types)
+          ? data.required_evidence_types.map(String)
+          : [],
+        retry_query: String(data.retry_query || ""),
+        actions: Array.isArray(data.actions)
+          ? (data.actions as GroundingBlockedAction[])
+          : [],
+        fallback_content: data.fallback_content
+          ? String(data.fallback_content)
+          : undefined,
+      };
+      msg.isThinking = false;
       return true;
     case "thinking":
       if (data.phase === "start") msg.isThinking = true;

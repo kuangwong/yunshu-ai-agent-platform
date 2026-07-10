@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+from app.services.ai.grounding.models import EvidenceType
 from app.services.ai.runtime.agentscope.errors import RuntimeToolError, RuntimeTimeoutError, ToolLoopFuseError
 from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
 
@@ -20,6 +21,7 @@ ToolSourceType = Literal["static", "generic_api", "mcp", "class", "system"]
 RuntimePermissionScope = Literal["read", "write", "ask", "dangerous"]
 RuntimeApprovalMode = Literal["ask", "allow", "deny"]
 RuntimeToolAuditStatus = Literal["start", "success", "error"]
+RuntimeEvidencePolicy = Literal["non_empty", "structured_success"]
 
 
 READ_ONLY_TOOL_NAMES = {
@@ -65,6 +67,8 @@ class RuntimeToolSpec:
     source_type: ToolSourceType
     callable: Callable[..., Any]
     permission_scope: RuntimePermissionScope = "ask"
+    evidence_types: frozenset[EvidenceType] = frozenset()
+    evidence_policy: RuntimeEvidencePolicy = "non_empty"
     timeout_seconds: float | None = None
     audit_callback: Callable[[RuntimeToolAuditEvent], Any] | None = None
     native_tool: Any | None = None
@@ -103,6 +107,18 @@ class RuntimeToolSpec:
                     result_preview=_preview_result(result),
                 )
             )
+            if self.evidence_types:
+                from app.core.context import get_current_agent_context
+
+                context = get_current_agent_context()
+                ledger = getattr(context, "grounding_evidence_ledger", None)
+                if ledger is not None:
+                    ledger.record_success(
+                        call_id=f"{self.name}:{time.time_ns()}",
+                        producer=self.name,
+                        evidence_types=self.evidence_types,
+                        result=result,
+                    )
             return result
         except TimeoutError as exc:
             wrapped = RuntimeTimeoutError(
@@ -445,6 +461,20 @@ def _schema_from_legacy_tool(tool: Any) -> dict[str, Any]:
     return {"type": "object", "properties": {}}
 
 
+def _normalize_evidence_types(values: Any, *, tool_name: str) -> frozenset[EvidenceType]:
+    normalized: set[EvidenceType] = set()
+    for value in values or ():
+        try:
+            normalized.add(EvidenceType(value))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid evidence type %r declared by tool %s",
+                value,
+                tool_name,
+            )
+    return frozenset(normalized)
+
+
 def runtime_tool_spec_from_legacy_tool(
     tool: Any,
     source_type: ToolSourceType,
@@ -466,6 +496,11 @@ def runtime_tool_spec_from_legacy_tool(
     if not name:
         raise ValueError("Legacy tool is missing a name")
     resolved_scope = permission_scope or infer_runtime_permission_scope(name, source_type)
+    evidence_types = _normalize_evidence_types(
+        getattr(tool, "evidence_types", None),
+        tool_name=name,
+    )
+    evidence_policy = getattr(tool, "evidence_policy", "non_empty")
 
     return RuntimeToolSpec(
         name=name,
@@ -474,6 +509,8 @@ def runtime_tool_spec_from_legacy_tool(
         source_type=source_type,
         callable=_invoke,
         permission_scope=resolved_scope,
+        evidence_types=evidence_types,
+        evidence_policy=evidence_policy,
     )
 
 
@@ -495,6 +532,10 @@ def runtime_tool_spec_from_native_agentscope_tool(
         return _tool_chunk_to_text(result)
 
     resolved_scope = permission_scope or ("read" if getattr(tool, "is_read_only", False) else "ask")
+    evidence_types = _normalize_evidence_types(
+        getattr(tool, "evidence_types", None),
+        tool_name=str(getattr(tool, "name", "<unnamed>")),
+    )
     return RuntimeToolSpec(
         name=getattr(tool, "name"),
         description=getattr(tool, "description", ""),
@@ -502,6 +543,8 @@ def runtime_tool_spec_from_native_agentscope_tool(
         source_type=source_type,
         callable=_invoke,
         permission_scope=resolved_scope,
+        evidence_types=evidence_types,
+        evidence_policy=getattr(tool, "evidence_policy", "non_empty"),
         native_tool=tool,
     )
 

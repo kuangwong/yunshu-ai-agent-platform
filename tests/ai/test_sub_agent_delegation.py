@@ -237,6 +237,9 @@ async def test_sub_agent_call_self_delegation():
 
 @pytest.mark.asyncio
 async def test_sub_agent_call_context_inheritance_and_user_info():
+    from app.services.ai.grounding.ledger import EvidenceLedger
+
+    shared_ledger = EvidenceLedger(user_id="100", conversation_id="conv-delegation")
     main_ctx = AgentContext(
         agent_id="main-agent-id",
         agent_name="MainAgent",
@@ -247,6 +250,7 @@ async def test_sub_agent_call_context_inheritance_and_user_info():
         is_admin=False,
         api_key="sk-main-key",
         permission_options={"approval_mode": "ask"},
+        grounding_evidence_ledger=shared_ledger,
         user_dimensions={
             "user_name": "test_user",
             "real_name": "Test User",
@@ -283,6 +287,7 @@ async def test_sub_agent_call_context_inheritance_and_user_info():
         assert current_ctx.knowledge_dataset_ids == [ID_FRONTEND_KB]
         assert set(current_ctx.engine_config.get("dataset_ids")) == {ID_MAIN_KB, ID_SUB_KB}
         assert current_ctx.delegation_depth == 1
+        assert current_ctx.grounding_evidence_ledger is shared_ledger
         yield {"content": "Data output"}
 
     mock_executor.execute = mock_execute

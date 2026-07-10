@@ -80,6 +80,26 @@ def test_runtime_diagnostic_is_tool_capability_not_data_route():
     assert decision.allows_data_route is False
 
 
+def test_my_server_status_query_is_runtime_diagnostic():
+    decision = resolve_request_decision("看看我的服务器状态")
+
+    assert decision.source == RequestSource.RUNTIME_DIAGNOSTIC
+    assert decision.capability == RequestCapability.RUNTIME_TOOL
+
+
+def test_server_status_concept_explanation_is_not_runtime_diagnostic():
+    decision = resolve_request_decision("服务器状态是什么意思")
+
+    assert decision.source != RequestSource.RUNTIME_DIAGNOSTIC
+
+
+def test_dynamic_public_fact_requires_web_evidence():
+    decision = resolve_request_decision("上海现在天气怎么样")
+
+    assert decision.source == RequestSource.PUBLIC_WEB
+    assert decision.capability == RequestCapability.WEB_SEARCH
+
+
 def test_general_previous_web_visualization_is_context_transform_without_delegate():
     decision = resolve_request_decision(
         "能不能把刚刚的信息可视化一下呢",
@@ -106,4 +126,3 @@ def test_data_previous_result_visualization_can_delegate_to_data_query():
     assert decision.should_delegate is True
     assert decision.delegate_capability == "data_query"
     assert decision.allows_data_route is True
-

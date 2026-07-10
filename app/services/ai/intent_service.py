@@ -177,12 +177,13 @@ _DATA_QUERY_STRONG_SIGNALS = [
 
 _RUNTIME_LOCAL_CONTEXT_SIGNALS = [
     "当前系统", "当前服务器", "当前机器", "当前这台", "当前平台", "当前环境",
-    "本机", "本地", "我机器", "我的机器", "这台机器", "这台服务器", "这台主机",
+    "本机", "本地", "我机器", "我的机器", "我的服务器", "我的主机",
+    "这台机器", "这台服务器", "这台主机",
     "运行环境", "系统运行",
 ]
 _RUNTIME_METRIC_SIGNALS = [
     "cpu", "内存", "memory", "磁盘", "disk", "负载", "load", "进程", "端口",
-    "网络连通", "服务状态", "运行状态", "资源使用", "使用情况",
+    "网络连通", "服务状态", "服务器状态", "运行状态", "资源使用", "使用情况",
 ]
 _RUNTIME_COMMAND_SIGNALS = [
     "执行命令", "shell", "bash", "uptime", "top ", "ps ", "df -h", "free -h",
@@ -374,12 +375,28 @@ def looks_like_web_search_query(user_question: str) -> bool:
     return has_search_verb and has_freshness
 
 
-_GENERAL_BOUNDARY_PATTERNS = [
+# 需要实时刷新、不应由模型记忆回答的动态公开事实（如天气、股价、最新新闻等）
+_DYNAMIC_PUBLIC_FACT_PATTERNS = [
     re.compile(r"(天气|气温|空气质量|下雨|降雨|台风|天气预报)", re.I),
+    re.compile(r"(股价|股票|今日行情|汇率|外汇|实时价格)", re.I),
+    re.compile(r"(今日新闻|最新新闻|实时新闻|头条|热搜)", re.I),
+]
+
+# 强通用边界：编程知识、文本处理等不应走 DATA_QUERY 的查询类型
+_GENERAL_BOUNDARY_PATTERNS = [
+    *_DYNAMIC_PUBLIC_FACT_PATTERNS,
     re.compile(r"(python|java|javascript|typescript|vue|react|sqlalchemy|fastapi|api|接口|代码|函数|报错|bug).{0,24}(用法|怎么写|怎么用|解释|示例|区别|原因)", re.I),
     re.compile(r"(查询|查一下|查下|看看).{0,24}(python|java|javascript|typescript|vue|react|api|接口|代码).{0,24}(用法|文档|示例|区别)", re.I),
     re.compile(r"(分析|总结|润色|改写|翻译|解释).{0,12}(这段话|这段文字|这段文本|下面这段|这句话|文本)", re.I),
 ]
+
+
+def looks_like_dynamic_public_fact_query(user_question: str) -> bool:
+    """判断问题是否属于需要实时刷新、不应由模型记忆回答的动态公开事实（天气、股价、最新新闻等）。"""
+    q = (user_question or "").strip()
+    if not q:
+        return False
+    return any(pattern.search(q) for pattern in _DYNAMIC_PUBLIC_FACT_PATTERNS)
 
 
 def looks_like_general_query(user_question: str) -> bool:

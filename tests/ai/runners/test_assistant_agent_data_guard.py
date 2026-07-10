@@ -81,8 +81,8 @@ async def test_pending_tool_attempt_skips_intercept(chat_config):
 
 
 @pytest.mark.asyncio
-async def test_expert_mode_skips_data_guard_even_with_hallucination(chat_config):
-    """专家模式（直达 agent）不启用反查数护栏。"""
+async def test_expert_mode_still_uses_platform_grounding_gate(chat_config):
+    """专家模式可跳过旧查数规则，但不能绕过平台级事实取证门禁。"""
     hallucinated = (
         "| 主机名 | IP 地址 |\n"
         "| --- | --- |\n"
@@ -102,7 +102,8 @@ async def test_expert_mode_skips_data_guard_even_with_hallucination(chat_config)
             events.append(chunk)
 
     assert not any(e.get("title") == "引导切换数据智能体" for e in events)
-    assert any(hallucinated in str(e.get("content", "")) for e in events)
+    assert not any(hallucinated in str(e.get("content", "")) for e in events)
+    assert any(e.get("category") == "grounding" for e in events)
 
 
 @pytest.mark.asyncio

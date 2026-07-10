@@ -13,6 +13,7 @@ from app.services.ai.intent_service import (
     IntentType,
     looks_like_context_action,
     looks_like_data_followup,
+    looks_like_dynamic_public_fact_query,
     looks_like_general_query,
     looks_like_greeting,
     looks_like_knowledge_query,
@@ -167,6 +168,16 @@ def resolve_request_decision(
             RequestCapability.RUNTIME_TOOL,
             0.9,
             "current runtime/system diagnostic signal",
+            semantic_name=effective_intent,
+            semantic_confidence=semantic_score,
+        )
+
+    if looks_like_dynamic_public_fact_query(q):
+        return _decision(
+            RequestSource.PUBLIC_WEB,
+            RequestCapability.WEB_SEARCH,
+            0.9,
+            "dynamic public fact requires refreshed external evidence",
             semantic_name=effective_intent,
             semantic_confidence=semantic_score,
         )

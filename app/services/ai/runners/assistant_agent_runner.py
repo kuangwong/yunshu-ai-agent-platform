@@ -3,6 +3,7 @@ import uuid
 import json
 import inspect
 import logging
+import re
 import asyncio
 from typing import List, Dict, Any, AsyncGenerator, Optional, Set
 from datetime import datetime
@@ -18,6 +19,14 @@ from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.agent_manager import AgentManagerService
 from app.services.ai.executors.base import BaseExecutor
+from app.services.ai.grounding.ledger import EvidenceLedger
+from app.services.ai.grounding.models import EvidenceType
+from app.services.ai.grounding.policy import (
+    FactRequirement,
+    GroundingAction,
+    evaluate_grounding,
+    resolve_fact_requirement,
+)
 from app.services.ai.intent_service import (
     IntentType,
     looks_like_strong_business_data_request,
@@ -25,6 +34,12 @@ from app.services.ai.intent_service import (
 )
 from app.services.ai.skill_resolver import is_main_general_agent
 from app.services.ai.turn_classifier import TurnType
+from app.services.ai.request_decision import (
+    RequestCapability,
+    RequestDecision,
+    RequestSource,
+    resolve_request_decision,
+)
 from app.services.ai.executors.common import (
     convert_history_to_messages,
     extract_tokens_from_message,
@@ -341,6 +356,202 @@ class AssistantAgentRunner(BaseExecutor):
             f"- [⚡ 切换到 {display_name}](quick:/switch_agent_expert?agent_id={agent_id})"
         )
 
+    def _resolve_grounding_request_decision(self, user_query: str) -> RequestDecision:
+        source_value = str(self.route_hints.get("request_source") or "").strip()
+        capability_value = str(self.route_hints.get("request_capability") or "").strip()
+        try:
+            source = RequestSource(source_value)
+        except ValueError:
+            source = None
+        try:
+            capability = RequestCapability(capability_value)
+        except ValueError:
+            capability = None
+        semantic_intent = str(self.route_hints.get("semantic_intent") or "").strip().upper()
+        semantic_confidence = float(self.route_hints.get("semantic_confidence") or 0.0)
+        if source == RequestSource.UNKNOWN and semantic_confidence >= 0.7:
+            if semantic_intent == IntentType.DATA_QUERY.value:
+                source = RequestSource.INTERNAL_STRUCTURED_DATA
+                capability = RequestCapability.DATA_QUERY
+            elif semantic_intent == IntentType.KNOWLEDGE_BASE.value:
+                source = RequestSource.INTERNAL_DOCS
+                capability = RequestCapability.KNOWLEDGE_SEARCH
+        if source is not None and capability is not None:
+            return RequestDecision(
+                source=source,
+                capability=capability,
+                confidence=semantic_confidence,
+                reasoning=str(self.route_hints.get("request_reasoning") or "router evidence contract"),
+                semantic_intent=self.route_hints.get("semantic_intent"),
+                semantic_confidence=semantic_confidence,
+            )
+        return resolve_request_decision(
+            user_query,
+            semantic_intent=self.route_hints.get("semantic_intent"),
+            semantic_confidence=self.route_hints.get("semantic_confidence"),
+        )
+
+    @staticmethod
+    def _grounding_block_content() -> str:
+        return (
+            "本次未取得可验证的外部事实来源，因此不能提供具体数据、状态或结论。\n\n"
+            "我可以继续调用具备相应能力的工具或智能体进行核实；如果暂时无法取证，"
+            "也可以先提供分析方法和查询方案。"
+        )
+
+    @staticmethod
+    def _parse_grounding_retry_evidence_types(action: Any) -> frozenset[EvidenceType]:
+        if not isinstance(action, dict) or action.get("type") != "retry":
+            return frozenset()
+        evidence_types: set[EvidenceType] = set()
+        for value in action.get("required_evidence_types") or []:
+            try:
+                evidence_types.add(EvidenceType(value))
+            except (TypeError, ValueError):
+                continue
+        return frozenset(evidence_types)
+
+    @staticmethod
+    def _select_grounding_retry_tool(
+        tools: List[Any],
+        required_types: frozenset[EvidenceType],
+    ) -> Any:
+        if not required_types:
+            return None
+        return next(
+            (
+                tool
+                for tool in tools
+                if bool(
+                    frozenset(getattr(tool, "evidence_types", None) or ())
+                    & required_types
+                )
+            ),
+            None,
+        )
+
+    def _grounding_block_event(
+        self,
+        *,
+        user_query: str,
+        decision: Any,
+        requirement: FactRequirement,
+    ) -> Dict[str, Any]:
+        # 优先取 decision 中明确的 required_evidence_types；
+        # 若为空集（BLOCK 时理论上不应为空），再 fallback 到 requirement.accepted_types。
+        # 注意：空 frozenset 是 falsy，不能用 or 做 fallback，需显式判断。
+        required_types = (
+            decision.required_evidence_types
+            if decision.required_evidence_types
+            else requirement.accepted_types
+        )
+        if not required_types:
+            logger.warning(
+                "[_grounding_block_event] required_evidence_types is empty for a BLOCK decision. "
+                "Frontend retry button will not know which tool to call. "
+                "Decision reason: %s",
+                decision.reason,
+            )
+        required_values = sorted(evidence_type.value for evidence_type in required_types)
+        return {
+            "type": "grounding_blocked",
+            "title": "暂时无法验证事实",
+            "message": "本次未取得可验证的数据来源，已停止输出未经核实的结论。",
+            "details": decision.reason,
+            "required_evidence_types": required_values,
+            "retry_query": user_query,
+            "actions": [
+                {
+                    "id": "retry_grounding",
+                    "label": "重新核实",
+                    "style": "primary",
+                    "kind": "grounding_retry",
+                    "payload": {
+                        "type": "retry",
+                        "required_evidence_types": required_values,
+                    },
+                },
+                {
+                    "id": "show_method",
+                    "label": "查看分析方法",
+                    "style": "secondary",
+                    "kind": "grounding_method",
+                    "payload": {
+                        "type": "method",
+                        "message": (
+                            "请针对刚才的问题只提供可执行的查询或分析方法，"
+                            "不要给出未经工具核实的具体事实、数据或结论。"
+                        ),
+                    },
+                },
+            ],
+            "fallback_content": self._grounding_block_content(),
+        }
+
+    @staticmethod
+    def _should_buffer_grounding_output(
+        requirement: FactRequirement,
+        *,
+        run_data_guard: bool,
+    ) -> bool:
+        return bool(
+            run_data_guard
+            or requirement.required
+            or requirement.scrutinize_unknown_output
+        )
+
+    def _resolve_turn_grounding_requirement(
+        self,
+        user_query: str,
+        ctx: Any,
+    ) -> FactRequirement:
+        requirement = resolve_fact_requirement(
+            self._resolve_grounding_request_decision(user_query)
+        )
+        grounding_action = self.debug_options.get("grounding_action")
+        if isinstance(grounding_action, dict) and grounding_action.get("type") == "method":
+            return FactRequirement(
+                required=False,
+                accepted_types=frozenset(),
+                scrutinize_unknown_output=True,
+            )
+        retry_types = self._parse_grounding_retry_evidence_types(
+            grounding_action
+        )
+        if retry_types:
+            return FactRequirement(required=True, accepted_types=retry_types)
+        current_turn_paths = getattr(ctx, "current_turn_attachment_paths", None) or []
+        references_file = bool(
+            re.search(r"(?:附件|文件|文档|表格|工作簿|日志)(?:里|中|内|的|内容|数据)?", user_query or "", re.I)
+        )
+        has_relevant_attachment = bool(current_turn_paths) or bool(
+            getattr(ctx, "authorized_attachment_paths", None) and references_file
+        )
+        if has_relevant_attachment:
+            return FactRequirement(
+                required=True,
+                accepted_types=frozenset({EvidenceType.USER_FILE}),
+            )
+        return requirement
+
+    @staticmethod
+    def _refine_unknown_requirement_from_evidence(
+        requirement: FactRequirement,
+        *,
+        user_query: str,
+        ledger: EvidenceLedger,
+    ) -> FactRequirement:
+        if (
+            requirement.scrutinize_unknown_output
+            and looks_like_strong_business_data_request(user_query)
+            and ledger.has_valid_evidence({EvidenceType.INTERNAL_DATA})
+        ):
+            return FactRequirement(
+                required=True,
+                accepted_types=frozenset({EvidenceType.INTERNAL_DATA}),
+            )
+        return requirement
+
     async def execute(
         self,
         history: List[Dict[str, str]],
@@ -360,6 +571,22 @@ class AssistantAgentRunner(BaseExecutor):
     ) -> AsyncGenerator[Dict[str, Any], None]:
         user_query = self._extract_last_user_query(history)
         run_data_guard = self._should_run_data_hallucination_guard(user_query)
+        ctx = self._ensure_agent_context()
+        shared_ledger = (
+            getattr(ctx, "grounding_evidence_ledger", None)
+            if getattr(ctx, "delegation_depth", 0) > 0
+            else None
+        )
+        self._evidence_ledger = shared_ledger or EvidenceLedger(
+            user_id=self._runtime_user_id(),
+            conversation_id=self.conversation_id,
+        )
+        ctx.grounding_evidence_ledger = self._evidence_ledger
+        grounding_requirement = self._resolve_turn_grounding_requirement(user_query, ctx)
+        buffer_output = self._should_buffer_grounding_output(
+            grounding_requirement,
+            run_data_guard=run_data_guard,
+        )
 
         chunks_buffer = []
         full_text = ""
@@ -367,7 +594,6 @@ class AssistantAgentRunner(BaseExecutor):
 
         from app.core.context import set_agent_context
         import asyncio
-        ctx = self._ensure_agent_context()
         event_queue = asyncio.Queue()
         ctx.event_queue = event_queue
 
@@ -428,16 +654,30 @@ class AssistantAgentRunner(BaseExecutor):
             if self._chunk_indicates_tool_attempt(chunk):
                 has_attempted_tool = True
 
-            if "content" in chunk:
+            if "content" in chunk and buffer_output:
                 full_text += chunk["content"]
                 chunks_buffer.append(chunk)
             else:
                 yield chunk
 
+        if not buffer_output:
+            return
+
         should_intercept = (
             run_data_guard
             and not has_attempted_tool
             and self._is_hallucinated_data_reply(full_text)
+        )
+
+        evaluated_requirement = self._refine_unknown_requirement_from_evidence(
+            grounding_requirement,
+            user_query=user_query,
+            ledger=self._evidence_ledger,
+        )
+        grounding_decision = evaluate_grounding(
+            requirement=evaluated_requirement,
+            candidate_text=full_text,
+            ledger=self._evidence_ledger,
         )
 
         if should_intercept:
@@ -456,6 +696,25 @@ class AssistantAgentRunner(BaseExecutor):
             }
             refusal_content = await self._build_data_guard_refusal_content()
             yield {"content": refusal_content}
+        elif grounding_decision.action == GroundingAction.BLOCK_UNGROUNDED_FACTS:
+            logger.warning(
+                "[AssistantAgentRunner] Ungrounded factual response blocked: %s",
+                grounding_decision.reason,
+            )
+            yield {
+                "type": "log",
+                "id": f"grounding_{uuid.uuid4().hex[:8]}",
+                "title": "事实取证门禁已拦截无依据回答",
+                "details": grounding_decision.reason,
+                "status": "warning",
+                "category": "grounding",
+            }
+            yield self._grounding_block_event(
+                user_query=user_query,
+                decision=grounding_decision,
+                requirement=evaluated_requirement,
+            )
+            yield {"content": self._grounding_block_content()}
         else:
             for chunk in chunks_buffer:
                 yield chunk
@@ -480,6 +739,13 @@ class AssistantAgentRunner(BaseExecutor):
 
         # 2. Build Messages
         system_content = self.config.system_prompt or ""
+        grounding_action = self.debug_options.get("grounding_action")
+        if isinstance(grounding_action, dict) and grounding_action.get("type") == "method":
+            system_content = (
+                "【安全回答模式】本轮只提供查询步骤、分析框架或排查方法；"
+                "不得输出未经工具核实的具体数据、状态、排名或动态事实。\n\n"
+                f"{system_content}"
+            )
         route_hint = AssistantPrompts.route_hints(self.route_hints)
         if route_hint:
             system_content = f"{route_hint}\n\n{system_content}"
@@ -611,34 +877,97 @@ class AssistantAgentRunner(BaseExecutor):
         # 识别该不该用工具、用哪个，并按配置力度促发模型调用（记忆类有专门便签，故跳过）。
         # 模式 agent_tool_preflight_mode：off=关闭；soft=仅注入强约束便签；hard=便签+首步强制调用。
         preflight_tool_choice = None
+        _preflight_user_query = self._extract_last_user_query(history)
+        _preflight_ctx = self._ensure_agent_context()
+        grounding_request_decision = self._resolve_grounding_request_decision(_preflight_user_query)
+        turn_grounding_requirement = self._resolve_turn_grounding_requirement(_preflight_user_query, _preflight_ctx)
+        grounding_requires_tool = turn_grounding_requirement.required
+        retry_evidence_types = self._parse_grounding_retry_evidence_types(
+            self.debug_options.get("grounding_action")
+        )
         try:
             if not recall_query_pending:
                 preflight_mode = str(
                     await ConfigService.get("agent_tool_preflight_mode", "soft") or "soft"
                 ).strip().lower()
-                if preflight_mode not in {"off", "false", "0", "none"}:
-                    from app.services.ai.tool_nudge_policy import resolve_tool_nudge
+                if grounding_requires_tool or preflight_mode not in {"off", "false", "0", "none"}:
+                    from app.services.ai.tool_nudge_policy import ToolNudge, resolve_tool_nudge
 
                     (
                         available_sub_agent_names,
                         sub_agent_targets_by_capability,
                     ) = await self._resolve_available_sub_agent_delegation_info()
-                    tool_nudge = resolve_tool_nudge(
-                        self._extract_last_user_query(history),
+                    matching_retry_tool = self._select_grounding_retry_tool(
                         tools,
-                        available_sub_agent_names=available_sub_agent_names,
-                        sub_agent_targets_by_capability=sub_agent_targets_by_capability,
-                        semantic_intent=self.route_hints.get("semantic_intent"),
-                        semantic_confidence=self.route_hints.get("semantic_confidence"),
-                        turn_intent=(
-                            getattr(self.turn_classification, "intent", None)
-                            or getattr(self.intent_info, "intent", None)
-                        ),
+                        retry_evidence_types,
                     )
+                    if matching_retry_tool is not None:
+                        tool_nudge = ToolNudge(
+                            tool_name=matching_retry_tool.name,
+                            score=1.0,
+                            message=(
+                                "【重新取证要求】必须先调用该工具取得匹配的外部事实凭证，"
+                                "再根据真实结果回答；工具失败时不得补写具体事实。"
+                            ),
+                            force_first_call=True,
+                        )
+                    else:
+                        tool_nudge = resolve_tool_nudge(
+                            self._extract_last_user_query(history),
+                            tools,
+                            available_sub_agent_names=available_sub_agent_names,
+                            sub_agent_targets_by_capability=sub_agent_targets_by_capability,
+                            semantic_intent=self.route_hints.get("semantic_intent"),
+                            semantic_confidence=self.route_hints.get("semantic_confidence"),
+                            turn_intent=(
+                                getattr(self.turn_classification, "intent", None)
+                                or getattr(self.intent_info, "intent", None)
+                            ),
+                        )
+                    if tool_nudge is None and grounding_requires_tool:
+                        capability_name = next(
+                            (
+                                capability
+                                for evidence_type, capability in {
+                                    EvidenceType.INTERNAL_DATA: "data_query",
+                                    EvidenceType.INTERNAL_KNOWLEDGE: "knowledge_base",
+                                    EvidenceType.PUBLIC_WEB: "web_search",
+                                    EvidenceType.RUNTIME_STATE: "runtime_tool",
+                                    EvidenceType.USER_FILE: "file_read",
+                                    EvidenceType.CONVERSATION_MEMORY: "memory_search",
+                                }.items()
+                                if evidence_type in turn_grounding_requirement.accepted_types
+                            ),
+                            None,
+                        ) or {
+                            RequestCapability.DATA_QUERY: "data_query",
+                            RequestCapability.KNOWLEDGE_SEARCH: "knowledge_base",
+                        }.get(grounding_request_decision.capability)
+                        target_name = (
+                            str(sub_agent_targets_by_capability.get(capability_name) or "").strip()
+                            if capability_name
+                            else ""
+                        )
+                        has_delegate_tool = any(tool.name == "sub_agent_call" for tool in tools)
+                        if target_name and has_delegate_tool:
+                            tool_nudge = ToolNudge(
+                                tool_name="sub_agent_call",
+                                score=1.0,
+                                message=(
+                                    "【事实取证要求】本轮回答依赖外部事实。"
+                                    f"必须先调用 sub_agent_call 委派给具备 {capability_name} 能力的"
+                                    f"智能体 '{target_name}'，取得真实结果后再回答。"
+                                ),
+                                force_first_call=True,
+                            )
                     if tool_nudge is not None:
                         native_system_content = f"{tool_nudge.message}\n\n{native_system_content}"
                         force_applied = False
-                        if preflight_mode == "hard" or tool_nudge.should_force_first_call:
+                        if (
+                            grounding_requires_tool
+                            or preflight_mode == "hard"
+                            or tool_nudge.should_force_first_call
+                        ):
                             preflight_tool_choice = self._build_preflight_tool_choice(
                                 tool_nudge.recommended_force_mode()
                             )
@@ -956,13 +1285,14 @@ class AssistantAgentRunner(BaseExecutor):
                     "data_blocks": tool_data.get(tool_id, []),
                 }
             duration_ms = (time.time() - tool_started_at.get(tool_id, time.time())) * 1000
+            target_tool = next((t for t in tools if t.name == tool_name), None)
             result = self._build_tool_observation(
                 tool_id=tool_id,
                 tool_name=tool_name,
                 tool_args=tool_args,
                 tool_output=output,
                 duration_tool=duration_ms,
-                target_tool=next((t for t in tools if t.name == tool_name), None),
+                target_tool=target_tool,
                 tool_index=0,
             )
             if result.get("log"):
@@ -1259,10 +1589,9 @@ class AssistantAgentRunner(BaseExecutor):
                 system_tools.append(sub_agent_tool)
 
         if system_tools:
-            tools.extend(
-                runtime_tool_spec_from_legacy_tool(tool, source_type="system")
-                for tool in system_tools
-            )
+            for tool in system_tools:
+                spec = runtime_tool_spec_from_legacy_tool(tool, source_type="system")
+                tools.append(ToolRegistry._attach_evidence_metadata(spec.name, spec))
         return tools
 
     async def _resume_agentscope_native_stream(
@@ -1290,6 +1619,13 @@ class AssistantAgentRunner(BaseExecutor):
                     loop_detector=loop_detector,
                 )
                 interrupted = False
+                user_query = str(state.get("user_query") or "")
+                requirement = self._resolve_turn_grounding_requirement(user_query, ctx)
+                buffer_output = self._should_buffer_grounding_output(
+                    requirement,
+                    run_data_guard=False,
+                )
+                buffered_content: List[Dict[str, Any]] = []
                 async for chunk in self._stream_agentscope_native_events(
                     event_stream=agent.reply_stream(resume_event),
                     agent=agent,
@@ -1299,7 +1635,59 @@ class AssistantAgentRunner(BaseExecutor):
                 ):
                     if is_interrupt_sse_chunk(chunk):
                         interrupted = True
-                    yield chunk
+                    if (
+                        buffer_output
+                        and "content" in chunk
+                        and chunk.get("type") not in {"error"}
+                    ):
+                        buffered_content.append(chunk)
+                    else:
+                        yield chunk
+
+                if buffered_content and not interrupted:
+                    # 只取用户可见的纯文本输出（type 为 None 或空）进行事实检测，
+                    # 过滤掉 log/tool_result 等结构化 chunk，避免噪音影响门禁判断精度。
+                    candidate_text = "".join(
+                        str(chunk.get("content") or "")
+                        for chunk in buffered_content
+                        if not chunk.get("type")
+                    )
+                    ledger = getattr(
+                        self,
+                        "_evidence_ledger",
+                        EvidenceLedger(
+                            user_id=self._runtime_user_id(),
+                            conversation_id=self.conversation_id,
+                        ),
+                    )
+                    evaluated_requirement = self._refine_unknown_requirement_from_evidence(
+                        requirement,
+                        user_query=user_query,
+                        ledger=ledger,
+                    )
+                    decision = evaluate_grounding(
+                        requirement=evaluated_requirement,
+                        candidate_text=candidate_text,
+                        ledger=ledger,
+                    )
+                    if decision.action == GroundingAction.BLOCK_UNGROUNDED_FACTS:
+                        yield {
+                            "type": "log",
+                            "id": f"grounding_resume_{uuid.uuid4().hex[:8]}",
+                            "title": "事实取证门禁已拦截无依据回答",
+                            "details": decision.reason,
+                            "status": "warning",
+                            "category": "grounding",
+                        }
+                        yield self._grounding_block_event(
+                            user_query=user_query,
+                            decision=decision,
+                            requirement=evaluated_requirement,
+                        )
+                        yield {"content": self._grounding_block_content()}
+                    else:
+                        for buffered_chunk in buffered_content:
+                            yield buffered_chunk
 
                 if not interrupted and self.conversation_id:
                     tools_fingerprint = build_tools_fingerprint(self.config, tools)

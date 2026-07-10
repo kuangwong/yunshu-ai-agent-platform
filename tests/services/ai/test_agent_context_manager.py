@@ -108,11 +108,13 @@ async def test_setup_context_keeps_authorized_attachment_paths():
         user_info={"user_id": 1, "role": "user"},
         knowledge_dataset_ids=[ID_USER_CHECKED_1],
         authorized_attachment_paths=["/app/data/uploads/report.xlsx"],
+        current_turn_attachment_paths=["/app/data/uploads/current.xlsx"],
     )
 
     ctx = get_current_agent_context()
     assert ctx is not None
     assert ctx.authorized_attachment_paths == ["/app/data/uploads/report.xlsx"]
+    assert ctx.current_turn_attachment_paths == ["/app/data/uploads/current.xlsx"]
 
 @pytest.mark.asyncio
 async def test_setup_context_fallback_user_permissions():

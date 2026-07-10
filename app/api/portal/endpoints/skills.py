@@ -12,6 +12,13 @@ from app.core.dependencies import require_api_key, require_permission
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+@router.get("/stats", summary="获取技能调用统计数据")
+async def get_skills_stats(
+    user_info: dict = Depends(require_api_key)
+):
+    from app.services.ai.skills_stats_service import skills_stats_service
+    return await skills_stats_service.get_stats()
+
 # Schema defined for creating new skills
 class SkillCreateRequest(BaseModel):
     id: str

@@ -577,8 +577,9 @@ class AgentServicePrompts:
             "- 用户明确要求保存到其他路径时，按其指示写入；未说明且属于交付给用户的文档时，一律使用默认文档目录。\n"
             "- 文件与命令工具仅能在平台允许的路径范围内生效（含上述目录与 `/app/data` 下授权子目录）；越界会被工具层拒绝。\n"
             "- 禁止访问其他用户或其他会话的 agent_workspaces 目录；不得臆造路径。\n"
-            "- 有 Grep/Glob 时优先于 Bash 做文本/文件搜索；Bash 用于 Grep/Glob 无法完成的管道或系统诊断。\n"
-            "- **容器常见基础命令**：运行环境通常预装 `bash`, `curl`, `wget`, `gnupg`, `node`, `npm`, `telnet`, `netstat`, `ping`, `dig`, `nslookup`, `ps`, `git`, `jq`, `unzip`, `nc` 等诊断/开发命令；需要网络、端口、进程、DNS 或 Node/npm 诊断时可优先尝试这些命令。若回答依赖某命令是否存在，先用 `command -v <cmd>` 或 `which <cmd>` 快速确认，不要凭记忆断言未安装。\n"
+            "- 有 Grep/Glob 时优先于 Bash 做文本/文件搜索；Bash 用于 Grep/Glob 无法完成的管道、系统诊断或通用命令行操作。\n"
+            "- **容器常见基础命令与工具心智**：运行环境通常预装 `bash`, `curl`, `wget`, `gnupg`, `node`, `npm`, `telnet`, `netstat`, `ping`, `dig`, `nslookup`, `ps`, `git`, `jq`, `unzip`, `nc` 等命令。智能体没有针对 `git`、`curl` 等独立绑定的专用工具；当用户要求进行版本控制（如 `git pull`、`git status`）或拉取网络数据等通用 CLI 操作时，应当直接调用 `Bash`（即 `exec_command`）工具去执行对应的 shell 命令，绝不能因为没有名为 `git` 的独立工具而拒绝任务。\n"
+            "- 若回答依赖某命令是否存在，先用 `command -v <cmd>` 或 `which <cmd>` 快速确认，不要凭记忆断言未安装。\n"
             "- 写文件、执行命令等高风险操作可能触发平台确认；挂起时不得声称已完成。"
         )
 

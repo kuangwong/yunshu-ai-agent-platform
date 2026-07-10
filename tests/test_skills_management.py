@@ -194,3 +194,22 @@ def test_path_traversal_protection(mock_skills_dir):
         )
     assert bad_read_error.value.status_code == 403
     assert "安全拦截" in bad_read_error.value.detail
+
+
+def test_skills_stats_service_recording(mock_skills_dir):
+    from app.services.ai.skills_stats_service import skills_stats_service
+    
+    # 模拟写入 Redis 并读取
+    run(skills_stats_service.record_activations(["test-skill-1", "test-skill-2"]))
+    
+    stats = run(skills_stats_service.get_stats(days=7))
+    assert "total" in stats
+    assert "trend" in stats
+
+
+def test_get_skills_stats_endpoint(mock_skills_dir):
+    user = {"user_name": "admin", "role": "admin"}
+    
+    response = run(skills.get_skills_stats(user_info=user))
+    assert "total" in response
+    assert "trend" in response

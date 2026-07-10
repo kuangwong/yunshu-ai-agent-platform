@@ -786,6 +786,14 @@ class AgentService:
                     "=== [已截断] 系统中已挂载或解析出更多可用技能，出于上下文性能优化，其余技能摘要未全部载入。如有需要，模型应通过调用 list_available_skills 工具获取其余技能详细摘要 ==="
                 )
 
+        # 统计激活情况
+        if mounted_skill_ids:
+            try:
+                from app.services.ai.skills_stats_service import skills_stats_service
+                await skills_stats_service.record_activations(mounted_skill_ids)
+            except Exception as stats_err:
+                logger.error(f"[SkillsStats] Auto-recording skill activations failed: {stats_err}")
+
         return skills_injection
 
     async def _load_memory_context(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import axios from '../utils/axios'
 import { useToast } from '../composables/useToast'
 import SkillFileTree from '../components/SkillFileTree.vue'
@@ -43,6 +43,21 @@ const newSkill = ref({
   description: ''
 })
 const creating = ref(false)
+
+// 统计相关
+import * as echarts from 'echarts'
+const showStatsModal = ref(false)
+const loadingStats = ref(false)
+const statsData = ref<any>(null)
+const distributionChartRef = ref<HTMLElement | null>(null)
+const trendChartRef = ref<HTMLElement | null>(null)
+let distChartInstance: echarts.ECharts | null = null
+let trendChartInstance: echarts.ECharts | null = null
+
+const hasStatsData = computed(() => {
+  if (!statsData.value) return false
+  return Object.keys(statsData.value.total || {}).length > 0
+})
 
 // 帮助弹窗相关
 const showHelpModal = ref(false)
@@ -372,6 +387,128 @@ const uploadFiles = async (files: FileList) => {
   }
 }
 
+const openStatsModal = async () => {
+  showStatsModal.value = true
+  loadingStats.value = true
+  try {
+    const res = await axios.get('/api/portal/skills/stats')
+    statsData.value = res.data
+    nextTick(() => {
+      initCharts()
+    })
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '获取统计数据失败', 'error')
+  } finally {
+    loadingStats.value = false
+  }
+}
+
+const closeStatsModal = () => {
+  showStatsModal.value = false
+  if (distChartInstance) {
+    distChartInstance.dispose()
+    distChartInstance = null
+  }
+  if (trendChartInstance) {
+    trendChartInstance.dispose()
+    trendChartInstance = null
+  }
+}
+
+const initCharts = () => {
+  if (!hasStatsData.value) return
+  
+  // 1. 分布饼图
+  if (distributionChartRef.value) {
+    distChartInstance = echarts.init(distributionChartRef.value)
+    const chartData = Object.entries(statsData.value.total).map(([name, value]) => ({
+      name,
+      value
+    }))
+    
+    distChartInstance.setOption({
+      tooltip: {
+        trigger: 'item',
+        formatter: '{b}: {c} 次 ({d}%)'
+      },
+      legend: {
+        orient: 'horizontal',
+        bottom: 0,
+        type: 'scroll'
+      },
+      series: [
+        {
+          name: '激活次数',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          avoidLabelOverlap: true,
+          itemStyle: {
+            borderRadius: 8,
+            borderColor: '#fff',
+            borderWidth: 2
+          },
+          label: {
+            show: false,
+            position: 'center'
+          },
+          emphasis: {
+            label: {
+              show: true,
+              fontSize: 14,
+              fontWeight: 'bold'
+            }
+          },
+          data: chartData
+        }
+      ]
+    })
+  }
+  
+  // 2. 趋势折线图
+  if (trendChartRef.value) {
+    trendChartInstance = echarts.init(trendChartRef.value)
+    const dates = Object.keys(statsData.value.trend).sort()
+    const skillIds = Object.keys(statsData.value.total)
+    
+    const series = skillIds.map(skillId => {
+      const data = dates.map(date => statsData.value.trend[date][skillId] || 0)
+      return {
+        name: skillId,
+        type: 'line',
+        smooth: true,
+        data
+      }
+    })
+    
+    trendChartInstance.setOption({
+      tooltip: {
+        trigger: 'axis'
+      },
+      legend: {
+        data: skillIds,
+        bottom: 0,
+        type: 'scroll'
+      },
+      grid: {
+        left: '4%',
+        right: '4%',
+        bottom: '12%',
+        containLabel: true
+      },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: dates.map(d => d.substring(5))
+      },
+      yAxis: {
+        type: 'value',
+        minInterval: 1
+      },
+      series
+    })
+  }
+}
+
 onMounted(() => {
   fetchSkills()
 })
@@ -432,6 +569,15 @@ onMounted(() => {
             </svg>
           </button>
         </div>
+        <button 
+          @click="openStatsModal"
+          class="flex items-center justify-center gap-2 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 active:scale-95 transition-all shadow-sm font-medium text-sm"
+        >
+          <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          统计查看
+        </button>
         <button 
           @click="openCreateModal"
           class="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 active:scale-95 transition-all shadow-sm font-medium text-sm"
@@ -906,6 +1052,68 @@ onMounted(() => {
     @confirm="confirmState.onConfirm"
     @cancel="confirmState.show = false"
   />
+
+  <!-- 统计查看 Modal -->
+  <div 
+    v-if="showStatsModal" 
+    class="fixed inset-0 bg-black/50 backdrop-blur-sm z-[9990] flex items-center justify-center p-4 animate-fade-in"
+    @click.self="closeStatsModal"
+  >
+    <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full p-6 border border-gray-150 flex flex-col max-h-[90vh]">
+      <div class="flex items-center justify-between border-b border-gray-100 pb-4 mb-4 select-none shrink-0">
+        <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+          <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          技能激活与调用统计
+        </h2>
+        <button @click="closeStatsModal" class="text-gray-400 hover:text-gray-600 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div v-if="loadingStats" class="flex flex-col items-center justify-center py-20 flex-1">
+        <div class="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-sm text-gray-500 mt-4 font-medium">正在拉取统计数据...</p>
+      </div>
+      <div v-else-if="!hasStatsData" class="flex flex-col items-center justify-center py-20 flex-1 text-gray-400 select-none">
+        <svg class="w-16 h-16 text-gray-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0a2 2 0 01-2 2H6a2 2 0 01-2-2m16 0V9a2 2 0 00-2-2H6a2 2 0 00-2 2v4m16 0a2 2 0 01-2 2H6a2 2 0 01-2-2" />
+        </svg>
+        <p class="text-sm font-medium">暂无任何技能的激活和调用数据</p>
+        <p class="text-xs text-gray-400 mt-1">在智能体对话中触发技能后，统计系统会自动开始记录</p>
+      </div>
+      <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6 overflow-y-auto pr-1 flex-1 py-2 custom-scrollbar">
+        <!-- 分布图 -->
+        <div class="border border-gray-150 rounded-xl p-4 bg-gray-50/50 flex flex-col min-h-[350px]">
+          <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-1.5 shrink-0 select-none">
+            <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+            技能总调用占比与分布
+          </h3>
+          <div ref="distributionChartRef" class="w-full flex-1 min-h-[300px]"></div>
+        </div>
+        <!-- 趋势图 -->
+        <div class="border border-gray-150 rounded-xl p-4 bg-gray-50/50 flex flex-col min-h-[350px]">
+          <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-1.5 shrink-0 select-none">
+            <span class="w-2 h-2 bg-indigo-500 rounded-full"></span>
+            近30天激活趋势变化
+          </h3>
+          <div ref="trendChartRef" class="w-full flex-1 min-h-[300px]"></div>
+        </div>
+      </div>
+      
+      <div class="flex justify-end gap-3 mt-6 border-t border-gray-100 pt-4 shrink-0">
+        <button 
+          @click="closeStatsModal"
+          class="px-5 py-2.5 bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors text-sm font-semibold rounded-xl"
+        >
+          关闭
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>

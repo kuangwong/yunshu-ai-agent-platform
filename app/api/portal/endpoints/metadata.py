@@ -618,7 +618,7 @@ async def get_db_ddl(request: DDLRequest):
 
 # --- DB Connection Config APIs ---
 
-from app.schemas.db_connection import DbConnectionConfigCreate, DbConnectionConfigSafeResponse
+from app.schemas.db_connection import DbConnectionConfigCreate, DbConnectionConfigSafeResponse, DbProfileTaskResponse, DbTableProfileResponse
 from app.services.db_connection_service import DbConnectionService
 
 @router.get("/db/connection-configs", dependencies=[Depends(require_permission("element", "element:metadata:import"))])
@@ -713,3 +713,45 @@ async def preview_db_connection_sql(
     except Exception as e:
         logger.exception("Failed to execute debug SQL query")
         raise HTTPException(status_code=400, detail=f"执行 SQL 失败: {str(e)}")
+
+
+from fastapi import BackgroundTasks
+from app.services.db_profile_service import DbProfileService
+from typing import Optional
+
+@router.post("/db/connection-configs/{config_id}/profile", response_model=DbProfileTaskResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def trigger_db_table_profiling(
+    config_id: int,
+    background_tasks: BackgroundTasks,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """触发外部数据库的智能摸排分析后台任务"""
+    try:
+        task = await DbProfileService.trigger_profiling_task(conn, config_id, background_tasks)
+        return task
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        logger.exception("Failed to trigger db table profiling task")
+        raise HTTPException(status_code=500, detail=f"触发任务失败: {str(e)}")
+
+
+@router.get("/db/connection-configs/{config_id}/profile-task", response_model=Optional[DbProfileTaskResponse], dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def get_db_table_profiling_task(
+    config_id: int,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """获取外部数据库智能摸排主任务的进度与状态"""
+    task = await DbProfileService.get_task_status(conn, config_id)
+    return task
+
+
+@router.get("/db/connection-configs/{config_id}/table-profiles", response_model=List[DbTableProfileResponse], dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def list_db_table_profiles(
+    config_id: int,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """获取外部数据库已分析/摸排的表画像列表 (含有AI备注名与标签)"""
+    profiles = await DbProfileService.list_table_profiles(conn, config_id)
+    return profiles
+

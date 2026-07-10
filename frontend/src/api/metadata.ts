@@ -204,4 +204,13 @@ export const metadataApi = {
     axios.delete(`${API_BASE}/db/connection-configs/${id}`),
   debugDbConnectionSql: (id: number, sql: string, limit: number = 100) =>
     axios.post<any>(`${API_BASE}/db/connection-configs/${id}/preview`, { sql, limit }),
+
+  // DB Table Profiling APIs
+  triggerDbProfiling: (configId: number) =>
+    axios.post<any>(`${API_BASE}/db/connection-configs/${configId}/profile`),
+  getDbProfilingTask: (configId: number) =>
+    axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/profile-task`),
+  listDbTableProfiles: (configId: number) =>
+    axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles`),
 };
+

@@ -109,6 +109,13 @@ const loadConfigs = async () => {
   }
 }
 
+const showFormModal = ref(false)
+
+const openCreateForm = () => {
+  resetForm()
+  showFormModal.value = true
+}
+
 const resetForm = () => {
   editingId.value = null
   form.name = ''
@@ -135,6 +142,7 @@ const editConfig = (item: DbConnectionConfig) => {
   form.description = item.description || ''
   testPassed.value = false
   connError.value = ''
+  showFormModal.value = true
 }
 
 const stripCopySuffix = (name: string) => name.replace(/_copy(?:_\d+)?$/i, '')
@@ -165,8 +173,10 @@ const copyConfig = (item: DbConnectionConfig) => {
     : `${description}${description ? ' ' : ''}${copyNote}`.trim()
   testPassed.value = false
   connError.value = ''
-  showToast('已复制到左侧表单，请确认名称后测试并保存', 'success')
+  showFormModal.value = true
+  showToast('已复制配置到表单，请测试并保存', 'success')
 }
+
 
 const toConfigPayload = () => ({
   name: form.name.trim(),
@@ -235,6 +245,7 @@ const saveConfig = async () => {
       showToast('数据源已保存', 'success')
     }
     resetForm()
+    showFormModal.value = false
   } catch (e: any) {
     showToast(e.response?.data?.detail || (editingId.value ? '更新失败' : '保存失败'), 'error')
   } finally {
@@ -310,8 +321,167 @@ const runSqlDebug = async () => {
   }
 }
 
-onMounted(() => {
-  loadConfigs()
+const profilingTasks = ref<Record<number, { status: number; total_tables: number; processed_tables: number; current_table?: string; error_message?: string }>>({})
+const pollingIntervals = reactive<Record<number, any>>({})
+
+const loadTaskStatuses = async () => {
+  for (const item of configs.value) {
+    try {
+      const res = await metadataApi.getDbProfilingTask(item.id)
+      if (res.data) {
+        profilingTasks.value[item.id] = res.data
+        if (res.data.status === 1) {
+          startPolling(item.id)
+        }
+      }
+    } catch {
+      // 忽略
+    }
+  }
+}
+
+const startPolling = (configId: number) => {
+  if (pollingIntervals[configId]) return
+  pollingIntervals[configId] = setInterval(async () => {
+    try {
+      const res = await metadataApi.getDbProfilingTask(configId)
+      if (res.data) {
+        profilingTasks.value[configId] = res.data
+        if (res.data.status !== 1) {
+          clearInterval(pollingIntervals[configId])
+          delete pollingIntervals[configId]
+          // 重新拉取一次表画像，以确保界面同步
+          showToast(`数据源摸排完成！`, 'success')
+        }
+      } else {
+        clearInterval(pollingIntervals[configId])
+        delete pollingIntervals[configId]
+      }
+    } catch {
+      clearInterval(pollingIntervals[configId])
+      delete pollingIntervals[configId]
+    }
+  }, 2000)
+}
+
+const profileTarget = ref<DbConnectionConfig | null>(null)
+
+const requestProfiling = (item: DbConnectionConfig) => {
+  profileTarget.value = item
+}
+
+const cancelProfiling = () => {
+  profileTarget.value = null
+}
+
+const confirmProfiling = async () => {
+  if (!profileTarget.value) return
+  const item = profileTarget.value
+  profileTarget.value = null
+  await triggerProfiling(item)
+}
+
+const triggerProfiling = async (item: DbConnectionConfig) => {
+  try {
+    const res = await metadataApi.triggerDbProfiling(item.id)
+    showToast('已提交后台分析摸排任务，串行处理大模型分析中', 'success')
+    profilingTasks.value[item.id] = res.data
+    startPolling(item.id)
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '启动摸排失败', 'error')
+  }
+}
+
+// 查看摸排分析结果 Modal 状态
+const showProfilesTarget = ref<DbConnectionConfig | null>(null)
+const viewTableProfiles = ref<any[]>([])
+const loadingViewProfiles = ref(false)
+const profilesSearchQuery = ref('')
+const selectedProfileTag = ref<string | null>(null)
+const isTagsExpanded = ref(false)
+const expandedTables = ref<Record<string, boolean>>({})
+
+const openTableProfiles = async (item: DbConnectionConfig) => {
+  showProfilesTarget.value = item
+  loadingViewProfiles.value = true
+  viewTableProfiles.value = []
+  profilesSearchQuery.value = ''
+  selectedProfileTag.value = null
+  isTagsExpanded.value = false
+  expandedTables.value = {}
+  try {
+    const res = await metadataApi.listDbTableProfiles(item.id)
+    viewTableProfiles.value = res.data || []
+  } catch {
+    showToast('获取摸排结果失败', 'error')
+  } finally {
+    loadingViewProfiles.value = false
+  }
+}
+
+const closeTableProfiles = () => {
+  showProfilesTarget.value = null
+  viewTableProfiles.value = []
+}
+
+const toggleTableExpand = (tableName: string) => {
+  expandedTables.value[tableName] = !expandedTables.value[tableName]
+}
+
+const toggleProfileTag = (tag: string) => {
+  if (selectedProfileTag.value === tag) {
+    selectedProfileTag.value = null
+  } else {
+    selectedProfileTag.value = tag
+    const idx = availableTags.value.findIndex(t => t.name === tag)
+    if (idx >= 8) {
+      isTagsExpanded.value = true
+    }
+  }
+}
+
+const availableTags = computed(() => {
+  const counts: Record<string, number> = {}
+  viewTableProfiles.value.forEach((p) => {
+    if (p.ai_tags && Array.isArray(p.ai_tags)) {
+      p.ai_tags.forEach((t) => {
+        if (t && t.trim()) {
+          const cleanTag = t.trim()
+          counts[cleanTag] = (counts[cleanTag] || 0) + 1
+        }
+      })
+    }
+  })
+  return Object.entries(counts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+})
+
+const filteredViewProfiles = computed(() => {
+  let list = viewTableProfiles.value
+
+  if (selectedProfileTag.value) {
+    list = list.filter((p) => p.ai_tags && p.ai_tags.includes(selectedProfileTag.value))
+  }
+
+  if (!profilesSearchQuery.value.trim()) return list
+  const q = profilesSearchQuery.value.trim().toLowerCase()
+  return list.filter((p) =>
+    p.table_name.toLowerCase().includes(q) ||
+    (p.ai_term && p.ai_term.toLowerCase().includes(q)) ||
+    (p.ai_description && p.ai_description.toLowerCase().includes(q)) ||
+    (p.ai_tags && p.ai_tags.some((tag: string) => tag.toLowerCase().includes(q)))
+  )
+})
+
+import { onUnmounted } from 'vue'
+onUnmounted(() => {
+  Object.values(pollingIntervals).forEach((interval) => clearInterval(interval))
+})
+
+onMounted(async () => {
+  await loadConfigs()
+  await loadTaskStatuses()
 })
 </script>
 
@@ -322,108 +492,132 @@ onMounted(() => {
         <h1 class="text-2xl font-bold text-gray-900">数据源管理</h1>
         <p class="text-sm text-gray-500 mt-1">统一维护 ChatBI 元数据导入使用的数据库连接。</p>
       </div>
-      <button
-        @click="loadConfigs"
-        class="self-start lg:self-auto px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-bold text-gray-600 hover:bg-gray-50 transition-colors"
-      >
-        刷新列表
-      </button>
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          @click="openCreateForm"
+          class="px-4 py-2 rounded-lg bg-primary hover:bg-primary-dark text-white text-sm font-bold shadow-lg shadow-primary/20 transition-all flex items-center gap-1.5"
+        >
+          <span>➕</span>
+          <span>添加数据源</span>
+        </button>
+        <button
+          @click="loadConfigs"
+          class="px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-bold text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          刷新列表
+        </button>
+      </div>
     </div>
 
-    <div class="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-6">
-      <section class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div class="px-5 py-4 border-b border-gray-100">
-          <h2 class="text-base font-black text-gray-900">{{ isEditing ? '编辑数据源' : '添加数据源' }}</h2>
-          <p class="text-xs text-gray-500 mt-1">{{ isEditing ? '修改后需重新测试连接，通过后保存更新。' : '测试通过后保存，元数据导入时会从这里选择读取。' }}</p>
-        </div>
-
-        <div class="p-5 space-y-4">
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <button
-              v-for="db in dbTypes"
-              :key="db.id"
-              @click="setDbType(db.id)"
-              class="p-3 rounded-xl border-2 transition-all flex flex-col items-center gap-2"
-              :class="form.type === db.id ? 'border-primary bg-primary/5 text-primary' : 'border-gray-100 hover:border-gray-200 text-gray-700'"
-            >
-              <span class="text-xl">{{ db.icon }}</span>
-              <span class="text-xs font-black">{{ db.name }}</span>
+    <!-- 数据源配置表单 Modal (Premium Design) -->
+    <div v-if="showFormModal" class="fixed inset-0 z-50 overflow-y-auto animate-fade-in" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div @click="showFormModal = false" class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div class="inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-xl sm:w-full border border-gray-100">
+          <!-- Modal 头部 -->
+          <div class="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <h3 class="text-base font-black text-gray-900">{{ editingId ? '编辑数据源' : '添加数据源' }}</h3>
+              <p class="text-xs text-gray-500 mt-0.5">{{ editingId ? '修改后需重新测试连接，通过后保存更新。' : '测试通过后保存，元数据导入时会从这里选择读取。' }}</p>
+            </div>
+            <button @click="showFormModal = false" class="text-gray-400 hover:text-gray-600 transition-colors text-xl font-bold">
+              &times;
             </button>
           </div>
-
-          <div>
-            <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">数据源名称</label>
-            <input v-model="form.name" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="如：default_clickhouse、clickhouse_ods、mysql_crm、oracle_erp、sqlserver_erp">
-            <p class="mt-1.5 text-xs leading-5 text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-              建议使用外部 SQL 执行兼容标识命名，例如 default_clickhouse、clickhouse_xxx、mysql_xxx、oracle_xxx、sqlserver_xxx，ChatBI 本地执行会按数据源名称匹配历史配置。
-            </p>
-          </div>
-
-          <div>
-            <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">备注/用途说明</label>
-            <textarea
-              v-model="form.description"
-              rows="2"
-              class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
-              placeholder="如：用于 ChatBI 生产库元数据导入"
-            ></textarea>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">主机 (Host)</label>
-              <input v-model="form.host" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="127.0.0.1">
+          
+          <!-- Modal 主体 -->
+          <div class="p-6 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <button
+                v-for="db in dbTypes"
+                :key="db.id"
+                @click="setDbType(db.id)"
+                class="p-3 rounded-xl border-2 transition-all flex flex-col items-center gap-2"
+                :class="form.type === db.id ? 'border-primary bg-primary/5 text-primary' : 'border-gray-100 hover:border-gray-200 text-gray-700'"
+              >
+                <span class="text-xl">{{ db.icon }}</span>
+                <span class="text-xs font-black">{{ db.name }}</span>
+              </button>
             </div>
+
             <div>
-              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">端口 (Port)</label>
-              <input v-model.number="form.port" type="number" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50">
+              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">数据源名称</label>
+              <input v-model="form.name" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm" placeholder="如：default_clickhouse、clickhouse_ods...">
+              <p class="mt-1.5 text-[10px] leading-relaxed text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
+                建议使用外部 SQL 兼容标识，如 clickhouse_xxx, mysql_xxx，ChatBI 本地执行将匹配历史配置。
+              </p>
             </div>
+
             <div>
-              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">用户名 (User)</label>
-              <input v-model="form.user" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="root">
+              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">备注/用途说明</label>
+              <textarea
+                v-model="form.description"
+                rows="2"
+                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                placeholder="如：用于 ChatBI 生产库元数据导入"
+              ></textarea>
             </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">主机 (Host)</label>
+                <input v-model="form.host" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm" placeholder="127.0.0.1">
+              </div>
+              <div>
+                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">端口 (Port)</label>
+                <input v-model.number="form.port" type="number" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm">
+              </div>
+              <div>
+                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">用户名 (User)</label>
+                <input v-model="form.user" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm" placeholder="root">
+              </div>
+              <div>
+                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">密码 (Password)</label>
+                <input v-model="form.password" type="password" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm" placeholder="******">
+              </div>
+            </div>
+
             <div>
-              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">密码 (Password)</label>
-              <input v-model="form.password" type="password" class="w-full border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="******">
+              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">数据库/库名 (Database)</label>
+              <input v-model="form.database" class="w-full border border-blue-200 bg-blue-50/20 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm" placeholder="e.g. metadata_db">
+            </div>
+
+            <div v-if="form.type === 'clickhouse'" class="p-3 bg-blue-50/50 border border-blue-100 rounded-xl text-[11px] text-blue-700 leading-relaxed">
+              <p class="font-bold mb-1">ClickHouse 连接提示：</p>
+              <p>原生 TCP 常用端口为 9000；如果是 HTTP 端口 8123 请改为 9000。</p>
+            </div>
+
+            <div v-if="connError" class="p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600 leading-relaxed font-mono">
+              {{ connError }}
             </div>
           </div>
-
-          <div>
-            <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5">数据库/库名 (Database)</label>
-            <input v-model="form.database" class="w-full border border-blue-200 bg-blue-50/20 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="e.g. metadata_db">
-          </div>
-
-          <div v-if="form.type === 'clickhouse'" class="p-3 bg-blue-50/50 border border-blue-100 rounded-xl text-[11px] text-blue-700 leading-relaxed">
-            <p class="font-bold mb-1">ClickHouse 连接提示：</p>
-            <p>系统使用原生 TCP 协议，常用端口为 <strong class="underline decoration-blue-300">9000</strong>；如果之前使用 8123 (HTTP 端口)，请改为 9000。</p>
-          </div>
-
-          <div v-if="connError" class="p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600 leading-relaxed font-mono">
-            {{ connError }}
-          </div>
-
-          <div class="flex items-center justify-between gap-3 pt-2">
+          
+          <!-- Modal 尾部 -->
+          <div class="bg-gray-50 px-6 py-4 border-t border-gray-100 flex justify-between items-center">
             <button
               @click="testConnection"
               :disabled="testing || !form.host || !form.database"
-              class="px-4 py-2 rounded-lg bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 text-sm font-bold disabled:opacity-50"
+              class="px-4 py-2 rounded-lg bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 text-xs font-bold disabled:opacity-50 transition-colors"
             >
               {{ testing ? '正在连接...' : testPassed ? '连接成功' : '测试连接' }}
             </button>
             <div class="flex gap-2">
-              <button @click="resetForm" class="px-4 py-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 text-sm font-bold">{{ isEditing ? '取消编辑' : '清空' }}</button>
+              <button @click="showFormModal = false" class="px-4 py-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 text-xs font-bold transition-colors">取消</button>
               <button
                 @click="saveConfig"
                 :disabled="saving || !testPassed || !form.name || !form.host || !form.database"
-                class="px-5 py-2 rounded-lg bg-primary text-white hover:bg-primary-dark text-sm font-bold shadow-lg shadow-primary/20 disabled:opacity-50"
+                class="px-5 py-2 rounded-lg bg-primary text-white hover:bg-primary-dark text-xs font-bold shadow-lg shadow-primary/20 disabled:opacity-50 transition-colors"
               >
-                {{ saving ? '保存中...' : isEditing ? '保存修改' : '保存数据源' }}
+                {{ saving ? '保存中...' : editingId ? '保存修改' : '保存数据源' }}
               </button>
             </div>
           </div>
         </div>
-      </section>
+      </div>
+    </div>
 
+    <div class="w-full">
       <section class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div class="px-5 py-4 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
@@ -474,8 +668,53 @@ onMounted(() => {
                   <span class="font-bold shrink-0">用途</span>
                   <span class="line-clamp-2">{{ item.description }}</span>
                 </div>
+
+                <!-- 智能摸排任务进度展示 -->
+                <div v-if="profilingTasks[item.id]" class="mt-3 p-3 bg-gray-50 border border-gray-100 rounded-xl space-y-1.5">
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="font-bold text-gray-700 flex items-center gap-1">
+                      <span>🤖 智能分析摸排</span>
+                      <span v-if="profilingTasks[item.id].status === 0" class="text-gray-400 font-normal">(排队中)</span>
+                      <span v-else-if="profilingTasks[item.id].status === 1" class="text-primary font-bold animate-pulse">(分析中)</span>
+                      <span v-else-if="profilingTasks[item.id].status === 2" class="text-emerald-600 font-bold">(已完成)</span>
+                      <span v-else-if="profilingTasks[item.id].status === 3" class="text-red-500 font-bold" :title="profilingTasks[item.id].error_message">(分析中断)</span>
+                    </span>
+                    <span class="font-mono text-gray-500 flex items-center gap-2" v-if="profilingTasks[item.id].status === 1 || profilingTasks[item.id].status === 2">
+                      <span>{{ profilingTasks[item.id].processed_tables }} / {{ profilingTasks[item.id].total_tables }}</span>
+                      <button
+                        v-if="profilingTasks[item.id].status === 2"
+                        @click="openTableProfiles(item)"
+                        class="px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 hover:bg-indigo-100 text-[10px] font-bold transition-all shrink-0"
+                      >
+                        查看表资产画像
+                      </button>
+                    </span>
+                  </div>
+                  <!-- 进度条 -->
+                  <div v-if="profilingTasks[item.id].status === 1 || profilingTasks[item.id].status === 2" class="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      class="bg-primary h-full transition-all duration-300"
+                      :style="{ width: `${(profilingTasks[item.id].processed_tables / profilingTasks[item.id].total_tables) * 100}%` }"
+                    ></div>
+                  </div>
+                  <div v-if="profilingTasks[item.id].status === 1 && profilingTasks[item.id].current_table" class="text-[10px] text-gray-400 truncate">
+                    当前正在分析: <code class="bg-gray-100 px-1 py-0.5 rounded text-gray-600 font-mono">{{ profilingTasks[item.id].current_table }}</code>
+                  </div>
+                  <div v-if="profilingTasks[item.id].status === 3 && profilingTasks[item.id].error_message" class="text-[10px] text-red-500 leading-tight line-clamp-2">
+                    错误: {{ profilingTasks[item.id].error_message }}
+                  </div>
+                </div>
               </div>
               <div class="flex flex-wrap items-center justify-end gap-2 flex-shrink-0">
+
+                <button
+                  @click="requestProfiling(item)"
+                  :disabled="profilingTasks[item.id]?.status === 1"
+                  class="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50"
+                  :class="profilingTasks[item.id]?.status === 1 ? 'bg-gray-100 text-gray-400 border border-gray-200' : 'bg-primary/5 border border-primary/10 text-primary hover:bg-primary/10'"
+                >
+                  {{ profilingTasks[item.id]?.status === 1 ? '摸排中...' : '智能摸排' }}
+                </button>
                 <button @click="editConfig(item)" class="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 text-xs font-bold">编辑</button>
                 <button @click="copyConfig(item)" class="px-3 py-1.5 rounded-lg bg-violet-50 border border-violet-100 text-violet-600 hover:bg-violet-100 text-xs font-bold">复制</button>
                 <button @click="testSavedConnection(item)" class="px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-100 text-xs font-bold">测试</button>
@@ -606,5 +845,215 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 智能摸排结果查看 Modal (Premium Design) -->
+    <div v-if="showProfilesTarget" class="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <!-- Backdrop -->
+        <div @click="closeTableProfiles" class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
+
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+        <!-- Modal Content Container -->
+        <div class="inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full border border-gray-100">
+          <div class="bg-gray-50 px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🤖</span>
+              <div>
+                <h3 class="text-base font-black text-gray-900">数据源摸排资产列表: {{ showProfilesTarget.name }}</h3>
+                <p class="text-xs text-gray-500 mt-0.5">展示已通过大模型分析出的物理表/视图之业务备注与字段结构画像</p>
+              </div>
+            </div>
+            <button @click="closeTableProfiles" class="text-gray-400 hover:text-gray-600 transition-colors text-xl font-bold">
+              &times;
+            </button>
+          </div>
+
+          <div class="p-6 space-y-4 max-h-[65vh] overflow-y-auto custom-scrollbar">
+            <!-- 资产分析概览面板 (Overview stats) -->
+            <div v-if="!loadingViewProfiles && viewTableProfiles.length > 0" class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-50/50 p-4 rounded-2xl border border-gray-100 shrink-0">
+              <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
+                <span class="text-xl p-2 bg-primary/10 rounded-lg text-primary select-none">📊</span>
+                <div class="min-w-0">
+                  <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">摸排资产总数</div>
+                  <div class="text-base font-black text-gray-800">{{ viewTableProfiles.length }} <span class="text-[10px] text-gray-400 font-normal">个</span></div>
+                </div>
+              </div>
+              <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
+                <span class="text-xl p-2 bg-blue-50 rounded-lg text-blue-600 select-none">📁</span>
+                <div class="min-w-0">
+                  <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">物理表</div>
+                  <div class="text-base font-black text-gray-800">
+                    {{ viewTableProfiles.filter(p => p.table_type !== 'view').length }}
+                    <span class="text-[10px] text-gray-400 font-normal">张</span>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
+                <span class="text-xl p-2 bg-amber-50 rounded-lg text-amber-600 select-none">👁️</span>
+                <div class="min-w-0">
+                  <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">虚拟视图</div>
+                  <div class="text-base font-black text-gray-800">
+                    {{ viewTableProfiles.filter(p => p.table_type === 'view').length }}
+                    <span class="text-[10px] text-gray-400 font-normal">个</span>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
+                <span class="text-xl p-2 bg-emerald-50 rounded-lg text-emerald-600 select-none">🏷️</span>
+                <div class="min-w-0">
+                  <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">字段画像总数</div>
+                  <div class="text-base font-black text-gray-800">
+                    {{ viewTableProfiles.reduce((acc, p) => acc + (p.columns_profile?.length || 0), 0) }}
+                    <span class="text-[10px] text-gray-400 font-normal">个</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 搜索框 -->
+            <div class="relative w-full">
+              <input
+                v-model="profilesSearchQuery"
+                class="w-full pl-9 pr-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-white"
+                placeholder="过滤表名、备注或标签分类..."
+              >
+              <svg class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
+            </div>
+
+            <!-- 快速标签过滤 (Premium UI with Collapse) -->
+            <div v-if="availableTags.length > 0" class="flex flex-wrap items-center gap-1.5 pt-1">
+              <span class="text-xs font-bold text-gray-400 mr-1.5 select-none">快速过滤:</span>
+              <button
+                @click="selectedProfileTag = null"
+                :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1', !selectedProfileTag ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
+              >
+                <span>全部</span>
+                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ viewTableProfiles.length }}</span>
+              </button>
+              <button
+                v-for="tag in (isTagsExpanded ? availableTags : availableTags.slice(0, 8))"
+                :key="tag.name"
+                @click="toggleProfileTag(tag.name)"
+                :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1.5', selectedProfileTag === tag.name ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
+              >
+                <span>{{ tag.name }}</span>
+                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', selectedProfileTag === tag.name ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ tag.count }}</span>
+              </button>
+              <button
+                v-if="availableTags.length > 8"
+                @click="isTagsExpanded = !isTagsExpanded"
+                class="px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-50 border border-indigo-100 text-indigo-600 hover:bg-indigo-100 transition-all cursor-pointer flex items-center gap-0.5"
+              >
+                <span>{{ isTagsExpanded ? '收起 ▴' : `更多 (${availableTags.length - 8}) ▾` }}</span>
+              </button>
+            </div>
+
+            <div v-if="loadingViewProfiles" class="py-12 text-center text-sm text-gray-400">
+              正在读取摸排资产结果...
+            </div>
+            <div v-else-if="filteredViewProfiles.length === 0" class="py-12 text-center text-gray-400 text-sm italic bg-gray-50 rounded-xl">
+              暂无匹配的摸排表记录。
+            </div>
+            <div v-else class="space-y-3">
+              <div 
+                v-for="profile in filteredViewProfiles" 
+                :key="profile.table_name"
+                class="border border-gray-200/80 rounded-xl overflow-hidden bg-white shadow-sm hover:border-gray-300 transition-all"
+              >
+                <!-- 卡片头部 (点击可展开字段) -->
+                <div 
+                  @click="toggleTableExpand(profile.table_name)"
+                  class="p-4 bg-gray-50/30 hover:bg-gray-50/80 transition-colors flex items-center justify-between cursor-pointer"
+                >
+                  <div class="min-w-0 flex-1 space-y-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="font-mono text-sm font-bold text-gray-900">{{ profile.table_name }}</span>
+                      <span 
+                        class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
+                        :class="profile.table_type === 'view' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'"
+                      >
+                        {{ profile.table_type === 'view' ? '视图' : '表' }}
+                      </span>
+                      <span v-if="profile.status === 3" class="px-1.5 py-0.5 rounded text-[9px] bg-red-50 text-red-500 font-bold">分析失败</span>
+                    </div>
+                    <div v-if="profile.ai_term" class="text-xs text-primary font-bold">
+                      💡 业务备注：{{ profile.ai_term }}
+                    </div>
+                    <div v-if="profile.ai_description" class="text-xs text-gray-500 leading-relaxed">
+                      用途：{{ profile.ai_description }}
+                    </div>
+                    <!-- 标签 -->
+                    <div v-if="profile.ai_tags && profile.ai_tags.length > 0" class="flex flex-wrap gap-1 mt-1">
+                      <span 
+                        v-for="tag in profile.ai_tags" 
+                        :key="tag"
+                        @click.stop="toggleProfileTag(tag)"
+                        :class="['px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors cursor-pointer', selectedProfileTag === tag ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200']"
+                      >
+                        {{ tag }}
+                      </span>
+                    </div>
+                  </div>
+                  <!-- 右侧箭头图标 -->
+                  <div class="text-gray-400 ml-4 shrink-0 transition-transform duration-200" :class="expandedTables[profile.table_name] ? 'rotate-90' : ''">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- 展开的字段列表 -->
+                <div v-if="expandedTables[profile.table_name]" class="border-t border-gray-100 p-4 bg-white space-y-2">
+                  <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">字段画像定义 (Columns Profile)</div>
+                  
+                  <div v-if="!profile.columns_profile || profile.columns_profile.length === 0" class="text-xs text-gray-400 italic">
+                    暂无字段分析信息
+                  </div>
+                  <div v-else class="border border-gray-100 rounded-xl overflow-hidden">
+                    <table class="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr class="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase">
+                          <th class="px-4 py-2 border-r border-gray-100 w-1/4">物理字段</th>
+                          <th class="px-4 py-2 border-r border-gray-100 w-1/4">业务术语/中文名</th>
+                          <th class="px-4 py-2">业务含义说明</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-gray-100 text-gray-700">
+                        <tr v-for="col in profile.columns_profile" :key="col.name" class="hover:bg-gray-50 bg-white">
+                          <td class="px-4 py-2 border-r border-gray-100 font-mono font-bold">{{ col.name }}</td>
+                          <td class="px-4 py-2 border-r border-gray-100 text-primary font-medium">{{ col.term || '-' }}</td>
+                          <td class="px-4 py-2 text-gray-500 leading-normal">{{ col.desc || '-' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-gray-50 px-6 py-4 border-t border-gray-100 flex justify-end">
+            <button @click="closeTableProfiles" class="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 text-xs font-bold transition-colors">
+              关闭窗口
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 智能摸排确认 Modal -->
+    <ConfirmModal
+      v-if="profileTarget"
+      title="确认启动智能摸排"
+      :message="`智能摸排功能将对数据源 “${profileTarget.name}” 下所有的表和视图进行结构分析与数据采样，并调用大模型生成中文业务备注名、表用途和分类标签以辅助元数据导入。注意：逐表处理可能需要一些时间，且每个表的分析都需要消耗大模型的 Token。您确认启动吗？`"
+      confirm-text="确认启动"
+      cancel-text="取消"
+      type="warning"
+      @confirm="confirmProfiling"
+      @cancel="cancelProfiling"
+    />
   </div>
 </template>

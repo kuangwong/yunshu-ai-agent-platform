@@ -767,8 +767,8 @@ async def get_db_table_profiling_task(
     config_id: int,
     conn: AsyncSession = Depends(get_db_session)
 ):
-    """获取外部数据库智能摸排主任务的进度与状态"""
-    task = await DbProfileService.get_task_status(conn, config_id)
+    """获取外部数据库智能摸排主任务的进度与状态（读取时自动校正漏标完成）"""
+    task = await DbProfileService.get_task_status_display(conn, config_id)
     return task
 
 

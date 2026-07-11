@@ -347,6 +347,7 @@ const startPolling = (configId: number) => {
       const res = await metadataApi.getDbProfilingTask(configId)
       if (res.data) {
         profilingTasks.value[configId] = res.data
+        await refreshProfilesModalIfOpen(configId)
         if (res.data.status !== 1) {
           clearInterval(pollingIntervals[configId])
           delete pollingIntervals[configId]
@@ -430,6 +431,23 @@ const profilingActionLabel = (item: DbConnectionConfig) => {
   return '智能摸排'
 }
 
+/** 有已完成画像时可查看（进行中、已中断、已完成） */
+const canViewTableProfiles = (item: DbConnectionConfig) => {
+  const task = profilingTasks.value[item.id]
+  if (!task) return false
+  if (task.status === 2) return (task.total_tables ?? 0) > 0
+  return (task.processed_tables ?? 0) > 0
+}
+
+const viewProfilesButtonLabel = (item: DbConnectionConfig) => {
+  const task = profilingTasks.value[item.id]
+  if (!task || task.status === 2) return '查看画像'
+  if (task.status === 1 || task.status === 4 || task.status === 3) {
+    return `查看画像 (${task.processed_tables}/${task.total_tables})`
+  }
+  return '查看画像'
+}
+
 const openActionMenu = ref<'profile' | 'more' | null>(null)
 const openActionMenuId = ref<number | null>(null)
 
@@ -488,6 +506,8 @@ const profilesPage = ref(1)
 const profilesPageSize = ref(200)
 const profilesTotal = ref(0)
 const profilesPages = ref(0)
+/** completed=仅已成功画像；all=含待处理/分析中/失败 */
+const profilesListMode = ref<'completed' | 'all'>('completed')
 let profilesSearchDebounce: ReturnType<typeof setTimeout> | null = null
 
 const loadProfileStats = async (configId: number) => {
@@ -499,15 +519,16 @@ const loadProfileStats = async (configId: number) => {
   }
 }
 
-const loadProfilePage = async () => {
+const loadProfilePage = async (opts?: { silent?: boolean }) => {
   if (!showProfilesTarget.value) return
-  loadingViewProfiles.value = true
+  if (!opts?.silent) loadingViewProfiles.value = true
   try {
     const res = await metadataApi.listDbTableProfiles(showProfilesTarget.value.id, {
       page: profilesPage.value,
       page_size: profilesPageSize.value,
       q: profilesSearchQuery.value.trim() || undefined,
       tag: selectedProfileTag.value || undefined,
+      status: profilesListMode.value === 'completed' ? 2 : undefined,
     })
     const data = res.data || {}
     viewTableProfiles.value = data.items || []
@@ -515,11 +536,26 @@ const loadProfilePage = async () => {
     profilesPages.value = data.pages || 0
     profilesPage.value = data.page || profilesPage.value
   } catch {
-    showToast('获取摸排结果失败', 'error')
-    viewTableProfiles.value = []
+    if (!opts?.silent) {
+      showToast('获取摸排结果失败', 'error')
+      viewTableProfiles.value = []
+    }
   } finally {
-    loadingViewProfiles.value = false
+    if (!opts?.silent) loadingViewProfiles.value = false
   }
+}
+
+const refreshProfilesModalIfOpen = async (configId: number) => {
+  if (showProfilesTarget.value?.id !== configId) return
+  await Promise.all([loadProfileStats(configId), loadProfilePage({ silent: true })])
+}
+
+const setProfilesListMode = async (mode: 'completed' | 'all') => {
+  if (profilesListMode.value === mode) return
+  profilesListMode.value = mode
+  profilesPage.value = 1
+  selectedProfileTag.value = null
+  await loadProfilePage()
 }
 
 const openTableProfiles = async (item: DbConnectionConfig) => {
@@ -528,6 +564,7 @@ const openTableProfiles = async (item: DbConnectionConfig) => {
   profileStats.value = null
   profilesSearchQuery.value = ''
   selectedProfileTag.value = null
+  profilesListMode.value = 'completed'
   isTagsExpanded.value = false
   expandedTables.value = {}
   profileDetailsCache.value = {}
@@ -591,6 +628,19 @@ const toggleProfileTag = async (tag: string) => {
 }
 
 const availableTags = computed(() => profileStats.value?.tags || [])
+
+const activeProfileTask = computed(() => {
+  if (!showProfilesTarget.value) return null
+  return profilingTasks.value[showProfilesTarget.value.id] || null
+})
+
+const profileSuccessCount = computed(() => profileStats.value?.success_count ?? 0)
+
+const profileRemainingCount = computed(() => {
+  const task = activeProfileTask.value
+  if (!task) return 0
+  return Math.max((task.total_tables || 0) - profileSuccessCount.value, 0)
+})
 
 watch(profilesSearchQuery, () => {
   if (!showProfilesTarget.value) return
@@ -873,14 +923,15 @@ onUnmounted(() => {
               <!-- 右侧操作：主按钮 + 摸排菜单 + 更多 -->
               <div class="flex items-center gap-1.5 flex-shrink-0">
                 <button
-                  v-if="profilingTasks[item.id]?.status === 2"
+                  v-if="canViewTableProfiles(item)"
                   @click="openTableProfiles(item)"
                   class="px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 text-primary hover:bg-primary/10 text-xs font-bold transition-all flex items-center gap-1"
+                  :title="profilingTasks[item.id]?.status === 1 ? '摸排进行中，可查看已完成的画像' : undefined"
                 >
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                   </svg>
-                  <span>查看画像</span>
+                  <span>{{ viewProfilesButtonLabel(item) }}</span>
                 </button>
 
                 <div class="relative">
@@ -1090,7 +1141,12 @@ onUnmounted(() => {
               <span class="text-xl">🤖</span>
               <div>
                 <h3 class="text-base font-black text-gray-900">数据源摸排资产列表: {{ showProfilesTarget.name }}</h3>
-                <p class="text-xs text-gray-500 mt-0.5">展示已通过大模型分析出的物理表/视图之业务备注与字段结构画像</p>
+                <p class="text-xs text-gray-500 mt-0.5">
+                  展示已通过大模型分析出的物理表/视图之业务备注与字段结构画像
+                  <span v-if="activeProfileTask?.status === 1" class="text-blue-600 font-bold">
+                    · 摸排进行中 {{ activeProfileTask.processed_tables }}/{{ activeProfileTask.total_tables }}，列表自动刷新
+                  </span>
+                </p>
               </div>
             </div>
             <button @click="closeTableProfiles" class="text-gray-400 hover:text-gray-600 transition-colors text-xl font-bold">
@@ -1099,13 +1155,38 @@ onUnmounted(() => {
           </div>
 
           <div class="p-6 space-y-4 max-h-[65vh] overflow-y-auto custom-scrollbar">
+            <!-- 进行中提示条 -->
+            <div
+              v-if="activeProfileTask?.status === 1"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800"
+            >
+              <span class="animate-pulse">⏳</span>
+              <span>
+                摸排进行中，已完成 <strong>{{ profileSuccessCount || activeProfileTask.processed_tables }}</strong> / {{ activeProfileTask.total_tables }} 张；
+                当前分析：<span class="font-mono">{{ activeProfileTask.current_table || '准备中' }}</span>
+              </span>
+            </div>
+            <div
+              v-else-if="activeProfileTask?.status === 4"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-100 text-xs text-amber-800"
+            >
+              <span>⏸</span>
+              <span>
+                摸排已中断，保留 {{ profileSuccessCount || activeProfileTask.processed_tables }} 张画像；
+                再次点击「继续摸排」将从剩余 {{ profileRemainingCount }} 张继续，已成功的不重复分析
+              </span>
+            </div>
+
             <!-- 资产分析概览面板 (Overview stats) -->
             <div v-if="!loadingViewProfiles && profileStats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-50/50 p-4 rounded-2xl border border-gray-100 shrink-0">
               <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
                 <span class="text-xl p-2 bg-primary/10 rounded-lg text-primary select-none">📊</span>
                 <div class="min-w-0">
-                  <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">摸排资产总数</div>
-                  <div class="text-base font-black text-gray-800">{{ profileStats.total }} <span class="text-[10px] text-gray-400 font-normal">个</span></div>
+                  <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">已成功画像</div>
+                  <div class="text-base font-black text-gray-800">
+                    {{ profileStats?.success_count ?? 0 }}
+                    <span class="text-[10px] text-gray-400 font-normal">/ {{ profileStats?.total ?? 0 }} 张</span>
+                  </div>
                 </div>
               </div>
               <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
@@ -1140,6 +1221,23 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <!-- 列表范围切换 -->
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-xs font-bold text-gray-400">显示范围:</span>
+              <button
+                @click="setProfilesListMode('completed')"
+                :class="['px-2.5 py-1 rounded-lg text-xs font-bold border transition-all', profilesListMode === 'completed' ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50']"
+              >
+                仅已完成 ({{ profileStats?.success_count ?? 0 }})
+              </button>
+              <button
+                @click="setProfilesListMode('all')"
+                :class="['px-2.5 py-1 rounded-lg text-xs font-bold border transition-all', profilesListMode === 'all' ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50']"
+              >
+                全部表 ({{ profileStats?.total ?? 0 }})
+              </button>
+            </div>
+
             <!-- 搜索框 -->
             <div class="relative w-full">
               <input
@@ -1160,7 +1258,7 @@ onUnmounted(() => {
                 :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1', !selectedProfileTag ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
               >
                 <span>全部</span>
-                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profileStats?.total || profilesTotal }}</span>
+                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profilesListMode === 'completed' ? (profileStats?.success_count ?? profilesTotal) : (profileStats?.total || profilesTotal) }}</span>
               </button>
               <button
                 v-for="tag in (isTagsExpanded ? availableTags : availableTags.slice(0, 8))"
@@ -1184,7 +1282,12 @@ onUnmounted(() => {
               正在读取摸排资产结果...
             </div>
             <div v-else-if="viewTableProfiles.length === 0" class="py-12 text-center text-gray-400 text-sm italic bg-gray-50 rounded-xl">
-              暂无匹配的摸排表记录。
+              <template v-if="profilesListMode === 'completed' && activeProfileTask?.status === 1">
+                暂无已完成画像，请稍候…
+              </template>
+              <template v-else>
+                暂无匹配的摸排表记录。
+              </template>
             </div>
             <div v-else class="space-y-3">
               <div 
@@ -1195,8 +1298,9 @@ onUnmounted(() => {
               >
                 <!-- 卡片头部 (点击可展开字段) -->
                 <div 
-                  @click="toggleTableExpand(profile.table_name)"
-                  class="p-4 bg-gray-50/30 hover:bg-gray-50/80 transition-colors flex items-center justify-between cursor-pointer"
+                  @click="profile.status === 2 && toggleTableExpand(profile.table_name)"
+                  class="p-4 bg-gray-50/30 hover:bg-gray-50/80 transition-colors flex items-center justify-between"
+                  :class="profile.status === 2 ? 'cursor-pointer' : 'cursor-default'"
                 >
                   <div class="min-w-0 flex-1 space-y-1">
                     <div class="flex items-center gap-2 flex-wrap">
@@ -1227,6 +1331,8 @@ onUnmounted(() => {
                         {{ profile.table_type === 'view' ? '视图' : '表' }}
                       </span>
                       <span v-if="profile.status === 3" class="px-1.5 py-0.5 rounded text-[9px] bg-red-50 text-red-500 font-bold">分析失败</span>
+                      <span v-else-if="profile.status === 1" class="px-1.5 py-0.5 rounded text-[9px] bg-blue-50 text-blue-600 font-bold">分析中</span>
+                      <span v-else-if="profile.status === 0" class="px-1.5 py-0.5 rounded text-[9px] bg-gray-100 text-gray-500 font-bold">待处理</span>
                     </div>
 
                     <div v-if="profile.ai_term" class="text-xs text-primary font-bold">
@@ -1348,7 +1454,7 @@ onUnmounted(() => {
       :title="profileFullReset ? '确认强制全量摸排' : '确认启动智能摸排'"
       :message="profileFullReset
         ? `将对数据源 “${profileTarget.name}” 下所有表和视图强制重新进行 AI 分析，已有成功画像将被覆盖。大库可能耗时较长且消耗大量 Token，运行中可随时点击「中断」停止。确认强制全量吗？`
-        : `将对数据源 “${profileTarget.name}” 下未完成、失败及新增的表/视图进行摸排分析，已有成功画像将保留。大库可能耗时较长，运行中可随时点击「中断」停止。确认启动吗？`"
+        : `将对数据源 “${profileTarget.name}” 下未完成、失败及新增的表/视图进行摸排分析，已有成功画像将保留。中断后再次「继续摸排」会从剩余表接着跑，不会重复分析已完成的表。大库可能耗时较长，运行中可随时点击「中断」停止。确认启动吗？`"
       :confirm-text="profileFullReset ? '确认强制全量' : '确认启动'"
       cancel-text="取消"
       type="warning"

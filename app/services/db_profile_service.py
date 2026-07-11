@@ -61,6 +61,11 @@ class DbProfileService:
         existing_task = res_task.scalar_one_or_none()
 
         if existing_task and existing_task.status == TASK_STATUS_RUNNING:
+            await DbProfileService.reconcile_profiling_task_status(db, config_id, commit=True)
+            res_task = await db.execute(stmt_task)
+            existing_task = res_task.scalar_one_or_none()
+
+        if existing_task and existing_task.status == TASK_STATUS_RUNNING:
             if not DbProfileService._is_task_stale(existing_task):
                 raise ValueError("当前数据源分析摸排任务正在执行中，请勿重复点击")
             logger.warning(
@@ -193,6 +198,97 @@ class DbProfileService:
         stmt = select(DbProfileTask).where(DbProfileTask.connection_id == config_id)
         res = await db.execute(stmt)
         return res.scalar_one_or_none()
+
+    @staticmethod
+    async def get_task_status_display(
+        db: AsyncSession, config_id: int
+    ) -> Optional[DbProfileTask]:
+        """获取任务状态并在读取时校正僵尸/漏标完成的主任务。"""
+        task = await DbProfileService.get_task_status(db, config_id)
+        if not task:
+            return None
+        return await DbProfileService.reconcile_profiling_task_status(db, config_id, commit=True)
+
+    @staticmethod
+    async def _get_profile_status_counts(
+        db: AsyncSession, config_id: int
+    ) -> Dict[int, int]:
+        res = await db.execute(
+            select(DbTableProfile.status, func.count())
+            .where(DbTableProfile.connection_id == config_id)
+            .group_by(DbTableProfile.status)
+        )
+        return {int(status): int(count) for status, count in res.all()}
+
+    @staticmethod
+    async def reconcile_profiling_task_status(
+        db: AsyncSession,
+        config_id: int,
+        *,
+        commit: bool = True,
+    ) -> Optional[DbProfileTask]:
+        """
+        校正主任务与表级状态，解决大库摸排末尾进程重启导致「画像已全部入库但主任务仍显示进行中」的问题。
+        """
+        task = await DbProfileService.get_task_status(db, config_id)
+        if not task or task.status != TASK_STATUS_RUNNING:
+            return task
+
+        counts = await DbProfileService._get_profile_status_counts(db, config_id)
+        pending = counts.get(0, 0)
+        running = counts.get(1, 0)
+        success = counts.get(2, 0)
+        failed = counts.get(3, 0)
+        finished = success + failed
+
+        if running > 0 and DbProfileService._is_task_stale(task):
+            await db.execute(
+                update(DbTableProfile)
+                .where(
+                    DbTableProfile.connection_id == config_id,
+                    DbTableProfile.status == 1,
+                )
+                .values(status=0, error_message=None)
+            )
+            pending += running
+            running = 0
+            logger.warning(
+                "[DbProfiling] Reset %s stale in-progress table(s) to pending for connection_id=%s",
+                counts.get(1, 0),
+                config_id,
+            )
+
+        if pending == 0 and running == 0 and finished > 0:
+            task.status = TASK_STATUS_DONE
+            task.processed_tables = finished
+            task.current_table = None
+            task.error_message = None
+            if commit:
+                await db.commit()
+                await db.refresh(task)
+            logger.info(
+                "[DbProfiling] Reconciled task to DONE for connection_id=%s "
+                "(success=%s, failed=%s, total=%s)",
+                config_id,
+                success,
+                failed,
+                task.total_tables,
+            )
+            return task
+
+        return task
+
+    @staticmethod
+    async def _finalize_profiling_task(config_id: int):
+        """后台循环退出时尽力将主任务标记为完成（幂等）。"""
+        try:
+            async with AsyncSessionLocal() as db:
+                await DbProfileService.reconcile_profiling_task_status(db, config_id, commit=True)
+        except Exception:
+            logger.exception(
+                "[DbProfiling] Failed to finalize profiling task for connection_id=%s",
+                config_id,
+            )
 
     @staticmethod
     def _apply_profile_filters(
@@ -608,6 +704,8 @@ class DbProfileService:
                         )
                     )
                     await db.commit()
+        finally:
+            await DbProfileService._finalize_profiling_task(config_id)
 
     @staticmethod
     def _is_task_stale(task: DbProfileTask) -> bool:

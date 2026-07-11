@@ -8,6 +8,7 @@ from app.models.db_connection import DbProfileTask
 from app.services.db_profile_service import (
     DbProfileService,
     TASK_STATUS_RUNNING,
+    TASK_STATUS_DONE,
     TASK_STATUS_CANCELLED,
     STALE_TASK_MINUTES,
 )
@@ -107,3 +108,78 @@ def test_normalize_page_clamps_values():
     page, size = DbProfileService._normalize_page(3, 50)
     assert page == 3
     assert size == 50
+
+
+@pytest.mark.asyncio
+async def test_reconcile_marks_done_when_all_profiles_finished():
+    task = DbProfileTask(
+        connection_id=1,
+        status=TASK_STATUS_RUNNING,
+        total_tables=4816,
+        processed_tables=4815,
+        current_table="last_table",
+        updated_at=datetime.now(),
+    )
+    db = AsyncMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    with patch.object(DbProfileService, "get_task_status", AsyncMock(return_value=task)), patch.object(
+        DbProfileService, "_get_profile_status_counts", AsyncMock(return_value={2: 4816})
+    ):
+        result = await DbProfileService.reconcile_profiling_task_status(db, 1, commit=True)
+
+    assert result.status == TASK_STATUS_DONE
+    assert result.processed_tables == 4816
+    assert result.current_table is None
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_keeps_running_when_pending_tables_remain():
+    task = DbProfileTask(
+        connection_id=1,
+        status=TASK_STATUS_RUNNING,
+        total_tables=100,
+        processed_tables=10,
+        updated_at=datetime.now(),
+    )
+    db = AsyncMock()
+    db.commit = AsyncMock()
+
+    with patch.object(DbProfileService, "get_task_status", AsyncMock(return_value=task)), patch.object(
+        DbProfileService,
+        "_get_profile_status_counts",
+        AsyncMock(return_value={0: 90, 2: 10}),
+    ):
+        result = await DbProfileService.reconcile_profiling_task_status(db, 1, commit=True)
+
+    assert result.status == TASK_STATUS_RUNNING
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_resets_stale_running_tables():
+    task = DbProfileTask(
+        connection_id=1,
+        status=TASK_STATUS_RUNNING,
+        total_tables=10,
+        processed_tables=9,
+        updated_at=datetime.now() - timedelta(minutes=STALE_TASK_MINUTES + 1),
+    )
+    db = AsyncMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+    db.execute = AsyncMock()
+    db.flush = AsyncMock()
+
+    with patch.object(DbProfileService, "get_task_status", AsyncMock(return_value=task)), patch.object(
+        DbProfileService,
+        "_get_profile_status_counts",
+        AsyncMock(return_value={1: 1, 2: 9}),
+    ):
+        result = await DbProfileService.reconcile_profiling_task_status(db, 1, commit=True)
+
+    assert result.status == TASK_STATUS_RUNNING
+    db.execute.assert_awaited_once()
+    db.commit.assert_not_awaited()

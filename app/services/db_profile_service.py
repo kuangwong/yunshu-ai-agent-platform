@@ -242,7 +242,46 @@ class DbProfileService:
                     # 3. 直接调用 LLM 进行推断
                     ai_res = await DbProfileService._analyze_table_with_llm(ddl, sample_data_json)
 
-                    # 4. 成功后回填
+                    # 4. 后处理：综合规则修正与打分
+                    llm_score = ai_res.get("confidence_score")
+                    if llm_score is None:
+                        llm_score = 100
+                    try:
+                        llm_score = int(llm_score)
+                    except (ValueError, TypeError):
+                        llm_score = 90
+                    
+                    llm_temp = 1 if ai_res.get("is_temporary") is True else 0
+                    llm_reason = ai_res.get("confidence_reason") or ""
+
+                    # 硬规则 1: 采样数据空检测
+                    is_sample_empty = False
+                    try:
+                        parsed_samples = json.loads(sample_data_json)
+                        if not parsed_samples:
+                            is_sample_empty = True
+                    except Exception:
+                        is_sample_empty = True
+                    
+                    if is_sample_empty:
+                        llm_score = max(0, llm_score - 30)
+                        llm_reason += "; [特征检测] 样例数据为空，扣除30分"
+
+                    # 硬规则 2: 表名敏感词匹配
+                    sensitive_patterns = [r"^tmp_", r"^temp_", r"_bak$", r"_bak_", r"^test_"]
+                    is_name_sensitive = any(re.search(pat, table_name.lower()) for pat in sensitive_patterns)
+                    if is_name_sensitive:
+                        llm_score = max(0, llm_score - 40)
+                        llm_temp = 1
+                        llm_reason += "; [特征检测] 表名匹配临时/备份敏感词，扣除40分"
+
+                    # 限制评分区间为 [0, 100]
+                    llm_score = min(100, max(0, llm_score))
+
+                    # 决策忽略状态：评分低于 60 分或标记为临时表，则默认置为忽略
+                    is_ignored = 1 if (llm_score < 60 or llm_temp == 1) else 0
+
+                    # 5. 成功后回填
                     async with AsyncSessionLocal() as db:
                         await db.execute(
                             update(DbTableProfile)
@@ -254,6 +293,10 @@ class DbProfileService:
                                 ai_description=ai_res.get("ai_description"),
                                 ai_tags=ai_res.get("ai_tags"),
                                 columns_profile=ai_res.get("columns"),
+                                confidence_score=llm_score,
+                                is_temporary=llm_temp,
+                                is_ignored=is_ignored,
+                                confidence_reason=llm_reason.strip("; "),
                                 status=2,
                                 error_message=None
                             )
@@ -297,7 +340,12 @@ class DbProfileService:
 
         system_prompt = (
             "你是一个精通数据资产治理的数据库专家，擅长从建表语句和样例数据中提炼业务元数据含义。\n"
-            "请根据提供的【建表 DDL】和【真实样例数据】，推测该表的中文业务术语（备注名）、表的一句话用途描述、表的分类标签，以及每个字段的中文术语和字段业务描述。\n\n"
+            "请根据提供的【建表 DDL】和【真实样例数据】，推测该表的中文业务术语（备注名）、表的一句话用途描述、表的分类标签，以及每个字段的中文术语和字段业务描述。\n"
+            "同时，你需要深度评估该表对于业务分析的“置信度（即数据分析价值与可信度得分）”，以及它是否属于临时/低价值/中间关联表。\n\n"
+            "【置信度与临时表评估标准】\n"
+            "1. 若建表语句和样例数据表明该表主要为关联ID中间映射（例如只有各种id字段而无具体业务度量或名称维度）、临时缓存/计算中间表、系统备份表（如表名中含有 tmp, temp, bak, test 等），或样例内容缺乏真实语义关联，应标记 is_temporary 为 true，置信度评分 confidence_score 应低于 60 分。\n"
+            "2. 若表结构包含有意义的业务属性、主数据维度或事实度量，有实际分析价值，应标记 is_temporary 为 false，置信度评分应为 80-100 分。\n"
+            "3. 需给出客观、具体的扣分或评分理由（confidence_reason）。\n\n"
             "【重要约束】\n"
             "1. 必须只返回一个 JSON 对象，不要 Markdown，不要多余解释。\n"
             "2. 返回的 JSON 必须符合以下 Schema 结构：\n"
@@ -305,6 +353,9 @@ class DbProfileService:
             '  "ai_term": "表的中文业务备注名，不超过100字，如: 机房能耗天报表",\n'
             '  "ai_description": "该表真实的业务用途与功能描述，不超过500字",\n'
             '  "ai_tags": ["标签1", "标签2"],\n'
+            '  "confidence_score": 85,\n'
+            '  "is_temporary": false,\n'
+            '  "confidence_reason": "评分和临时表认定的理由说明，不超过200字，如: 结构完整且含真实指标数据，但主键不明确扣减10分",\n'
             '  "columns": [\n'
             "    {\n"
             '      "name": "字段物理列名，如 room_id",\n'
@@ -341,3 +392,24 @@ class DbProfileService:
             if not match:
                 raise ValueError(f"大模型返回内容无法解析为JSON: {raw}")
             return json.loads(match.group())
+
+    @staticmethod
+    async def toggle_ignore(
+        db: AsyncSession,
+        config_id: int,
+        table_name: str,
+        is_ignored: int
+    ) -> Optional[DbTableProfile]:
+        """手动更改指定物理表的忽略状态"""
+        stmt = select(DbTableProfile).where(
+            DbTableProfile.connection_id == config_id,
+            DbTableProfile.table_name == table_name
+        )
+        res = await db.execute(stmt)
+        profile = res.scalar_one_or_none()
+        if not profile:
+            return None
+        profile.is_ignored = 1 if is_ignored == 1 else 0
+        await db.commit()
+        return profile
+

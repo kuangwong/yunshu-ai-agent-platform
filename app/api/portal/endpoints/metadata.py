@@ -755,3 +755,22 @@ async def list_db_table_profiles(
     profiles = await DbProfileService.list_table_profiles(conn, config_id)
     return profiles
 
+
+class ToggleIgnoreRequest(BaseModel):
+    table_name: str
+    is_ignored: int
+
+
+@router.put("/db/connection-configs/{config_id}/table-profiles/ignore", dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def toggle_table_profile_ignore(
+    config_id: int,
+    payload: ToggleIgnoreRequest,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """手动开启/关闭数据源画像中表的忽略状态"""
+    profile = await DbProfileService.toggle_ignore(conn, config_id, payload.table_name, payload.is_ignored)
+    if not profile:
+        raise HTTPException(status_code=404, detail="表画像不存在")
+    return {"code": 200, "message": "修改成功", "data": {"is_ignored": profile.is_ignored}}
+
+

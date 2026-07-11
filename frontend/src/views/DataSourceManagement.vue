@@ -474,6 +474,27 @@ const filteredViewProfiles = computed(() => {
   )
 })
 
+const togglingIgnore = ref<Record<string, boolean>>({})
+
+const toggleProfileIgnore = async (profile: any) => {
+  if (!showProfilesTarget.value) return
+  const configId = showProfilesTarget.value.id
+  const tableName = profile.table_name
+  const nextVal = profile.is_ignored === 1 ? 0 : 1
+
+  togglingIgnore.value[tableName] = true
+  try {
+    await metadataApi.toggleDbTableProfileIgnore(configId, tableName, nextVal)
+    profile.is_ignored = nextVal
+    showToast(`已${nextVal === 1 ? '忽略' : '启用'}表 “${tableName}”`, 'success')
+  } catch {
+    showToast('更新忽略状态失败', 'error')
+  } finally {
+    togglingIgnore.value[tableName] = false
+  }
+}
+
+
 import { onUnmounted } from 'vue'
 onUnmounted(() => {
   Object.values(pollingIntervals).forEach((interval) => clearInterval(interval))
@@ -961,7 +982,8 @@ onMounted(async () => {
               <div 
                 v-for="profile in filteredViewProfiles" 
                 :key="profile.table_name"
-                class="border border-gray-200/80 rounded-xl overflow-hidden bg-white shadow-sm hover:border-gray-300 transition-all"
+                class="border border-gray-200/80 rounded-xl overflow-hidden shadow-sm hover:border-gray-300 transition-all"
+                :class="profile.is_ignored === 1 ? 'opacity-70 bg-gray-50/40' : 'bg-white'"
               >
                 <!-- 卡片头部 (点击可展开字段) -->
                 <div 
@@ -970,6 +992,25 @@ onMounted(async () => {
                 >
                   <div class="min-w-0 flex-1 space-y-1">
                     <div class="flex items-center gap-2 flex-wrap">
+                      <!-- 忽略/启用开关 (点击阻止冒泡) -->
+                      <div class="flex items-center gap-1.5 mr-1" @click.stop>
+                        <button 
+                          @click="toggleProfileIgnore(profile)"
+                          :disabled="togglingIgnore[profile.table_name]"
+                          class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                          :class="profile.is_ignored === 1 ? 'bg-red-500' : 'bg-emerald-500'"
+                          :title="profile.is_ignored === 1 ? '该表已在分析中被忽略，点击恢复' : '该表已在分析中启用，点击忽略'"
+                        >
+                          <span 
+                            class="pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                            :class="profile.is_ignored === 1 ? 'translate-x-3' : 'translate-x-0'"
+                          ></span>
+                        </button>
+                        <span class="text-[9px] font-black tracking-wide" :class="profile.is_ignored === 1 ? 'text-red-500' : 'text-emerald-600'">
+                          {{ profile.is_ignored === 1 ? '已忽略' : '已启用' }}
+                        </span>
+                      </div>
+
                       <span class="font-mono text-sm font-bold text-gray-900">{{ profile.table_name }}</span>
                       <span 
                         class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
@@ -979,14 +1020,34 @@ onMounted(async () => {
                       </span>
                       <span v-if="profile.status === 3" class="px-1.5 py-0.5 rounded text-[9px] bg-red-50 text-red-500 font-bold">分析失败</span>
                     </div>
+
                     <div v-if="profile.ai_term" class="text-xs text-primary font-bold">
                       💡 业务备注：{{ profile.ai_term }}
                     </div>
-                    <div v-if="profile.ai_description" class="text-xs text-gray-500 leading-relaxed">
+
+                    <!-- 置信度与判定原因展示 -->
+                    <div class="flex items-center gap-3 text-[11px] mt-1.5 flex-wrap">
+                      <div class="flex items-center gap-1 font-bold shrink-0">
+                        <span class="text-gray-400">业务可信度:</span>
+                        <span 
+                          class="px-1 py-0.2 rounded text-[9px] font-black"
+                          :class="profile.confidence_score >= 80 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50' : profile.confidence_score >= 60 ? 'bg-amber-50 text-amber-700 border border-amber-200/50' : 'bg-red-50 text-red-700 border border-red-200/50'"
+                        >
+                          {{ profile.confidence_score }} 分
+                        </span>
+                        <span v-if="profile.is_temporary === 1" class="px-1.5 py-0.2 rounded text-[9px] bg-amber-100 text-amber-800 font-bold border border-amber-200/40">低价值临时表</span>
+                      </div>
+                      <div v-if="profile.confidence_reason" class="text-gray-400 truncate max-w-[400px]" :title="profile.confidence_reason">
+                        原因: {{ profile.confidence_reason }}
+                      </div>
+                    </div>
+
+                    <div v-if="profile.ai_description" class="text-xs text-gray-500 leading-relaxed mt-1">
                       用途：{{ profile.ai_description }}
                     </div>
+
                     <!-- 标签 -->
-                    <div v-if="profile.ai_tags && profile.ai_tags.length > 0" class="flex flex-wrap gap-1 mt-1">
+                    <div v-if="profile.ai_tags && profile.ai_tags.length > 0" class="flex flex-wrap gap-1 mt-1.5">
                       <span 
                         v-for="tag in profile.ai_tags" 
                         :key="tag"

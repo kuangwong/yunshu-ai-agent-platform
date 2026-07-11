@@ -212,5 +212,7 @@ export const metadataApi = {
     axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/profile-task`),
   listDbTableProfiles: (configId: number) =>
     axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles`),
+  toggleDbTableProfileIgnore: (configId: number, tableName: string, isIgnored: number) =>
+    axios.put<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles/ignore`, { table_name: tableName, is_ignored: isIgnored }),
 };
 

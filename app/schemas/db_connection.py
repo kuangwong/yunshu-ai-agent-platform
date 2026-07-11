@@ -69,6 +69,10 @@ class DbTableProfileResponse(BaseModel):
     ai_tags: Optional[list[str]] = None
     columns_profile: Optional[list[dict]] = None
     status: int
+    confidence_score: int
+    is_temporary: int
+    is_ignored: int
+    confidence_reason: Optional[str] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime

@@ -115,10 +115,21 @@ const profilesPage = ref(1)
 const profilesPageSize = ref(200)
 const profilesTotal = ref(0)
 const profilesPages = ref(0)
+const profilesSort = ref<'name_asc' | 'confidence_desc' | 'confidence_asc'>('name_asc')
 const searchQuery = ref('')
 const importFilter = ref<'all' | 'unimported'>('unimported')
 const selectedTables = ref<string[]>([])
 let profileSearchDebounce: ReturnType<typeof setTimeout> | null = null
+
+const profileSortParams = computed(() => {
+  if (profilesSort.value === 'confidence_desc') {
+    return { sort_by: 'confidence_score' as const, sort_order: 'desc' as const }
+  }
+  if (profilesSort.value === 'confidence_asc') {
+    return { sort_by: 'confidence_score' as const, sort_order: 'asc' as const }
+  }
+  return { sort_by: 'table_name' as const, sort_order: 'asc' as const }
+})
 
 const loadTableProfiles = async () => {
   if (!selectedConfigId.value) return
@@ -132,6 +143,7 @@ const loadTableProfiles = async () => {
         q: searchQuery.value.trim() || undefined,
         tag: selectedProfileTag.value || undefined,
         status: 2,
+        ...profileSortParams.value,
       }),
     ])
     profileStats.value = statsRes.data
@@ -151,6 +163,13 @@ const loadTableProfiles = async () => {
 const goImportProfilePage = async (page: number) => {
   if (page < 1 || (profilesPages.value > 0 && page > profilesPages.value)) return
   profilesPage.value = page
+  await loadTableProfiles()
+}
+
+const setProfilesSort = async (sort: 'name_asc' | 'confidence_desc' | 'confidence_asc') => {
+  if (profilesSort.value === sort) return
+  profilesSort.value = sort
+  profilesPage.value = 1
   await loadTableProfiles()
 }
 
@@ -284,6 +303,7 @@ watch(searchQuery, () => {
 watch(activeTab, async (tab) => {
   if (tab === 'profile' && selectedConfigId.value && step.value === 2) {
     profilesPage.value = 1
+    profilesSort.value = 'name_asc'
     selectedProfileTag.value = null
     await loadTableProfiles()
   }
@@ -567,6 +587,16 @@ const dbTypeColor = (type: string) => {
             >
               <option value="unimported">{{ activeTab === 'profile' ? '仅可选' : '未导入' }}</option>
               <option value="all">{{ activeTab === 'profile' ? '全部可选' : '全部' }}</option>
+            </select>
+            <select
+              v-if="activeTab === 'profile'"
+              :value="profilesSort"
+              @change="setProfilesSort(($event.target as HTMLSelectElement).value as 'name_asc' | 'confidence_desc' | 'confidence_asc')"
+              class="text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/20 shrink-0"
+            >
+              <option value="name_asc">表名 A-Z</option>
+              <option value="confidence_desc">可信度 高→低</option>
+              <option value="confidence_asc">可信度 低→高</option>
             </select>
             <button
               @click="toggleAll"

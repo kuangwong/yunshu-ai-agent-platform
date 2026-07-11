@@ -325,6 +325,17 @@ class DbProfileService:
         return page, page_size
 
     @staticmethod
+    def _apply_profile_order(stmt, *, sort_by: Optional[str] = None, sort_order: Optional[str] = None):
+        """列表排序：默认表名升序；支持按可信度升降序，次排序固定表名。"""
+        sort_key = (sort_by or "table_name").strip().lower()
+        order_key = (sort_order or "asc").strip().lower()
+        if sort_key in ("confidence", "confidence_score"):
+            primary = DbTableProfile.confidence_score.desc() if order_key == "desc" else DbTableProfile.confidence_score.asc()
+        else:
+            primary = DbTableProfile.table_name.desc() if order_key == "desc" else DbTableProfile.table_name.asc()
+        return stmt.order_by(primary, DbTableProfile.table_name.asc())
+
+    @staticmethod
     async def get_table_profile_stats(
         db: AsyncSession, config_id: int
     ) -> DbTableProfileStatsResponse:
@@ -431,6 +442,8 @@ class DbProfileService:
         tag: Optional[str] = None,
         is_ignored: Optional[int] = None,
         status: Optional[int] = None,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
     ) -> DbTableProfilePageResponse:
         """分页返回表画像摘要（不含 ddl / sample_data / columns_profile）。"""
         page, page_size = DbProfileService._normalize_page(page, page_size)
@@ -466,10 +479,10 @@ class DbProfileService:
                     DbTableProfile.updated_at,
                 )
             )
-            .order_by(DbTableProfile.table_name)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
         )
+        list_stmt = DbProfileService._apply_profile_order(
+            list_stmt, sort_by=sort_by, sort_order=sort_order
+        ).offset((page - 1) * page_size).limit(page_size)
         res = await db.execute(list_stmt)
         profiles = res.scalars().all()
 

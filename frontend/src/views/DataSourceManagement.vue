@@ -18,6 +18,7 @@ const loading = ref(false)
 const testing = ref(false)
 const saving = ref(false)
 const deletingId = ref<number | null>(null)
+const testingConnectionId = ref<number | null>(null)
 const editingId = ref<number | null>(null)
 const deleteTarget = ref<DbConnectionConfig | null>(null)
 const testPassed = ref(false)
@@ -215,11 +216,14 @@ const testConnection = async () => {
 }
 
 const testSavedConnection = async (item: DbConnectionConfig) => {
+  testingConnectionId.value = item.id
   try {
     await metadataApi.testDbConnection(configToConnectionPayload(item))
     showToast(`连接 ${item.name} 测试成功`, 'success')
   } catch (e: any) {
     showToast(e.response?.data?.detail || '连接测试失败', 'error')
+  } finally {
+    testingConnectionId.value = null
   }
 }
 
@@ -482,9 +486,7 @@ const handleProfileMenuAction = (
 
 const handleMoreMenuAction = (item: DbConnectionConfig, action: string) => {
   closeActionMenus()
-  if (action === 'test') testSavedConnection(item)
-  else if (action === 'debug') openSqlDebug(item)
-  else if (action === 'edit') editConfig(item)
+  if (action === 'debug') openSqlDebug(item)
   else if (action === 'copy') copyConfig(item)
   else if (action === 'delete') requestDeleteConfig(item)
 }
@@ -508,7 +510,18 @@ const profilesTotal = ref(0)
 const profilesPages = ref(0)
 /** completed=仅已成功画像；all=含待处理/分析中/失败 */
 const profilesListMode = ref<'completed' | 'all'>('completed')
+const profilesSort = ref<'name_asc' | 'confidence_desc' | 'confidence_asc'>('name_asc')
 let profilesSearchDebounce: ReturnType<typeof setTimeout> | null = null
+
+const profileSortParams = computed(() => {
+  if (profilesSort.value === 'confidence_desc') {
+    return { sort_by: 'confidence_score' as const, sort_order: 'desc' as const }
+  }
+  if (profilesSort.value === 'confidence_asc') {
+    return { sort_by: 'confidence_score' as const, sort_order: 'asc' as const }
+  }
+  return { sort_by: 'table_name' as const, sort_order: 'asc' as const }
+})
 
 const loadProfileStats = async (configId: number) => {
   try {
@@ -529,6 +542,7 @@ const loadProfilePage = async (opts?: { silent?: boolean }) => {
       q: profilesSearchQuery.value.trim() || undefined,
       tag: selectedProfileTag.value || undefined,
       status: profilesListMode.value === 'completed' ? 2 : undefined,
+      ...profileSortParams.value,
     })
     const data = res.data || {}
     viewTableProfiles.value = data.items || []
@@ -558,6 +572,13 @@ const setProfilesListMode = async (mode: 'completed' | 'all') => {
   await loadProfilePage()
 }
 
+const setProfilesSort = async (sort: 'name_asc' | 'confidence_desc' | 'confidence_asc') => {
+  if (profilesSort.value === sort) return
+  profilesSort.value = sort
+  profilesPage.value = 1
+  await loadProfilePage()
+}
+
 const openTableProfiles = async (item: DbConnectionConfig) => {
   showProfilesTarget.value = item
   viewTableProfiles.value = []
@@ -565,6 +586,7 @@ const openTableProfiles = async (item: DbConnectionConfig) => {
   profilesSearchQuery.value = ''
   selectedProfileTag.value = null
   profilesListMode.value = 'completed'
+  profilesSort.value = 'name_asc'
   isTagsExpanded.value = false
   expandedTables.value = {}
   profileDetailsCache.value = {}
@@ -940,7 +962,7 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <!-- 右侧操作：主按钮 + 摸排菜单 + 更多 -->
+              <!-- 右侧操作：画像 + 摸排 + 测试/编辑 + 更多 -->
               <div class="flex items-center gap-1.5 flex-shrink-0">
                 <button
                   v-if="canViewTableProfiles(item)"
@@ -967,7 +989,7 @@ onUnmounted(() => {
                   </button>
                   <div
                     v-if="isActionMenuOpen(item.id, 'profile')"
-                    class="absolute right-0 bottom-full mb-1 w-48 rounded-xl border border-gray-200 bg-white shadow-lg z-50 py-1 text-xs"
+                    class="absolute right-0 top-full mt-1 w-48 rounded-xl border border-gray-200 bg-white shadow-lg z-50 py-1 text-xs"
                     @click.stop
                   >
                     <template v-if="profilingTasks[item.id]?.status === 1">
@@ -999,6 +1021,24 @@ onUnmounted(() => {
                   </div>
                 </div>
 
+                <button
+                  @click="testSavedConnection(item)"
+                  :disabled="testingConnectionId === item.id"
+                  class="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 text-xs font-bold transition-all disabled:opacity-50"
+                >
+                  {{ testingConnectionId === item.id ? '测试中...' : '测试' }}
+                </button>
+
+                <button
+                  @click="editConfig(item)"
+                  class="px-3 py-1.5 rounded-lg border text-xs font-bold transition-all"
+                  :class="editingId === item.id
+                    ? 'border-primary/30 bg-primary/5 text-primary'
+                    : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'"
+                >
+                  编辑
+                </button>
+
                 <div class="relative">
                   <button
                     @click.stop="toggleActionMenu(item.id, 'more')"
@@ -1009,12 +1049,10 @@ onUnmounted(() => {
                   </button>
                   <div
                     v-if="isActionMenuOpen(item.id, 'more')"
-                    class="absolute right-0 bottom-full mb-1 w-36 rounded-xl border border-gray-200 bg-white shadow-lg z-50 py-1 text-xs"
+                    class="absolute right-0 top-full mt-1 w-36 rounded-xl border border-gray-200 bg-white shadow-lg z-50 py-1 text-xs"
                     @click.stop
                   >
-                    <button @click="handleMoreMenuAction(item, 'test')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">测试连接</button>
                     <button @click="handleMoreMenuAction(item, 'debug')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">SQL 调试</button>
-                    <button @click="handleMoreMenuAction(item, 'edit')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">编辑</button>
                     <button @click="handleMoreMenuAction(item, 'copy')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">复制</button>
                     <div class="border-t border-gray-100 my-1"></div>
                     <button
@@ -1245,21 +1283,35 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- 列表范围切换 -->
-            <div class="flex items-center gap-2 flex-wrap">
-              <span class="text-xs font-bold text-gray-400">显示范围:</span>
-              <button
-                @click="setProfilesListMode('completed')"
-                :class="['px-2.5 py-1 rounded-lg text-xs font-bold border transition-all', profilesListMode === 'completed' ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50']"
-              >
-                仅已完成 ({{ profileStats?.success_count ?? 0 }})
-              </button>
-              <button
-                @click="setProfilesListMode('all')"
-                :class="['px-2.5 py-1 rounded-lg text-xs font-bold border transition-all', profilesListMode === 'all' ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50']"
-              >
-                全部表 ({{ profileStats?.total ?? 0 }})
-              </button>
+            <!-- 列表范围与排序 -->
+            <div class="flex items-center gap-3 flex-wrap">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs font-bold text-gray-400">显示范围:</span>
+                <button
+                  @click="setProfilesListMode('completed')"
+                  :class="['px-2.5 py-1 rounded-lg text-xs font-bold border transition-all', profilesListMode === 'completed' ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50']"
+                >
+                  仅已完成 ({{ profileStats?.success_count ?? 0 }})
+                </button>
+                <button
+                  @click="setProfilesListMode('all')"
+                  :class="['px-2.5 py-1 rounded-lg text-xs font-bold border transition-all', profilesListMode === 'all' ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50']"
+                >
+                  全部表 ({{ profileStats?.total ?? 0 }})
+                </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-gray-400">排序:</span>
+                <select
+                  :value="profilesSort"
+                  @change="setProfilesSort(($event.target as HTMLSelectElement).value as 'name_asc' | 'confidence_desc' | 'confidence_asc')"
+                  class="text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/20"
+                >
+                  <option value="name_asc">表名 A-Z</option>
+                  <option value="confidence_desc">可信度 高→低</option>
+                  <option value="confidence_asc">可信度 低→高</option>
+                </select>
+              </div>
             </div>
 
             <!-- 搜索框 -->

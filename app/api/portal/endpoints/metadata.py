@@ -791,6 +791,8 @@ async def list_db_table_profiles(
     tag: Optional[str] = None,
     is_ignored: Optional[int] = None,
     status: Optional[int] = None,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     conn: AsyncSession = Depends(get_db_session)
 ):
     """分页获取表画像摘要列表（不含 ddl / sample_data）"""
@@ -803,6 +805,8 @@ async def list_db_table_profiles(
         tag=tag,
         is_ignored=is_ignored,
         status=status,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 

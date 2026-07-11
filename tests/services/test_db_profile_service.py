@@ -217,3 +217,25 @@ async def test_reconcile_resets_stale_running_tables():
     assert result.status == TASK_STATUS_RUNNING
     db.execute.assert_awaited_once()
     db.commit.assert_not_awaited()
+
+
+def test_apply_profile_order_defaults_to_table_name_asc():
+    from sqlalchemy import select
+    from app.models.db_connection import DbTableProfile
+
+    stmt = DbProfileService._apply_profile_order(select(DbTableProfile))
+    order_sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "table_name" in order_sql.lower()
+    assert "asc" in order_sql.lower()
+
+
+def test_apply_profile_order_supports_confidence_desc():
+    from sqlalchemy import select
+    from app.models.db_connection import DbTableProfile
+
+    stmt = DbProfileService._apply_profile_order(
+        select(DbTableProfile), sort_by="confidence_score", sort_order="desc"
+    )
+    order_sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "confidence_score" in order_sql.lower()
+    assert "desc" in order_sql.lower()

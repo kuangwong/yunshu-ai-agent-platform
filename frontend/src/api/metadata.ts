@@ -225,6 +225,8 @@ export const metadataApi = {
       tag?: string
       is_ignored?: number
       status?: number
+      sort_by?: 'table_name' | 'confidence_score'
+      sort_order?: 'asc' | 'desc'
     }
   ) =>
     axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles`, { params }),

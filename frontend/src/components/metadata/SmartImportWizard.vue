@@ -137,6 +137,36 @@ const togglePreviewTableExpand = (idx: number) => {
   expandedPreviewTables.value[idx] = !expandedPreviewTables.value[idx]
 }
 
+const getDescriptionRows = (desc?: string) => {
+  if (!desc?.trim()) return 2
+  const lineCount = desc.split('\n').length
+  const wrappedLines = Math.ceil(desc.length / 46)
+  return Math.min(12, Math.max(2, Math.max(lineCount, wrappedLines)))
+}
+
+const EDITABLE_INPUT =
+  'w-full px-3 py-2 bg-amber-50/60 border-2 border-dashed border-amber-300 rounded-lg text-sm text-gray-800 shadow-sm hover:border-amber-400 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-500 focus:bg-white transition-colors'
+
+const EDITABLE_INPUT_SM =
+  'w-full px-2.5 py-1.5 bg-amber-50/60 border border-dashed border-amber-300 rounded-md text-xs text-gray-800 hover:border-amber-400 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-500 focus:bg-white transition-colors'
+
+const EDITABLE_TEXTAREA =
+  'w-full px-3 py-2 bg-amber-50/60 border-2 border-dashed border-amber-300 rounded-lg text-xs text-gray-700 leading-relaxed shadow-sm hover:border-amber-400 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-500 focus:bg-white transition-colors resize-y min-h-[3rem]'
+
+const EDITABLE_CELL =
+  'w-full px-2 py-1.5 bg-amber-50/50 border border-dashed border-amber-300 rounded-md hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-500 focus:bg-white transition-colors'
+
+const EDITABLE_SELECT =
+  'w-full px-2 py-1.5 bg-amber-50/50 border border-dashed border-amber-300 rounded-md text-[10px] text-gray-700 hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-500 focus:bg-white transition-colors'
+
+const expandAllPreviewTables = (tableCount: number) => {
+  const expanded: Record<number, boolean> = {}
+  for (let i = 0; i < tableCount; i++) {
+    expanded[i] = true
+  }
+  expandedPreviewTables.value = expanded
+}
+
 const applyImportPreview = (data: any) => {
   let tables: any[] = []
   let metrics: any[] = []
@@ -164,6 +194,7 @@ const applyImportPreview = (data: any) => {
   })
 
   previewData.value = { tables, metrics, relationships }
+  expandAllPreviewTables(tables.length)
 
   if (previewData.value.tables.length > 0) {
     const firstTable = previewData.value.tables[0]
@@ -395,9 +426,62 @@ const normalizeType = (rawType: string): string => {
              </div>
            </div>
         </div>
-        <button @click="handleClose" class="text-gray-400 hover:text-gray-600 transition-colors p-2 hover:bg-white rounded-full">
+        <button @click="handleClose" class="text-gray-400 hover:text-gray-600 transition-colors p-2 hover:bg-white rounded-full shrink-0">
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
+      </div>
+
+      <!-- Step 2: 数据集信息顶栏 -->
+      <div v-if="step === 2" class="px-6 py-4 border-b border-gray-100 bg-white shrink-0">
+        <div v-if="!datasetId" class="space-y-3">
+          <div class="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+            <svg class="w-4 h-4 shrink-0 mt-0.5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            <span>以下为 AI 识别结果，<strong class="font-bold">虚线框</strong>内内容可直接修改，保存前请核对数据集信息与表结构。</span>
+          </div>
+          <div class="flex flex-col lg:flex-row lg:items-end gap-4">
+          <div class="flex-1 min-w-0">
+            <label class="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+              <span>数据集 ID (Unique)</span>
+              <span class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-600 normal-case tracking-normal">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                可编辑
+              </span>
+            </label>
+            <input
+              v-model="datasetName"
+              :class="[EDITABLE_INPUT, 'font-mono']"
+              placeholder="e.g. user_orders_ds"
+            >
+          </div>
+          <div class="flex-[1.4] min-w-0">
+            <label class="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+              <span>显示名称</span>
+              <span class="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-600 normal-case tracking-normal">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                可编辑
+              </span>
+            </label>
+            <input
+              v-model="datasetDisplayName"
+              :class="EDITABLE_INPUT"
+              placeholder="e.g. 用户订单数据集"
+            >
+          </div>
+          </div>
+        </div>
+        <div v-else class="flex items-center gap-3 p-3 bg-blue-50 border border-blue-100 rounded-xl">
+          <div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center text-blue-600 shadow-sm shrink-0">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="text-[10px] font-bold text-blue-800 uppercase tracking-wider">追加到现有数据集</div>
+            <div class="text-sm font-bold text-blue-700 truncate" :title="datasetDisplayName">{{ datasetDisplayName || '当前数据集' }}</div>
+            <div class="text-[10px] text-blue-500 font-mono flex items-center gap-2 mt-0.5 flex-wrap">
+              <span class="bg-blue-100 px-1.5 py-0.5 rounded">#{{ datasetPhysicalName }}</span>
+              <span>ID: {{ datasetId }}</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Content Step 1: Input -->
@@ -459,65 +543,23 @@ const normalizeType = (rawType: string): string => {
       </div>
 
       <!-- Content Step 2: Preview -->
-      <div v-else class="flex-1 flex overflow-hidden">
+      <div v-else class="flex-1 flex min-h-0 overflow-hidden">
          <!-- Sidebar Navigation -->
-         <div class="w-64 bg-gray-50 border-r border-gray-100 flex flex-col py-6">
-            
-            <!-- Dataset Name Input (Only if not in append mode) -->
-            <div class="px-6 mb-6" v-if="!datasetId">
-               <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">数据集 ID (Unique)</label>
-               <div class="relative mb-3">
-                 <input 
-                   v-model="datasetName" 
-                   class="w-full pl-3 pr-8 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 font-mono"
-                   placeholder="e.g. user_orders_ds"
-                 >
-                 <div class="absolute right-2 top-2.5 text-gray-400 pointer-events-none">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                 </div>
-               </div>
-               
-               <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">显示名称</label>
-               <div class="relative">
-                 <input 
-                   v-model="datasetDisplayName" 
-                   class="w-full pl-3 pr-8 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400"
-                   placeholder="e.g. 用户订单数据集"
-                 >
-                 <div class="absolute right-2 top-2.5 text-gray-400 pointer-events-none">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                 </div>
-               </div>
-               <p class="text-[10px] text-gray-400 mt-2 leading-tight">数据集 ID 全局唯一，用于标识；显示名称用于 UI 展示。</p>
-               <div v-if="importDataSourceName" class="mt-3 p-2.5 rounded-lg bg-emerald-50 border border-emerald-100 text-[11px] text-emerald-700">
-                  数据源 ID：<span class="font-mono font-bold">{{ importDataSourceName }}</span>
-               </div>
-            </div>
-
-            <!-- Append Mode Indicator -->
-            <div class="px-6 mb-6" v-else>
-               <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">导入模式</label>
-               <div class="flex items-center gap-2 p-3 bg-blue-50 border border-blue-100 rounded-xl">
-                  <div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center text-blue-600 shadow-sm">
-                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                  </div>
-                  <div class="min-w-0">
-                     <div class="text-[10px] font-bold text-blue-800 uppercase tracking-wider">追加到现有数据集</div>
-                     <div class="text-xs font-bold text-blue-700 truncate" :title="datasetDisplayName">{{ datasetDisplayName || '当前数据集' }}</div>
-                     <div class="text-[9px] text-blue-400 font-mono flex items-center gap-1 mt-0.5 flex-wrap">
-                        <span class="bg-blue-100 px-1 rounded">#{{ datasetPhysicalName }}</span>
-                        <span>ID: {{ datasetId }}</span>
-                        <span v-if="datasetDataSource" class="bg-emerald-100 text-emerald-700 px-1 rounded" :title="datasetDataSource">
-                          数据源: {{ datasetDataSource }}
-                        </span>
-                     </div>
-                  </div>
-               </div>
+         <div class="w-64 shrink-0 bg-gray-50 border-r border-gray-100 flex flex-col min-h-0 overflow-hidden">
+            <div class="flex-1 min-h-0 overflow-y-auto py-6">
+            <div
+              v-if="(!datasetId && importDataSourceName) || (datasetId && datasetDataSource)"
+              class="px-6 mb-6"
+            >
+              <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">数据源 ID</label>
+              <div class="p-2.5 rounded-lg bg-emerald-50 border border-emerald-100 text-[11px] text-emerald-700">
+                <span class="font-mono font-bold break-all">{{ datasetId ? datasetDataSource : importDataSourceName }}</span>
+              </div>
             </div>
 
             <div class="px-6 mb-4 font-bold text-xs text-gray-400 uppercase tracking-wider">识别结果概览</div>
             
-            <div class="flex-1 overflow-y-auto space-y-1 px-4">
+            <div class="space-y-1 px-4 pb-4">
                <div class="flex justify-between items-center p-2 rounded-lg bg-white border border-gray-200 shadow-sm">
                   <span class="text-sm font-bold text-gray-700">Tables</span>
                   <span class="text-xs bg-gray-100 px-2 py-0.5 rounded-full text-gray-600">{{ previewData.tables.length }}</span>
@@ -532,7 +574,9 @@ const normalizeType = (rawType: string): string => {
                </div>
             </div>
 
-            <div class="px-6 mt-4">
+            </div>
+
+            <div class="shrink-0 px-6 py-4 border-t border-gray-100 bg-gray-50">
                <button @click="step = 1" class="w-full py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-100">
                   ← 返回修改输入
                </button>
@@ -540,14 +584,15 @@ const normalizeType = (rawType: string): string => {
          </div>
 
          <!-- Main Preview Area -->
-         <div class="flex-1 overflow-y-auto bg-gray-50/50 p-8 space-y-8">
+         <div class="flex-1 min-h-0 overflow-y-auto bg-gray-50/50 p-8 space-y-8">
             
             <!-- Tables Section -->
             <section v-if="previewData.tables.length > 0">
-               <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+               <h3 class="text-lg font-bold text-gray-900 mb-1 flex items-center gap-2">
                  <span class="w-2 h-6 bg-blue-500 rounded-full"></span>
                  识别到的表结构
                </h3>
+               <p class="text-xs text-gray-500 mb-4 ml-4">物理表名只读；业务名称、描述与字段画像在虚线框内可编辑。</p>
                <div class="grid gap-4">
                   <div
                     v-for="(table, idx) in previewData.tables"
@@ -557,20 +602,33 @@ const normalizeType = (rawType: string): string => {
                      <div class="p-5">
                         <div class="flex justify-between items-start gap-3 mb-3">
                            <div class="min-w-0 flex-1">
-                              <div class="flex items-center gap-2 flex-wrap">
-                                 <h4 class="font-bold text-gray-900 font-mono">{{ table.physical_name }}</h4>
-                                 <input
-                                   v-model="table.term"
-                                   class="text-[10px] font-bold text-gray-500 px-1.5 py-0.5 bg-gray-50 rounded border border-gray-100 max-w-[200px]"
-                                   placeholder="业务名称"
-                                 >
+                              <div class="flex items-center gap-2 flex-wrap mb-3">
+                                 <span class="px-2 py-1 bg-slate-100 text-slate-600 font-mono text-xs font-bold rounded border border-slate-200">{{ table.physical_name }}</span>
+                                 <span class="text-[10px] text-gray-400">物理表名（只读）</span>
                               </div>
-                              <textarea
-                                v-model="table.description"
-                                rows="2"
-                                class="w-full mt-2 text-xs text-gray-500 bg-gray-50/60 border border-gray-100 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-100 resize-none"
-                                placeholder="表用途描述..."
-                              />
+                              <div class="rounded-xl border-2 border-dashed border-amber-300/80 bg-amber-50/20 p-4 space-y-3">
+                                 <div class="flex items-center gap-1.5 text-[10px] font-bold text-amber-700 uppercase tracking-wider">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                                    可编辑区域
+                                 </div>
+                                 <div>
+                                    <label class="block text-[10px] font-bold text-gray-500 mb-1">业务名称</label>
+                                    <input
+                                      v-model="table.term"
+                                      :class="EDITABLE_INPUT_SM"
+                                      placeholder="例如：数据库列级权限控制表"
+                                    >
+                                 </div>
+                                 <div>
+                                    <label class="block text-[10px] font-bold text-gray-500 mb-1">表用途描述</label>
+                                    <textarea
+                                      v-model="table.description"
+                                      :rows="getDescriptionRows(table.description)"
+                                      :class="EDITABLE_TEXTAREA"
+                                      placeholder="请补充或修改表的用途说明..."
+                                    />
+                                 </div>
+                              </div>
                            </div>
                            <div class="flex items-center gap-1 shrink-0">
                               <button
@@ -615,30 +673,31 @@ const normalizeType = (rawType: string): string => {
                         </div>
                      </div>
 
-                     <div v-if="expandedPreviewTables[idx]" class="border-t border-gray-100 p-5 bg-gray-50/30 space-y-3">
-                        <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                           字段画像定义 (Columns Profile)
-                           <span class="text-gray-300 font-normal ml-1">· {{ table.columns.length }} 个字段</span>
+                     <div v-if="expandedPreviewTables[idx]" class="border-t border-amber-200/60 p-5 bg-amber-50/10 space-y-3">
+                        <div class="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                           <span>字段画像定义 (Columns Profile)</span>
+                           <span class="text-gray-300 font-normal">· {{ table.columns.length }} 个字段</span>
+                           <span class="text-[10px] font-semibold text-amber-600 normal-case tracking-normal">虚线框可编辑</span>
                         </div>
 
-                        <div class="border border-gray-100 rounded-xl overflow-hidden bg-white">
+                        <div class="border-2 border-dashed border-amber-300/70 rounded-xl overflow-hidden bg-white">
                            <table class="w-full text-left border-collapse text-xs mb-3">
                               <thead>
-                                 <tr class="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase">
-                                    <th class="px-4 py-2 border-r border-gray-100 w-[18%]">物理字段</th>
-                                    <th class="px-4 py-2 border-r border-gray-100 w-[14%]">类型</th>
-                                    <th class="px-4 py-2 border-r border-gray-100 w-[18%]">业务术语</th>
+                                 <tr class="bg-amber-50/80 border-b border-amber-200/60 text-gray-500 font-bold uppercase">
+                                    <th class="px-4 py-2 border-r border-amber-100 w-[18%]">物理字段</th>
+                                    <th class="px-4 py-2 border-r border-amber-100 w-[14%]">类型</th>
+                                    <th class="px-4 py-2 border-r border-amber-100 w-[18%]">业务术语</th>
                                     <th class="px-4 py-2 w-[42%]">业务含义说明</th>
                                     <th class="px-4 py-2 w-[8%]"></th>
                                  </tr>
                               </thead>
-                              <tbody class="divide-y divide-gray-100 text-gray-700">
-                                 <tr v-for="(col, cIdx) in table.columns" :key="cIdx" class="hover:bg-gray-50">
-                                    <td class="px-3 py-2 border-r border-gray-100">
-                                       <input v-model="col.physical_name" class="w-full bg-transparent border-none focus:ring-0 p-0 text-xs font-mono font-bold text-gray-700" placeholder="物理名">
+                              <tbody class="divide-y divide-amber-100/80 text-gray-700">
+                                 <tr v-for="(col, cIdx) in table.columns" :key="cIdx" class="hover:bg-amber-50/30">
+                                    <td class="px-3 py-2 border-r border-amber-100">
+                                       <input v-model="col.physical_name" :class="[EDITABLE_CELL, 'font-mono font-bold']" placeholder="物理名">
                                     </td>
-                                    <td class="px-3 py-2 border-r border-gray-100">
-                                       <select v-model="col.type" class="w-full bg-transparent border-none text-[10px] text-gray-500 focus:ring-0 outline-none p-0">
+                                    <td class="px-3 py-2 border-r border-amber-100">
+                                       <select v-model="col.type" :class="EDITABLE_SELECT">
                                           <option value="String">String</option>
                                           <option value="Int64">Int64</option>
                                           <option value="Float64">Float64</option>
@@ -647,11 +706,11 @@ const normalizeType = (rawType: string): string => {
                                           <option value="JSON">JSON</option>
                                        </select>
                                     </td>
-                                    <td class="px-3 py-2 border-r border-gray-100">
-                                       <input v-model="col.term" class="w-full bg-transparent border-none focus:ring-0 p-0 text-xs text-primary font-medium" placeholder="业务名">
+                                    <td class="px-3 py-2 border-r border-amber-100">
+                                       <input v-model="col.term" :class="[EDITABLE_CELL, 'text-primary font-medium']" placeholder="业务名">
                                     </td>
                                     <td class="px-3 py-2">
-                                       <input v-model="col.description" class="w-full bg-transparent border-none focus:ring-0 p-0 text-xs text-gray-500" placeholder="描述...">
+                                       <input v-model="col.description" :class="EDITABLE_CELL" placeholder="描述...">
                                     </td>
                                     <td class="px-3 py-2 text-right">
                                        <button @click="table.columns.splice(cIdx, 1)" class="text-gray-300 hover:text-red-500 transition-colors">
@@ -665,7 +724,7 @@ const normalizeType = (rawType: string): string => {
 
                         <button
                            @click="table.columns.push({ physical_name: '', term: '', type: 'String', description: '' })"
-                           class="w-full py-1.5 border border-dashed border-gray-200 rounded-lg text-[10px] text-gray-400 hover:text-blue-500 hover:border-blue-200 hover:bg-blue-50 transition-all flex items-center justify-center gap-1"
+                           class="w-full py-1.5 border-2 border-dashed border-amber-300 rounded-lg text-[10px] text-amber-600 hover:text-amber-700 hover:border-amber-400 hover:bg-amber-50 transition-all flex items-center justify-center gap-1"
                         >
                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
                            添加更多字段
@@ -784,5 +843,11 @@ const normalizeType = (rawType: string): string => {
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+:deep(input[class*="border-dashed"]::placeholder),
+:deep(textarea[class*="border-dashed"]::placeholder) {
+  color: #d97706;
+  opacity: 0.55;
 }
 </style>
